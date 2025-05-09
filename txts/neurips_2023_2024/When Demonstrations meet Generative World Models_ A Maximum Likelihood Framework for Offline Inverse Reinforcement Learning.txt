@@ -1,0 +1,4099 @@
+When Demonstrations Meet Generative World Models:
+A Maximum Likelihood Framework for Offline
+Inverse Reinforcement Learning
+Siliang Zeng∗
+University of Minnesota
+Minneapolis, MN, USA
+zeng0176@umn.edu
+Chenliang Li∗
+Texas A&M University
+College Station, TX, USA
+chenliangli@tamu.edu
+Alfredo Garcia
+Texas A&M University
+College Station, TX, USA
+alfredo.garcia@tamu.edu
+Mingyi Hong
+University of Minnesota
+Minneapolis, MN, USA
+mhong@umn.edu
+Abstract
+Offline inverse reinforcement learning (Offline IRL) aims to recover the structure
+of rewards and environment dynamics that underlie observed actions in a fixed,
+finite set of demonstrations from an expert agent. Accurate models of expertise in
+executing a task has applications in safety-sensitive applications such as clinical
+decision making and autonomous driving. However, the structure of an expert’s
+preferences implicit in observed actions is closely linked to the expert’s model
+of the environment dynamics (i.e. the “world” model). Thus, inaccurate models
+of the world obtained from finite data with limited coverage could compound
+inaccuracy in estimated rewards. To address this issue, we propose a bi-level
+optimization formulation of the estimation task wherein the upper level is likelihood
+maximization based upon a conservative model of the expert’s policy (lower level).
+The policy model is conservative in that it maximizes reward subject to a penalty
+that is increasing in the uncertainty of the estimated model of the world. We
+propose a new algorithmic framework to solve the bi-level optimization problem
+formulation and provide statistical and computational guarantees of performance
+for the associated optimal reward estimator. Finally, we demonstrate that the
+proposed algorithm outperforms the state-of-the-art offline IRL and imitation
+learning benchmarks by a large margin, over the continuous control tasks in
+MuJoCo and different datasets in the D4RL benchmark2.
+1
+Introduction
+Reinforcement learning (RL) is a powerful and promising approach for solving large-scale sequential
+decision-making problems [1, 2, 3]. However, RL struggles to scale to the real-world applications due
+to two major limitations: 1) it heavily relies on the manually defined reward function [4], 2) it requires
+the online interactions with the environment [5]. In many application scenarios such as dialogue
+system [6] and robotics [7], it is difficult to manually design an appropriate reward for constructing
+the practical reinforcement learning system. Moreover, for some safety-sensitive applications like
+clinical decision making [8, 9] and autonomous driving [10, 11], online trials and errors are prohibited
+∗Equal Contribution.
+2Our implementation is available at https://github.com/Cloud0723/Offline-MLIRL
+37th Conference on Neural Information Processing Systems (NeurIPS 2023).
+
+D = {(s, a, s′￼)}
+Maximum Likelihood Estimation
+Transition Samples
+World Model
+̂
+P (s′￼|s, a)
+Offline IRL
+DE = {τE}
+Expert Trajectories
+Reward Estimator
+r(s, a; θ)
+Figure 1: Illustration of the modular structure in our algorithmic framework, Offline ML-IRL. In Offline
+ML-IRL, it first estimates a world model from the dataset of transition samples, and then implements an ML
+based offline IRL algorithm on the estimated world model to recover the ground-truth reward function from the
+collected expert trajectories.
+due to the safety concern. Due to these limitations in the practical applications, a new paradigm –
+learning from demonstrations, which relies on historical datasets of demonstrations to model the
+agent for solving sequential decision-making problems – becomes increasingly popular. In such a
+paradigm, it is important to understand the demonstrator and imitate the demonstrator’s behavior by
+only utilizing the collected demonstration dataset itself, without further interactions with either the
+demonstrator or the environment.
+In this context, offline inverse reinforcement learning (offline IRL) has become a promising candidate
+to enable learning from demonstrations [12, 13, 14, 9, 15]. Different from the setting of standard
+IRL [16, 17, 18, 19, 20, 21] which recovers the reward function and imitates expert behavior at the
+expense of extensive interactions with the environment, offline IRL is designed to get rid of the
+requirement in online environment interactions by only leveraging a finite dataset of demonstrations.
+While offline IRL holds great promises in practical applications, its study is still in an early stage,
+and many key challenges and open research questions remain to be addressed. For example, one
+central challenge in offline IRL arises from the so-called distribution shift [22, 15] – that is, the
+situation where the recovered reward function and recovered policy cannot generalize well to new
+unseen states and actions in the real environment. Moreover, in the training process of the offline
+IRL, any inaccuracies in the sequential decision-making process induced by distribution shift will
+compound, leading to poor performance of the estimated reward function / policy in the real-world
+environment. This is due to the fact that offline IRL is trained upon fixed datasets, which only provide
+limited coverage to the dynamics model of the real environment. Although there are some recent
+progress in offline IRL [14, 9, 15], how to alleviate distribution shift in offline IRL is still rarely
+studied and not clearly understood. Witnessing recent advances in a closely related area, the offline
+reinforcement learning, which incorporates conservative policy training to avoid overestimation of
+values in unseen states induced by the distribution shift [23, 24, 25, 26, 27], in this work we aim to
+propose effective offline IRL method to alleviate distribution shift and recover high-quality reward
+function from collected demonstration datasets. Due to the space limitations, we refer readers to
+Appendix B for more related work.
+Our Contributions. To alleviate distribution shift and recover high-quality reward function from
+fixed demonstration datasets, we propose to incorporate conservatism into a model-based setting
+and consider offline IRL as a maximum likelihood estimation (MLE) problem. Overall, the goal
+is to recover a reward that generates an optimal policy to maximize the likelihood over observed
+expert demonstrations. Towards this end, we propose a two-stage procedure (see Fig. 1 for an
+overview). In the first stage, we estimate the dynamics model (the world model) from collected
+transition samples; by leveraging uncertainty estimation techniques to quantify the model uncertainty,
+we are able to construct a conservative Markov decision process (conservative MDP) where the
+state-action pairs with high model uncertainty and low data coverage receive a high penalty value to
+avoid risky exploration in the unfamiliar region. In the second stage,we propose an IRL algorithm
+to recover the reward function, whose corresponding optimal policy under the conservative MDP
+constructed in the first stage maximizes the likelihood of observed expert demonstrations. To the best
+of our knowledge, it is the first time that ML-based formulation, as well as the associated statistical
+and computational guarantees for reward recovery, has been developed for offline IRL.
+To summarize, our main contributions are listed as follows:
+• We consider a formulation of offline IRL based on MLE over observed transition samples and
+expert trajectories. In the proposed formulation, we respectively model the transition dynamics and
+2
+
+the reward function as the maximum likelihood estimators to generate all observed transition samples
+and all collected expert demonstrations. We provide a statistical guarantee to ensure that the optimal
+reward function of the proposed formulation could be recovered as long as the collected dataset of
+transition samples has sufficient coverage on the expert-visited state-action space.
+• We develop a computationally efficient algorithm to solve the proposed formulation of offline
+IRL. To avoid repeatedly solving the policy optimization problem under each reward estimate,
+we propose an algorithm which alternates between one reward update step and one conservative
+policy improvement step. Under nonlinear parameterization for the reward function, we provide the
+theoretical analysis to show that the proposed algorithm converges to an approximate stationary point
+in finite time. Moreover, when the reward is linearly parameterized and there is sufficient coverage
+on the expert-visited state-action space to construct the estimated world model, we further show that
+the proposed algorithm approximately finds the optimal reward estimator of the MLE formulation.
+• We conduct extensive experiments by using robotic control tasks in MuJoCo and collected datasts
+in D4RL benchmark. We show that the proposed algorithm outperforms the state-of-the-art offline
+IRL such as [14, 15] and imitation learning methods such as [28], especially when the number
+of observed expert demonstrations is limited. Moreover, we transfer the recovered reward across
+different datasets to show that the proposed method can recover high-quality reward function from
+the expert demonstrations.
+2
+Preliminaries and problem formulation
+Markov decision process (MDP) is defined by the tuple (S, A, P, η, r, γ), which consists of the
+state space S, the action space A, the transition dynamics P : S × A × S →[0, 1], the initial state
+distribution η(·), the reward function r : S × A →R and the discounted factor γ ∈(0, 1). Under a
+transition dynamics model P and a policy π, we are able to further define the state-action visitation
+measure as dπ
+P (s, a) := (1 −γ)π(a|s) P∞
+t=0 γtP π(st = s|s0 ∼η) for any state-action pair (s, a).
+Maximum entropy inverse reinforcement learning (MaxEnt-IRL) is a specific IRL formulation
+which aims to recover the ground-truth reward function and imitate the expert’s policy from expert’s
+demonstrations [18, 29, 20]. Let τ E := {(st, at)}∞
+t=0 denotes the expert trajectory sampled from the
+expert policy πE; let τ A denote the trajectory generated by the RL agent with policy π. Then the
+MaxEnt-IRL is formulated as:
+max
+r
+min
+π
+n
+Eτ E∼πE
+h ∞
+X
+t=0
+γt · r(st, at)
+i
+−Eτ A∼π
+h ∞
+X
+t=0
+γt · r(st, at)
+i
+−H(π)
+o
+(1)
+where H(π) := Eτ∼π
+ P∞
+t=0 −γt log π(at|st)
+
+denotes the causal entropy of the policy π. The
+MaxEnt-IRL formulation aims to recover the ground-truth reward function which assigns high rewards
+to the expert policy while assigning low rewards to any other policies. Although MaxEnt-IRL has
+been well-studied theoretically [29, 30, 21, 31] and has been applied to several practical applications
+[32, 33, 34], it needs to repeatedly solve policy optimization problems under each reward function and
+online interactions with the environment is inevitable. Such repeated policy optimization subroutine
+requires extensive online trials and errors in the environment and thus makes MaxEnt-IRL quite
+limited in practical applications.
+Problem formulation Let us now consider an ML formulation of offline IRL. Given the transition
+dataset D := {(s, a, s′)}, we train an estimated world model bP(s′|s, a) for any s′, s ∈S and a ∈A
+(to be discussed in detail in Sec. 3). The constructed world model bP will be utilized as an estimate
+of the ground-truth dynamics model P. Based on the estimated world model bP, we propose a
+model-based offline approach for IRL from the ML perspective, given below:
+max
+θ
+L(θ) := Eτ E∼(η,πE,P )
+ ∞
+X
+t=0
+γt log πθ(at|st)
+
+(2a)
+s.t.
+πθ := arg max
+π
+Eτ A∼(η,π, b
+P )
+ ∞
+X
+t=0
+γt
+
+r(st, at; θ) + U(st, at) + H
+ π(·|st)
+
+,
+(2b)
+where H
+ π(·|s)
+
+:= P
+a∈A −π(a|s) log π(a|s) denotes the entropy of the distribution π(·|s); U(·, ·)
+is a penalty function to quantify the uncertainty of the estimated world model bP(·|s, a) under any
+3
+
+state-action pair (s, a). In practice, the penalty function is constructed based on uncertainty heuristics
+over an ensemble of estimated dynamics models [35, 25, 24, 36]. A comprehensive study of the
+choices of the penalty function can be found in [37]. Next, let us make a few remarks about the above
+formulation, which we name Offline ML-IRL.
+First, the problem takes a bi-level optimization form, where the lower-level problem (2b) assumes
+that the parameterized reward function r(·, ·; θ) is fixed, and it describes the optimal policy πθ as
+a unique solution to solve the conservative MDP; On the other hand, the upper-level problem (2a)
+optimizes the reward function r(·, ·; θ) so that its corresponding optimal policy πθ maximizes the
+log-likelihood L(θ) over observed expert trajectories.
+Second, formulating the objective as a likelihood function is reasonable since it searches for an
+optimal reward function to explain the observed expert behavior within limited knowledge about the
+world (the world model bP is constructed based on a finite and diverse dataset D := {(s, a, s′)}).
+Third, the lower-level problem (2b) corresponds to a model-based offline RL problem under the
+current reward estimate. The policy obtained is conservative in that state-action pairs that are not well
+covered by the dataset are penalized with a measure of uncertainty in the estimated world model. The
+penalty function U(s, a) is used to quantify the model uncertainty and regularize the reward estimator.
+Therefore, the optimal policy πθ under the conservative MDP will not take risky exploration on
+those uncertain region of the state-action space where the transition dataset does not have sufficient
+coverage, and the constructed world model has high prediction uncertainty.
+3
+The world model and statistical guarantee
+In this section, we construct the world model bP from the transition dataset D := {(s, a, s′)} and
+solve a certain approximated version of the formulation (2). Then we further show a high-quality
+reward estimator can be obtained with statistical guarantee.
+Before proceeding, let us emphasize that one major challenge in solving (2) comes from the dynamics
+model mismatch between (2a) and (2b), which arises because the expert trajectory τ E is generated
+from the ground-truth transition dynamics P, while the agent samples its trajectory τ A through
+interacting with the estimated world model bP. To better understand the above challenge, next we
+will explicitly analyze the likelihood objective in (2) and understand the mismatch error. Towards
+this end, let us introduce below the notions of the soft Q-function and the soft value function of the
+conservative MDP in (2) (defined for any reward parameter θ and the optimal policy πθ):
+Vθ(s) := Eτ∼(η,πθ, b
+P )
+h ∞
+X
+t=0
+γt
+r(st, at; θ) + U(st, at) + H(πθ(·|st))
+s0 = s
+i
+,
+(3a)
+Qθ(s, a) := r(s, a; θ) + U(s, a) + γEs′∼b
+P (·|s,a)
+
+Vθ(s′)].
+(3b)
+According to [38, 39, 40], the optimal policy πθ and the optimal soft value function Vθ have the
+following closed-form expressions under any state-action pair (s, a):
+πθ(a|s) =
+exp Qθ(s, a)
+P
+˜a∈A exp Qθ(s, ˜a),
+Vθ(s) = log
+ X
+a∈A
+exp Qθ(s, a)
+
+.
+(4)
+Under the ground-truth dynamics model P and the initial distribution η(·), we further define the
+visitation measure dE(s, a) under the expert policy πE as below:
+dE(s, a) := (1 −γ)πE(a|s)
+∞
+X
+t=0
+γtP πE(st = s|s0 ∼η).
+(5)
+By plugging the closed-form solution of the optimal policy πθ into the objective function (2a), we
+can decompose the dynamics-model mismatch error from the likelihood function L(θ) in (2).
+Lemma 1. Under any reward parameter θ, the objective L(θ) in (2a) can be decomposed as below:
+L(θ) = bL(θ) +
+γ
+1 −γ · E(st,at)∼dE(·,·)
+h X
+s′∈S
+Vθ(s′)
+
+bP(s′|s, a) −P(s′|s, a)
+i
+(6)
+4
+
+where bL(θ) is a surrogate objective defined as:
+bL(θ) := Eτ E∼(η,πE,P )
+h ∞
+X
+t=0
+γt
+r(st, at; θ) + U(st, at)
+i
+−Es0∼η(·)
+
+Vθ(s0)
+
+.
+(7)
+The detailed proof is included in Appendix D. In Lemma 1, we have shown that the likelihood
+function in (2) decomposes into two parts: a surrogate objective bL(θ) and an error term dependent on
+the dynamics model mismatch between bP and P. As a remark, in the surrogate objective bL(·), we
+separate the two dynamics models ( bP and P) into two relatively independent components. Therefore,
+optimizing the surrogate objective is computationally tractable and we will propose an efficient
+algorithm to recover the reward parameter from it in the next section.
+To further elaborate the connection between the likelihood objective L(θ) and the surrogate objective
+bL(θ), we first introduce the following assumption:
+Assumption 1. For any reward parameter θ and state-action pair (s, a), following conditions hold:
+|r(s, a; θ)| ≤Cr,
+|U(s, a)| ≤Cu
+(8)
+where Cr and Cu are positive constants.
+As a remark, the assumption of the bounded reward is common in the literature of inverse
+reinforcement learning and imitation learning [41, 22, 42, 43]. Moreover, the assumption of the
+bounded penalty function holds true for common choices of the uncertainty heuristics [37], such as
+the max aleatoric penalty and the ensemble variance penalty. Then we can show the following results.
+Lemma 2. Suppose Assumption 1 holds, then we obtain (where Cv is a positive constant):
+|L(θ) −bL(θ)| ≤γCv
+1 −γ · E(s,a)∼dE(·,·)
+
+∥P(·|s, a) −bP(·|s, a)∥1
+
+.
+(9)
+Please see Appendix E for the detailed proof. The above lemma suggests that the gap between
+the likelihood function and its surrogate version is bounded by the model mismatch error
+E(s,a)∼dE(·,·)
+
+∥P(·|s, a)−bP(·|s, a)∥1
+
+. The fact that the objective approximation error |L(θ)−bL(θ)|
+depends on the model mismatch error evaluated in the expert-visited state-action distribution dE(·, ·)
+is crucial to the construction of the world model bP. Based on Lemma 2, we understand that
+full data coverage on the joint state-action space S × A is not necessary. Instead, as long as the
+collected transition dataset D := {(s, a, s′)} provides sufficient coverage on the expert-visited
+state-action space Ω:= {(s, a)|dE(s, a) > 0}, then the surrogate objective bL(θ) will be an accurate
+approximation to the likelihood objective L(θ).
+Intuitively, considering the goal is to recover a reward function to model expert behaviors which
+only lie in a quite limited region of the whole state-action space, data collection with full coverage
+can be redundant. This result is very useful in practice, since it serves to greatly reduce the efforts
+on data collection for constructing the world model. Moreover, it also matches recent theoretical
+understanding on offline reinforcement learning [44, 45, 46] and offline imitation learning [22], which
+show that it is enough to learn a good policy from offline data with partial coverage.
+To analyze the sample complexity in the construction of the world model bP, we quantitatively analyze
+the approximation error between L(θ) and bL(θ). In discrete MDPs, the cardinalities of both state
+space and action space are finite (|S| < ∞and |A| < ∞). Therefore, based on a collected transition
+dataset D = {(s, a, s′)}, we will use the empirical estimate to construct the world model bP. Also
+recall that Ω:= {(s, a)|dE(s, a) > 0} denotes the set of expert-visited state-action pairs. Define
+SE := {s| P
+a∈A dE(s, a) > 0} ⊆S as the set of expert-visited states. Using these definitions, we
+have the following result. The detailed proof is in Appendix H.
+Proposition 1. For any ε ∈(0, 2), suppose there are more than N data points on each state-action
+pair (s, a) ∈Ω, and the total number of the collected transition samples satisfies:
+#transition samples ≥|Ω| · N ≥c2 · |Ω| · |SE|
+ε2
+ln
+|Ω|
+δ
+
+where c is a constant dependent on δ. With probability greater than 1 −δ, the following results hold:
+E(s,a)∼dE(·,·)
+
+∥P(·|s, a) −bP(·|s, a)∥1
+
+≤ε,
+|L(θ) −bL(θ)| ≤γCv
+1 −γ ε.
+(10)
+5
+
+The above result estimates the total number of samples needed to construct the estimated world model
+bP, so that the surrogate objective bL(θ) can accurately approximate L(θ). A direct implication is
+that, the reward parameter obtained by solving bL(·) also guarantees strong performance. To be more
+specific, define the optimal reward parameters associated with L(·) and bL(·) as below, respectively:
+θ∗∈arg max
+θ
+L(θ),
+ˆθ ∈arg max
+θ
+bL(θ).
+The next result characterizes the performance gap between the reward parameters ˆθ and θ∗. The
+detailed proof is included in Appendix I.
+Theorem 1. For any ε ∈(0, 4γCv
+1−γ ), suppose there are more than N data points on each state-action
+pair (s, a) ∈Ωand the number of transition dataset D satisfies:
+#transition samples ≥|Ω| · N ≥4γ2 · C2
+v · c2 · |Ω| · |SE|
+(1 −γ)2ε2
+ln
+|Ω|
+δ
+
+where c is a constant dependent on δ. With probability greater than 1 −δ, the following result holds:
+L(θ∗) −L(ˆθ) ≤ε.
+(11)
+4
+Algorithm design
+In the following sections, we will design a computationally efficient algorithm to optimize bL(·), and
+obtain its corresponding optimal reward parameter ˆθ.
+From the definition (7), it is clear that bL(·) depends on the optimal soft value function Vθ(·) in (3a),
+which in turn depends on the optimal policy πθ as defined in (2b). Therefore, the surrogate objective
+maximization problem can be formulated as a bi-level optimization problem, expressed below, where
+the upper-level problem optimizes bL(·) to search for a good reward estimate θ, while the lower-level
+problem solves the optimal policy πθ in a conservative MDP under the current reward estimate:
+max
+θ
+bL(θ),
+s.t.
+πθ := arg max
+π
+EτA∼(η,π, b
+P )
+h ∞
+X
+t=0
+γt
+r(st, at; θ) + U(st, at) + H
+ π(·|st)
+i
+.
+(12)
+In order to avoid the computational burden from repeatedly solving the optimal policy πθ under each
+reward estimate θ, we aim to design an algorithm which alternates between a policy optimization step
+and a reward update step. That is, at each iteration k, based on the current policy estimate πk and
+the reward parameter θk, two steps will be performed consecutively: (1) the algorithm generates an
+updated policy πk+1 through performing a conservative policy improvement step under the estimated
+world model bP, and (2) it obtains an updated reward parameter θk+1 through taking a reward update
+step. Next, we describe the proposed algorithm in detail.
+Policy Improvement Step. Under the reward parameter θk, we consider generating a new policy
+πk+1 towards approaching the optimal policy πθk as defined in (12). Similar to the definitions of
+Vθ and Qθ in (3a) - (3b), under the current policy estimate πk, the reward estimate r(·, ·; θk) and
+the estimated world model bP, we define the corresponding soft value function as Vk(·) and the soft
+Q-function as Qk(·, ·). Please see (28a) - (28b) in Appendix for the precise definitions.
+In order to perform a policy improvement step, we first approximate the soft Q-function by using an
+estimate bQk(s, a), which satisfies the following: (where ϵapp > 0 is an approximation error)
+∥bQk −Qk∥∞:=
+max
+s∈S,a∈A | bQk(s, a) −Qk(s, a)| ≤ϵapp.
+(13)
+With the approximator bQk, an updated policy πk+1 can be generated by a soft policy iteration:
+πk+1(a|s) ∝exp
+  bQk(s, a)
+
+,
+∀s ∈S, a ∈A.
+(14)
+As a remark, in practice, one can follow the popular reinforcement learning algorithms such as soft
+Q-learning [38] and soft Actor-Critic (SAC) [39] to obtain accurately approximated soft Q-function
+with low approximation error ϵapp (as outlined in (13)), so to achieve stable updates for the soft
+6
+
+Algorithm 1 A Model-based Approach for Offline Maximum Likelihood IRL (Offline ML-IRL)
+Input: Initialize reward parameter θ0 and policy π0. Set the reward parameter’s stepsize as α.
+Train the world model bP on the transition dataset D.
+Specify the penalty function U(·, ·) based on bP.
+for k = 0, 1, . . . , K −1 do
+Policy Evaluation: Approximate the soft Q-function Qk(·, ·) by bQk(·, ·)
+Policy Improvement: πk+1(·|s) ∝exp
+  bQk(s, ·)
+
+, ∀s ∈S
+Data Sampling I: Sample an expert trajectory τ E
+k := {st, at}t≥0
+Data Sampling II: Sample τ A
+k := {st, at}t≥0 from πk+1 and bP
+Estimating Gradient: gk := h(θk; τ E
+k ) −h(θk; τ A
+k ) where h(θ; τ) := P
+t≥0 γt∇θr(st, at; θ)
+Reward Parameter Update: θk+1 := θk + αgk
+end for
+policy iteration in (14). In the literature of the model-based offline reinforcement learning, the
+state-of-the-art methods [25, 37, 47] also build their framework upon the implementation of SAC.
+Reward Optimization Step. At each iteration k, given the current reward parameter θk and the
+updated policy πk+1, we can update the reward parameter to θk+1. First, let us compute the gradient
+of the surrogate objective ∇bL(θk). Please see Appendix F for the detailed proof.
+Lemma 3. The gradient of the surrogate objective bL(θ) defined in (7), can be expressed as:
+∇bL(θ) = Eτ E∼(η,πE,P )
+h ∞
+X
+t=0
+γt∇θr(st, at; θ)
+i
+−Eτ A∼(η,πθ, b
+P )
+h ∞
+X
+t=0
+γt∇θr(st, at; θ)
+i
+.
+(15)
+In practice, we do not have access to the optimal policy πθ.
+This is due to the fact that
+repeatedly solving the underlying offline policy optimization problem under each reward parameter
+is computationally intractable. Therefore, at each iteration k, we construct an estimator of the exact
+gradient based on the current policy estimate πk+1.
+To be more specific, we take two approximation steps to develop a stochastic gradient estimator of
+∇bL(θ): 1) choose one observed expert trajectory τ E
+k ; 2) sample a trajectory τ A
+k from the current
+policy estimate πk+1 in the estimated world model bP. Following these two approximation steps, the
+stochastic estimator gk which approximates the exact gradient ∇bL(θk) in (15) is defined as follows:
+gk := h(θk; τ E
+k ) −h(θk; τ A
+k ),
+(16)
+where h(θ; τ) := P∞
+t=0 γt∇θr(st, at; θ) denotes the cumulative reward gradient under a trajectory.
+Then we can update reward parameter according to the following update rule:
+θk+1 = θk + αgk
+(17)
+In Alg. 1, we summarize the proposed algorithm (named the Offline ML-IRL).
+5
+Convergence analysis
+In this section, we present a theoretical analysis to show the finite-time convergence of Alg.1.
+Before starting the analysis, let us point out the key challenges in analyzing the Alg. 1. Note that the
+algorithm relies on the updated policy πk+1 to approximate the optimal policy πθk at each iteration k.
+This coarse approximation can potentially lead to the distribution mismatch between the gradient
+estimator gk in (16) and the exact gradient ∇bL(θk) in (15). To maintain the stability of the proposed
+algorithm, we can use a relatively small stepsize α to ensure the policy estimates are updated in a
+faster time-scale compared with the reward parameter θ. This allows the policy estimates {πk+1}k≥0
+to closely track the optimal solutions {πθk}k≥0 in the long run.
+To proceed, let us introduce a few assumptions.
+7
+
+Assumption 2 (Ergodic Dynamics). Given any policy π, the Markov chain under the estimated world
+model bP is irreducible and aperiodic. There exist constants κ > 0 and ρ ∈(0, 1) to ensure:
+max
+s∈S ∥bP(st ∈·|s0 = s, π) −µπ
+b
+P (·)∥TV ≤κρt,
+∀t ≥0
+where ∥· ∥TV denotes the total variation (TV) norm; µπ
+b
+P is the stationary distribution of visited states
+under the policy π and the world model bP.
+The assumption about the ergodic dynamics is common in the literature of reinforcement learning
+[48, 49, 21, 31, 50], which ensures the Markov chain mixes at a geometric rate.
+Assumption 3 (Lipschitz Reward). Under any reward parameter θ, the following conditions hold for
+any s ∈S and a ∈A:
+∇θr(s, a; θ)
+ ≤Lr,
+∇θr(s, a; θ1) −∇θr(s, a; θ2)
+ ≤Lg∥θ1 −θ2∥,
+(18)
+where Lr and Lg are positive constants.
+According to Assumption 3, the parameterized reward has bounded gradient and is Lipschitz smooth.
+This assumption is common for min-max / bi-level optimization problems [41, 51, 52, 31, 50].
+Based on Assumptions 2 - 3, we show that certain Lipschitz properties of the optimal soft Q-function
+and the surrogate objective hold. Please see the detailed proof in Appendix G.
+Lemma 4. Suppose Assumptions 2 - 3 hold. Under any reward parameter θ1 and θ2, the optimal soft
+Q-function and the surrogate objective satisfy the following Lipschitz properties:
+|Qθ1(s, a) −Qθ2(s, a)| ≤Lq∥θ1 −θ2∥, ∀s ∈S, a ∈A
+(19a)
+∥∇bL(θ1) −∇bL(θ2)∥≤Lc∥θ1 −θ2∥
+(19b)
+where Lq and Lc are positive constants.
+Our main convergence result is summarized in the following theorem, which characterizes the
+convergence speed of the estimates {πk+1}k≥0 and {θk}k≥0. The detailed proof is in Appendix J.
+Theorem 2 (Convergence Analysis). Suppose Assumptions 2 - 3 hold. Let K denote the total number
+of iterations to be run in Alg. 1. Setting the stepsize as α = α0 · K−1
+2 where α0 > 0, we obtain the
+following convergence results:
+1
+K
+K−1
+X
+k=0
+E
+h log πk+1 −log πθk
+
+∞
+i
+= O(K−1
+2 ) + O(ϵapp)
+(20a)
+1
+K
+K−1
+X
+k=0
+E
+h
+∥∇bL(θk)∥2i
+= O(K−1
+2 ) + O(ϵapp)
+(20b)
+where we have defined ∥log πk+1 −log πθk∥∞:= maxs∈S,a∈A
+ log πk+1(a|s) −log πθk(a|s)
+ and
+ϵapp is the approximation error defined in (13).
+In Theorem 2, we demonstrated that Alg.1 identifies the approximate stationary solution of the
+surrogate problem (12) in finite time. Next, we show that when the reward is parameterized linearly,
+an improved result can be obtained, where the stationary solutions of problem (12) can be connected
+to the optimal solutions of the offline-IRL problem (12). See Appendix K for detailed proof.
+Theorem 3 (Optimality Guarantee). Assume that the reward function is linearly parameterized,
+i.e., r(s, a; θ) := ϕ(s, a)⊤θ where ϕ(s, a) is the feature vector of the state-action pair (s, a). Then
+any stationary point of the surrogate problem (12) is a global optimum. Furthermore, for any
+ε ∈(0, 4γCv
+1−γ ), suppose there are more than N data points on each state-action pair (s, a) ∈Ωand
+the number of transition dataset D satisfies:
+#transition samples ≥|Ω| · N ≥4γ2 · C2
+v · c2 · |Ω| · |SE|
+(1 −γ)2ε2
+ln
+|Ω|
+δ
+
+where c is a constant dependent on δ. With probability greater than 1 −δ, any stationary point ˜θ of
+the surrogate objective bL(·) is an epsilon-optimal solution to the maximum likelihood problem (2):
+L(θ∗) −L(˜θ) ≤ε
+(21)
+where θ∗is defined as the optimal reward parameter of the log-likelihood objective L(·).
+8
+
+As a remark, the epsilon-optimal solution on the MLE problem implies:
+L(θ∗) −L(˜θ) =
+1
+1 −γ Es∼dE(·),a∼πE(·|s)
+
+log
+ πθ∗(a|s)
+π˜θ(a|s)
+
+≤ε.
+When the expert trajectories are consistent with the optimal policy under a ground truth reward
+parameter θ∗, we have πE = πθ∗. Due to this property, we can obtain that
+L(θ∗) −L(˜θ) =
+1
+1 −γ Es∼dE(·),a∼πE(·|s)
+
+log
+ πE(a|s)
+π˜θ(a|s)
+
+=
+1
+1 −γ Es∼dE(·)
+
+DKL
+ πE(·|s)||π˜θ(·|s)
+
+≤ε.
+Hence, Theorem 3 also provides a formal guarantee that the recovered policy π˜θ is ϵ-close to the
+expert policy πE measured by the KL divergence.
+We remark that even under the linear parameterization assumption, showing the optimality of the
+stationary solution for the surrogate problem (12) is still non-trivial, since the problem is still not
+a concave problem with respect to θ. In our analysis, we translate this problem to a certain saddle
+point problem. Under linear reward parameterization, we show that any stationary solution ˜θ of the
+surrogate problem (12) together with the corresponding optimal policy π˜θ consist of a saddle point
+to the saddle point problem. By further leveraging the property of the saddle point, we show the
+optimality of the stationary solution for the surrogate problem. Finally, by utilizing the statistical
+guarantee in Theorem 1, we obtain the performance guarantee for any stationary point ˜θ in (21).
+6
+Numerical results
+In this section, we present numerical results for the proposed algorithm. More specifically, we
+intend to address the following questions: 1) How does the proposed algorithm compare with other
+state-of-the-art methods? 2) Whether offline ML-IRL can recover a high-quality reward estimator of
+the expert, in the sense that the reward can be used across different datasets or environment?
+We compare the proposed method with several benchmarks. Two classes of the existing algorithms
+are considered as baselines: 1) state-of-the-art offline IRL algorithms which are designed to recover
+the ground-truth reward and expert policy from demonstrations, including a model-based approach
+CLARE [15] and a model-free approach IQ-Learn [14]; 2) imitation learning algorithms which only
+learn a policy to mimic the expert beahviors, including behavior cloning (BC) and ValueDICE [28].
+We test the performance of the proposed Offline ML-IRL on a diverse collection of robotics training
+tasks in MuJoCo simulator [53], as well as datasets in D4RL benchmark [54], which include three
+environments (halfcheetah, hopper and walker2d) and three dataset types (medium-replay, medium,
+and medium-expert). In each experiment set, both environment interactions and the ground-truth
+reward are not accessible. Moreover, we train the algorithm until convergence and record the average
+reward of the episodes over 6 random seeds.
+In Offline ML-IRL, we estimate the dynamics model by neural networks which model the location of
+the next state by Gaussian distributions. Here, we independently train an ensemble of N estimated
+world model { bP i
+ϕ,φ(st+1|st, at) = N(µi
+ϕ(st, at), Σi
+φ(st, at))}N
+i=1 via likelihood maximization over
+transition samples. Then we can quantify the model uncertainty and construct the penalty function.
+For example, in [25], the aleatoric uncertainty is considered and the penalty function is constructed as
+U(s, a) = −maxi=1,···N ∥Σi
+φ(s, a))∥F. For the offline RL subrouinte in (13) - (14), we follow the
+implementation of MOPO [25]. We follow the same setup in [37] to select the key hyperparameters
+for MOPO. We parameterize the reward function by a three-layer neural network. The reward
+parameter and the policy are updated alternatingly, where the former is updated accodring to (17),
+while the latter is optimized according to MOPO. More experiment details are in Appendix A.
+In Figure 2 and Table 1, we show the performance comparison between the proposed algorithm and
+benchmarks. The results of IQ-Learn is not presented since it suffers from unstable performance.
+To obtain better performance in BC and ValueDICE, we only use the expert demonstrations to
+train their agents. From the results, it is clear that the proposed Offline ML-IRL outperforms the
+benchmark algorithms by a large margin in most cases. In the experiment sets where Offline ML-IRL
+does not obtain the best performance, we notice the performance gap is small compared with the
+leading benchmark algorithm. Moreover, among the three dataset types (medium-replay, medium
+and medium-expert), medium-expert dataset has the most complete coverage on the expert-visited
+9
+
+0
+100
+200
+300
+400
+500
+600
+700
+800
+Offline Episodes
+1000
+0
+1000
+2000
+3000
+4000
+Average Reward
+Hopper (5,000 Expert Demonstrations)
+Medium
+Medium Expert
+Medium Replay
+Expert Level
+0
+100
+200
+300
+400
+500
+600
+700
+800
+Offline Episodes
+2000
+0
+2000
+4000
+6000
+Average Reward
+Walker2d (5,000 Expert Demonstrations)
+Medium
+Medium Expert
+Medium Replay
+Expert Level
+0
+100
+200
+300
+400
+500
+600
+700
+800
+Offline Episodes
+2000
+0
+2000
+4000
+6000
+8000
+10000
+12000
+Average Reward
+HalfCheetah (5,000 Expert Demonstrations)
+Medium
+Medium Expert
+Medium Replay
+Expert Level
+Figure 2: The performance of Offline ML-IRL given 5,000 expert demonstrations.
+Dataset type
+Environment
+Offline ML-IRL
+BC
+ValueDICE
+CLARE
+Expert Performance
+medium
+hopper
+2453.25 ± 717.30
+2801.19 ± 330.88
+3073.16 ± 538.67
+3015.37 ± 474.38
+3512.09 ± 21.65
+medium
+halfcheetah
+7640.73 ± 195.00
+4471.72 ± 2835.55
+1125.17 ± 959.45
+841.46 ± 344.06
+12174.61 ± 91.45
+medium
+walker2d
+3989.20 ± 487.82
+2328.75 ± 906.96
+3191.47 ± 1887.90
+237.49 ± 160.62
+5383.98 ± 52.15
+medium-replay
+hopper
+3046.36 ± 429.25
+2801.19 ± 330.88
+3073.16 ± 538.67
+2888.04 ± 844.48
+3512.09 ± 21.65
+medium-replay
+halfcheetah
+9236.84 ± 309.10
+4471.72 ± 2835.55
+1125.17 ± 959.45
+437.18 ± 182.99
+12174.61 ± 91.45
+medium-replay
+walker2d
+3995.32 ± 487.82
+2328.75 ± 906.96
+3191.47 ± 1887.90
+291.71 ± 75.66
+5383.98 ± 52.15
+medium-exp
+hopper
+3347.11 ± 238.18
+2801.19 ± 330.88
+3073.16 ± 538.67
+3350.47 ± 245.78
+3512.09 ± 21.65
+medium-exp
+halfcheetah
+11231.40 ± 585.21
+4471.72 ± 2835.55
+1125.17 ± 959.45
+622.79 ± 56.46
+12174.61 ± 91.45
+medium-exp
+walker2d
+4201.40 ± 637.99
+2328.75 ± 906.96
+3191.47 ± 1887.90
+959.50 ± 470.64
+5383.98 ± 52.15
+Table 1: MuJoCo Results. The performance versus different datasets and 5, 000 expert demonstrations. The
+bolded numbers are the best ones for each data set, among Offline ML-IRL, BC, ValueDICE, and CLARE.
+state-action space. As a result, Offline ML-IRL can nearly match the expert performance when the
+world model is trained from the medium-expert transition dataset. This numerical result matches our
+theoretical understanding in Theorem 1. As a remark, in most cases, we notice that Offline ML-IRL
+outperforms CLARE by a large margin which is also a model-based offline IRL algorithm. As we
+discussed in the related work (Appendix B), this is due to the fact that when the expert demonstrations
+are limited and diverse transition samples take a large portion of all collected data, CLARE learns a
+policy to match the joint visitation measure of all collected data, thus fails to imitate expert behaviors.
+In Appendix A, we further present an experiment showcasing the quality of the reward recovered
+by the Offline ML-IRL algorithm.
+Towards this end, we use the recovered reward from the
+medium-expert dataset to estimate the reward value for all transition samples (s, a, s′) in the
+medium-replay dataset. With the recovered reward function r(·, ·; θ) and given those transition
+samples with estimated reward labels {
+ s, a, r(s, a; θ), s′
+}, we run MOPO to solve Offline RL tasks
+given these transition samples with estiamted rewards. In Fig. 5, we can infer that the Offline ML-IRL
+can recover high-quality reward functions, since the recovered reward can label transition samples for
+solving offline RL tasks. Comparing with the numerical results of directly doing offline-IRL on the
+respective datasets in Table 1, we show that solving Offline RL by using transferred reward function
+and unlabelled transition datasts can achieve similar performance in Fig. 5.
+7
+Conclusion
+In this paper, we model the offline Inverse Reinforcement Learning (IRL) problem from a maximum
+likelihood estimation perspective. Through constructing a generative world model to estimate the
+environment dynamics, we solve the offline IRL problem through a model-based approach. We
+develop a computationally-efficient algorithm that effectively recovers the underlying reward function
+and its associated optimal policy. We have also established statistical and computational guarantees for
+the performance of the recovered reward estimator. Through extensive experiments, we demonstrate
+that our algorithm outperforms existing benchmarks for offline IRL and Imitation Learning, especially
+on high-dimensional robotics control tasks. One limitation of our method is that we focus solely
+on aligning with expert demonstrations during the reward learning process. In an ideal scenario,
+reward learning should incorporate diverse metrics and data sources, such as expert demonstrations
+and preferences gathered through human feedback. One direction for future work is to broaden our
+algorithm framework and theoretical analysis for a wider scope in reward learning.
+10
+
+Acknowledgments
+M. Hong and S. Zeng are supported by NSF grant CIF-1910385.
+References
+[1] V. Mnih, K. Kavukcuoglu, D. Silver, A. Graves, I. Antonoglou, D. Wierstra, and M. Riedmiller,
+“Playing atari with deep reinforcement learning,” arXiv preprint arXiv:1312.5602, 2013.
+[2] D. Silver, T. Hubert, J. Schrittwieser, I. Antonoglou, M. Lai, A. Guez, M. Lanctot, L. Sifre,
+D. Kumaran, T. Graepel et al., “A general reinforcement learning algorithm that masters chess,
+shogi, and go through self-play,” Science, vol. 362, no. 6419, pp. 1140–1144, 2018.
+[3] O. Vinyals, I. Babuschkin, W. M. Czarnecki, M. Mathieu, A. Dudzik, J. Chung, D. H. Choi,
+R. Powell, T. Ewalds, P. Georgiev et al., “Grandmaster level in starcraft ii using multi-agent
+reinforcement learning,” Nature, vol. 575, no. 7782, pp. 350–354, 2019.
+[4] D. Silver, S. Singh, D. Precup, and R. S. Sutton, “Reward is enough,” Artificial Intelligence, vol.
+299, p. 103535, 2021.
+[5] S. Levine, “Understanding the world through action,” in Conference on Robot Learning. PMLR,
+2022, pp. 1752–1757.
+[6] L. Ouyang, J. Wu, X. Jiang, D. Almeida, C. L. Wainwright, P. Mishkin, C. Zhang, S. Agarwal,
+K. Slama, A. Ray et al., “Training language models to follow instructions with human feedback,”
+arXiv preprint arXiv:2203.02155, 2022.
+[7] J. Kober, J. A. Bagnell, and J. Peters, “Reinforcement learning in robotics: A survey,” The
+International Journal of Robotics Research, vol. 32, no. 11, pp. 1238–1274, 2013.
+[8] S. Liu, K. C. See, K. Y. Ngiam, L. A. Celi, X. Sun, M. Feng et al., “Reinforcement learning for
+clinical decision support in critical care: comprehensive review,” Journal of medical Internet
+research, vol. 22, no. 7, p. e18477, 2020.
+[9] A. J. Chan and M. van der Schaar, “Scalable bayesian inverse reinforcement learning,” arXiv
+preprint arXiv:2102.06483, 2021.
+[10] B. R. Kiran, I. Sobh, V. Talpaert, P. Mannion, A. A. Al Sallab, S. Yogamani, and P. Pérez, “Deep
+reinforcement learning for autonomous driving: A survey,” IEEE Transactions on Intelligent
+Transportation Systems, 2021.
+[11] R. Wei, A. Garcia, A. McDonald, G. Markkula, J. Engström, I. Supeene, and M. O’Kelly, “World
+model learning from demonstrations with active inference: Application to driving behavior,” in
+Forthcoming, 3rd International Workshop on Active Inference, Grenoble, France, 2022.
+[12] E. Klein, M. Geist, and O. Pietquin, “Batch, off-policy and model-free apprenticeship learning,”
+in European Workshop on Reinforcement Learning.
+Springer, 2011, pp. 285–296.
+[13] M. Herman, T. Gindele, J. Wagner, F. Schmitt, and W. Burgard, “Inverse reinforcement learning
+with simultaneous estimation of rewards and dynamics,” in Artificial Intelligence and Statistics.
+PMLR, 2016, pp. 102–110.
+[14] D. Garg, S. Chakraborty, C. Cundy, J. Song, and S. Ermon, “Iq-learn: Inverse soft-q learning for
+imitation,” Advances in Neural Information Processing Systems, vol. 34, pp. 4028–4039, 2021.
+[15] S. Yue, G. Wang, W. Shao, Z. Zhang, S. Lin, J. Ren, and J. Zhang, “CLARE:
+Conservative model-based reward learning for offline inverse reinforcement learning,”
+in International Conference on Learning Representations, 2023. [Online]. Available:
+https://openreview.net/forum?id=5aT4ganOd98
+[16] A. Y. Ng, S. Russell et al., “Algorithms for inverse reinforcement learning.” in Icml, vol. 1,
+2000, p. 2.
+[17] P. Abbeel and A. Y. Ng, “Apprenticeship learning via inverse reinforcement learning,” in
+Proceedings of the twenty-first international conference on Machine learning, 2004, p. 1.
+[18] B. D. Ziebart, A. L. Maas, J. A. Bagnell, A. K. Dey et al., “Maximum entropy inverse
+reinforcement learning.” in AAAI, vol. 8.
+Chicago, IL, USA, 2008, pp. 1433–1438.
+[19] M. Wulfmeier, P. Ondruska, and I. Posner, “Maximum entropy deep inverse reinforcement
+learning,” arXiv preprint arXiv:1507.04888, 2015.
+11
+
+[20] J. Fu, K. Luo, and S. Levine, “Learning robust rewards with adversarial inverse reinforcement
+learning,” arXiv preprint arXiv:1710.11248, 2017.
+[21] S. Zeng, C. Li, A. Garcia, and M. Hong, “Maximum-likelihood inverse reinforcement learning
+with finite-time guarantees,” Advances in Neural Information Processing Systems, 2022.
+[22] J. Chang, M. Uehara, D. Sreenivas, R. Kidambi, and W. Sun, “Mitigating covariate shift in
+imitation learning via offline data with partial coverage,” Advances in Neural Information
+Processing Systems, vol. 34, pp. 965–979, 2021.
+[23] A. Kumar, A. Zhou, G. Tucker, and S. Levine, “Conservative q-learning for offline reinforcement
+learning,” Advances in Neural Information Processing Systems, vol. 33, pp. 1179–1191, 2020.
+[24] R. Kidambi, A. Rajeswaran, P. Netrapalli, and T. Joachims, “Morel: Model-based offline
+reinforcement learning,” Advances in neural information processing systems, vol. 33, pp.
+21 810–21 823, 2020.
+[25] T. Yu, G. Thomas, L. Yu, S. Ermon, J. Y. Zou, S. Levine, C. Finn, and T. Ma, “Mopo:
+Model-based offline policy optimization,” Advances in Neural Information Processing Systems,
+vol. 33, pp. 14 129–14 142, 2020.
+[26] T. Yu, A. Kumar, R. Rafailov, A. Rajeswaran, S. Levine, and C. Finn, “Combo: Conservative
+offline model-based policy optimization,” Advances in neural information processing systems,
+vol. 34, pp. 28 954–28 967, 2021.
+[27] G. Tennenholtz and S. Mannor, “Uncertainty estimation using riemannian model dynamics
+for offline reinforcement learning,” in Advances in Neural Information Processing Systems,
+A. H. Oh, A. Agarwal, D. Belgrave, and K. Cho, Eds., 2022. [Online]. Available:
+https://openreview.net/forum?id=pGLFkjgVvVe
+[28] I. Kostrikov, O. Nachum, and J. Tompson, “Imitation learning via off-policy distribution
+matching,” arXiv preprint arXiv:1912.05032, 2019.
+[29] B. D. Ziebart, J. A. Bagnell, and A. K. Dey, “The principle of maximum causal entropy for
+estimating interacting processes,” IEEE Transactions on Information Theory, vol. 59, no. 4, pp.
+1966–1980, 2013.
+[30] Z. Zhou, M. Bloem, and N. Bambos, “Infinite time horizon maximum causal entropy inverse
+reinforcement learning,” IEEE Transactions on Automatic Control, vol. 63, no. 9, pp. 2787–2802,
+2017.
+[31] S. Zeng, M. Hong, and A. Garcia, “Structural estimation of markov decision processes in
+high-dimensional state space with finite-time guarantees,” arXiv preprint arXiv:2210.01282,
+2022.
+[32] J. Fu, A. Korattikara, S. Levine, and S. Guadarrama, “From language to goals: Inverse
+reinforcement learning for vision-based instruction following,” in International Conference on
+Learning Representations, 2018.
+[33] Z. Wu, L. Sun, W. Zhan, C. Yang, and M. Tomizuka, “Efficient sampling-based maximum
+entropy inverse reinforcement learning with application to autonomous driving,” IEEE Robotics
+and Automation Letters, vol. 5, no. 4, pp. 5355–5362, 2020.
+[34] L. Zhou and K. Small, “Inverse reinforcement learning with natural language goals,” in
+Proceedings of the AAAI Conference on Artificial Intelligence, vol. 35, no. 12, 2021, pp.
+11 116–11 124.
+[35] B. Lakshminarayanan, A. Pritzel, and C. Blundell, “Simple and scalable predictive uncertainty
+estimation using deep ensembles,” Advances in neural information processing systems, vol. 30,
+2017.
+[36] R. Rafailov, T. Yu, A. Rajeswaran, and C. Finn, “Offline reinforcement learning from images
+with latent space models,” in Learning for Dynamics and Control. PMLR, 2021, pp. 1154–1168.
+[37] C. Lu, P. Ball, J. Parker-Holder, M. Osborne, and S. J. Roberts, “Revisiting design choices
+in offline model based reinforcement learning,” in International Conference on Learning
+Representations, 2021.
+[38] T. Haarnoja, H. Tang, P. Abbeel, and S. Levine, “Reinforcement learning with deep energy-based
+policies,” in International conference on machine learning.
+PMLR, 2017, pp. 1352–1361.
+12
+
+[39] T. Haarnoja, A. Zhou, P. Abbeel, and S. Levine, “Soft actor-critic: Off-policy maximum entropy
+deep reinforcement learning with a stochastic actor,” in International conference on machine
+learning.
+PMLR, 2018, pp. 1861–1870.
+[40] S. Cen, C. Cheng, Y. Chen, Y. Wei, and Y. Chi, “Fast global convergence of natural policy
+gradient methods with entropy regularization,” Operations Research, 2021.
+[41] M. Chen, Y. Wang, T. Liu, Z. Yang, X. Li, Z. Wang, and T. Zhao, “On computation and
+generalization of generative adversarial imitation learning,” in International Conference on
+Learning Representations, 2019.
+[42] L. Shani, T. Zahavy, and S. Mannor, “Online apprenticeship learning,” in Proceedings of the
+AAAI Conference on Artificial Intelligence, vol. 36, no. 8, 2022, pp. 8240–8248.
+[43] B. Zhu, J. Jiao, and M. I. Jordan, “Principled reinforcement learning with human feedback from
+pairwise or k-wise comparisons,” arXiv preprint arXiv:2301.11270, 2023.
+[44] Y. Liu, A. Swaminathan, A. Agarwal, and E. Brunskill, “Provably good batch off-policy
+reinforcement learning without great exploration,” Advances in neural information processing
+systems, vol. 33, pp. 1264–1274, 2020.
+[45] M. Uehara and W. Sun, “Pessimistic model-based offline reinforcement learning under partial
+coverage,” in International Conference on Learning Representations, 2021.
+[46] A. Ozdaglar, S. Pattathil, J. Zhang, and K. Zhang, “Revisiting the linear-programming
+framework for offline rl with general function approximation,” arXiv preprint arXiv:2212.13861,
+2022.
+[47] M. Rigter, B. Lacerda, and N. Hawes, “Rambo-rl: Robust adversarial model-based offline
+reinforcement learning,” arXiv preprint arXiv:2204.12581, 2022.
+[48] J. Bhandari, D. Russo, and R. Singal, “A finite time analysis of temporal difference learning
+with linear function approximation,” in Conference on learning theory.
+PMLR, 2018, pp.
+1691–1692.
+[49] Y. F. Wu, W. Zhang, P. Xu, and Q. Gu, “A finite-time analysis of two time-scale actor-critic
+methods,” Advances in Neural Information Processing Systems, vol. 33, pp. 17 617–17 628,
+2020.
+[50] M. Hong, H.-T. Wai, Z. Wang, and Z. Yang, “A two-timescale stochastic algorithm framework
+for bilevel optimization: Complexity analysis and application to actor-critic,” SIAM Journal on
+Optimization, vol. 33, no. 1, pp. 147–180, 2023.
+[51] C. Jin, P. Netrapalli, and M. Jordan, “What is local optimality in nonconvex-nonconcave
+minimax optimization?” in International conference on machine learning.
+PMLR, 2020, pp.
+4880–4889.
+[52] Z. Guan, T. Xu, and Y. Liang, “When will generative adversarial imitation learning algorithms
+attain global convergence,” in International Conference on Artificial Intelligence and Statistics.
+PMLR, 2021, pp. 1117–1125.
+[53] E. Todorov, T. Erez, and Y. Tassa, “Mujoco: A physics engine for model-based control,” in
+2012 IEEE/RSJ international conference on intelligent robots and systems.
+IEEE, 2012, pp.
+5026–5033.
+[54] J. Fu, A. Kumar, O. Nachum, G. Tucker, and S. Levine, “D4rl: Datasets for deep data-driven
+reinforcement learning,” arXiv preprint arXiv:2004.07219, 2020.
+[55] H. Cao, S. Cohen, and L. Szpruch, “Identifiability in inverse reinforcement learning,” Advances
+in Neural Information Processing Systems, vol. 34, pp. 12 362–12 373, 2021.
+[56] P. Rolland, L. Viano, N. Schürhoff, B. Nikolov, and V. Cevher, “Identifiability and
+generalizability from multiple experts in inverse reinforcement learning,” arXiv preprint
+arXiv:2209.10974, 2022.
+[57] C. Finn, S. Levine, and P. Abbeel, “Guided cost learning: Deep inverse optimal control via
+policy optimization,” in International conference on machine learning.
+PMLR, 2016, pp.
+49–58.
+[58] S. Liu and M. Zhu, “Distributed inverse constrained reinforcement learning for multi-agent
+systems,” Advances in Neural Information Processing Systems, vol. 35, pp. 33 444–33 456,
+2022.
+13
+
+[59] E. Klein, M. Geist, B. Piot, and O. Pietquin, “Inverse reinforcement learning through structured
+classification,” Advances in neural information processing systems, vol. 25, 2012.
+[60] D. Lee, S. Srinivasan, and F. Doshi-Velez, “Truly batch apprenticeship learning with deep
+successor features,” arXiv preprint arXiv:1903.10077, 2019.
+[61] K. Zolna, A. Novikov, K. Konyushkova, C. Gulcehre, Z. Wang, Y. Aytar, M. Denil, N. de Freitas,
+and S. Reed, “Offline learning from demonstrations and unlabeled experience,” arXiv preprint
+arXiv:2011.13885, 2020.
+[62] M. Abdulhai, N. Jaques, and S. Levine, “Basis for intentions: Efficient inverse reinforcement
+learning using past experience,” arXiv preprint arXiv:2208.04919, 2022.
+[63] T. Xu, Z. Li, and Y. Yu, “Error bounds of imitating policies and environments,” Advances in
+Neural Information Processing Systems, vol. 33, pp. 15 737–15 749, 2020.
+[64] D. Jarrett, I. Bica, and M. van der Schaar, “Strictly batch imitation learning by energy-based
+distribution matching,” Advances in Neural Information Processing Systems, vol. 33, pp.
+7354–7365, 2020.
+[65] R. Rafailov, T. Yu, A. Rajeswaran, and C. Finn, “Visual adversarial imitation learning
+using variational models,” Advances in Neural Information Processing Systems, vol. 34, pp.
+3016–3028, 2021.
+[66] Y. Liu, A. Swaminathan, A. Agarwal, and E. Brunskill, “Off-policy policy gradient with state
+distribution correction,” arXiv preprint arXiv:1904.08473, 2019.
+[67] O. Nachum, B. Dai, I. Kostrikov, Y. Chow, L. Li, and D. Schuurmans, “Algaedice: Policy
+gradient from arbitrary experience,” arXiv preprint arXiv:1912.02074, 2019.
+[68] C.-A. Cheng, T. Xie, N. Jiang, and A. Agarwal, “Adversarially trained actor critic for offline
+reinforcement learning,” in International Conference on Machine Learning.
+PMLR, 2022, pp.
+3852–3878.
+[69] A. Agarwal, N. Jiang, S. M. Kakade, and W. Sun, “Reinforcement learning: Theory and
+algorithms,” CS Dept., UW Seattle, Seattle, WA, USA, Tech. Rep, pp. 10–4, 2019.
+[70] T. Xu, Z. Wang, and Y. Liang, “Improving sample complexity bounds for (natural) actor-critic
+algorithms,” Advances in Neural Information Processing Systems, vol. 33, pp. 4358–4369, 2020.
+14
+
+0
+100
+200
+300
+400
+500
+600
+700
+800
+Offline Episodes
+1000
+0
+1000
+2000
+3000
+4000
+5000
+Average Reward
+Hopper (1,000 Expert Demonstrations)
+Medium
+Medium Expert
+Medium Replay
+Expert Level
+0
+100
+200
+300
+400
+500
+600
+700
+800
+Offline Episodes
+1000
+0
+1000
+2000
+3000
+4000
+5000
+6000
+7000
+Average Reward
+Walker2d (1,000 Expert Demonstrations)
+Medium
+Medium Expert
+Medium Replay
+Expert Level
+0
+100
+200
+300
+400
+500
+600
+700
+800
+Offline Episodes
+2000
+0
+2000
+4000
+6000
+8000
+10000
+12000
+Average Reward
+HalfCheetah (1,000 Expert Demonstrations)
+Medium
+Medium Expert
+Medium Replay
+Expert Level
+Figure 3: The performance of Offline ML-IRL in different environments given 1, 000 expert
+demonstrations
+Dataset type
+Environment
+Offline ML-IRL
+BC
+ValueDICE
+CLARE
+Expert Performance
+medium
+hopper
+1750.59 ± 507.06
+843.59 ± 503.83
+2417.83 ± 1258.30
+1559.00 ± 324.10
+3533.90
+medium
+halfcheetah
+7690.30 ± 119.17
+2799.40 ± 1046.00
+−175.87 ± 343.57
+240.50 ± 143.25
+12107.51
+medium
+walker2d
+4121.68 ± 291.86
+1248.13 ± 72.89
+1794.97 ± 1400.70
+320.51 ± 93.07
+5284.33
+medium-replay
+hopper
+2395.03 ± 593.16
+843.59 ± 503.83
+2417.83 ± 1258.30
+2369.79 ± 204.23
+3533.90
+medium-replay
+halfcheetah
+9313.29 ± 261.94
+2799.40 ± 1046.00
+−175.87 ± 343.57
+343.37 ± 108.00
+12107.51
+medium-replay
+walker2d
+4100.99 ± 293.88
+1248.13 ± 72.89
+1794.97 ± 1400.70
+440.78 ± 88.05
+5284.33
+medium-expert
+hopper
+3366.23 ± 229.56
+843.59 ± 503.83
+2417.83 ± 1258.30
+3071.31 ± 186.37
+3533.90
+medium-expert
+halfcheetah
+10812.15 ± 551.38
+2799.40 ± 1046.00
+−175.87 ± 343.57
+292.95 ± 84.86
+12107.51
+medium-expert
+walker2d
+4049.43 ± 1046.61
+1248.13 ± 72.89
+1794.97 ± 1400.70
+548.59 ± 146.09
+5284.33
+Table 2: MuJoCo Results. The performance versus different datasets and 1, 000 expert demonstrations. Here,
+the expert demonstration dataset only includes a single expert trajectory (1, 000 expert transition samples) and
+the value of expert performance corresponds to the cumulative reward value of the provided expert trajectory.
+Appendix
+Limitations and broader impacts
+Offline inverse reinforcement learning is a method designed to recover the reward function and the
+associated optimal policy from an observed expert dataset. However, potential negative societal
+impacts may arise if the demonstration dataset incorporates low-quality data. For safety-critical
+applications, such as autonomous driving and clinical decision support, we need to exercise particular
+caution to avoid the introduction of detrimental biases from the demonstration dataset. Ensuring safe
+adaptation is vital for real-world applications.
+One limitation of our method is that we exclusively use expert demonstration in the process of reward
+learning. Ideally, reward learning should incorporate varied data sources, like expert demonstrations
+and preferences (pairwise comparisions). A possible direction for future work is to broaden our
+algorithm and theoretical analysis for a wider scope in reward learning. This would allow us to
+develop a more robust reward model through the integration of diverse data inputs.
+A
+Experiment details
+In this section, we provide implementation details and additional numerical results.
+A.1
+Detailed experiment setting
+In our experiment, we use two kinds of datasets: 1) transition dataset D = {(s, a, s′)} which includes
+diverse transition samples and is downloaded from D4RL V2; 2) expert demonstration dataset
+DE = {τ E} which consists of several expert trajectories and the expert trajectories are collected from
+an expert-level policy. All evaluations are based on a single NVIDIA GeForce RTX 2080 Ti.
+The transition dataset. The transition datasets are downloaded from D4RL V2 and the transition
+datasets for each specific task have three different type: medium, medium-replay and medium-expert.
+In D4RL V2, the datasets are generated as follows: medium: use SAC to train a policy with
+medium-level performance, then use it to collected 1 million transition samples; medium-replay: use
+SAC to train a policy until an environment-specific performance is obtained, then save all transition
+samples in the replay buffer; medium-expert: combine 1 million transition samples collected from a
+15
+
+0
+100
+200
+300
+400
+500
+600
+700
+800
+Offline Episodes
+1000
+0
+1000
+2000
+3000
+4000
+5000
+Average Reward
+Hopper (10,000 Expert Demonstrations)
+Medium
+Medium Expert
+Medium Replay
+Expert Level
+0
+100
+200
+300
+400
+500
+600
+700
+800
+Offline Episodes
+1000
+0
+1000
+2000
+3000
+4000
+5000
+6000
+Average Reward
+Walker2d (10,000 Expert Demonstrations)
+Medium
+Medium Expert
+Medium Replay
+Expert Level
+0
+100
+200
+300
+400
+500
+600
+700
+800
+Offline Episodes
+2000
+0
+2000
+4000
+6000
+8000
+10000
+12000
+Average Reward
+HalfCheetah (10,000 Expert Demonstrations)
+Medium
+Medium Expert
+Medium Replay
+Expert Level
+Figure 4: The performance of Offline ML-IRL in different environments given 10, 000 expert
+demonstrations
+Dataset type
+Environment
+Offline ML-IRL
+BC
+ValueDICE
+CLARE
+Expert Performance
+medium
+hopper
+2461.45 ± 705.70
+3236.70 ± 45.97
+3442.82 ± 199.21
+3357.52 ± 270.45
+3512.64 ± 17.10
+medium
+halfcheetah
+7706.43 ± 159.39
+4935.60 ± 2835.55
+3248.60 ± 2001.05
+841.46 ± 344.06
+12156.16 ± 88.01
+medium
+walker2d
+4195.36 ± 352.86
+2822.56 ± 978.97
+3046.76 ± 2001.28
+825.15 ± 738.33
+5365.62 ± 55.79
+medium-replay
+hopper
+2889.73 ± 542.65
+3236.70 ± 45.97
+3442.82 ± 199.21
+3139.98 ± 478.75
+3512.64 ± 17.10
+medium-replay
+halfcheetah
+9383.34 ± 358.67
+4935.60 ± 2835.55
+3248.60 ± 2001.05
+437.18 ± 182.99
+12156.16 ± 88.01
+medium-replay
+walker2d
+4092.58 ± 308.71
+2822.56 ± 978.97
+3046.76 ± 2001.28
+869.07 ± 612.56
+5365.62 ± 55.79
+medium-expert
+hopper
+3350.79 ± 264.96
+3236.70 ± 45.97
+3442.82 ± 199.21
+3166.69 ± 512.77
+3512.64 ± 17.10
+medium-expert
+halfcheetah
+11276.09 ± 551.94
+4935.60 ± 2835.55
+3248.60 ± 2001.05
+2020.51 ± 520.46
+12156.16 ± 88.01
+medium-expert
+walker2d
+4363.54 ± 729.60
+2822.56 ± 978.97
+3046.76 ± 2001.28
+3245.79 ± 1911.56
+5365.62 ± 55.79
+Table 3: MuJoCo Results. The performance versus different datasets and 10, 000 expert demonstrations.
+medium-level policy with another 1 million transition samples collected from an expert-level policy.
+As a remark, since we are considering the setting of offline IRL where the ground-truth reward is not
+accessible, we hide the reward information of those downloaded transition datasets from D4RL V2.
+The expert demonstration dataset. The expert demonstration dataset includes the transition samples
+in several collected expert trajectories. Here, we first train a reinforcement learning agent by SAC
+under the ground-truth reward function to achieve expert-level performance. Then we save the
+well-train expert-level policy to collect expert trajectories. For each trajectory, it includes 1, 000
+consecutive transition samples (s, a, s′) in one episode.
+In the model-based algorithms like Offline ML-IRL and CLARE, the estimated dynamic models
+are trained using the transition dataset. After the estimated dynamics model is constructed, the
+corresponding algorithms (Offline ML-IRL and CLARE) will further utilize the expert trajectories
+in the expert demonstration dataset DE to recover the ground-truth reward function and imitate the
+expert behaviors.
+For model-free offline imitation learning algorithms like BC and ValueDICE, they directly learn a
+policy to imitate the expert behaviors. Hence, those model-free offline imitation learning algorithms
+(BC and ValueDICE) will only utilize the expert demonstration dataset DE. Due to the fact that BC
+and ValueDICE do not use the transition dataset D, their recorded performance in Table 1 - 3 is not
+related to the type of the transition dataset D.
+In our implementation of Offline ML-IRL, we parameterize the reward network by a (256, 256)
+MLP with ReLU activation function. The input of the reward network is the state-action pair (s, a)
+and the output is the estimated reward value r(s, a; θ). Moreover, we use Adam as the optimizer
+and the stepsize to update the reward network is set to be 1 × 10−4. For the policy optimization
+subroutine (13) - (14), we consider it as a model-based offline RL subtask. Since it is under an
+entropy-regularized framework, SAC-based algorithm is used as the corresponding RL solver. More
+specifically, we use model-based offline policy optimization (MOPO) [25] in the RL subroutine (13) -
+(14). For the implementation of MOPO and the corresponding hyperparameters, we follow the setup
+provided in [37] which guarantees strong performance through fine-tuning the key hyperparameters
+of MOPO, including the number of estimated world models, the choice of the penalty function U(·, ·),
+the penalty coefficient and the imaginary rollout length in the estimated world model. The official
+code base of [37] is available in https://openreview.net/forum?id=zz9hXVhf40. During the
+training of Offline ML-IRL, each time we implement a policy improvement subroutine under the
+current reward estimator, we update the agent by running MOPO for 20 offline episodes in the
+estimated world model and under the current reward estimator. After that, we sample expert trajectory
+16
+
+0
+50
+100
+150
+200
+250
+300
+350
+Offline Episodes
+0
+500
+1000
+1500
+2000
+2500
+3000
+3500
+Average Reward
+Hopper
+Medium Replay
+Expert Level
+0
+100
+200
+300
+400
+500
+600
+700
+Offline Episodes
+1000
+0
+1000
+2000
+3000
+4000
+5000
+Average Reward
+Walker2d
+Medium Replay
+Expert Level
+0
+100
+200
+300
+400
+500
+600
+700
+Offline Episodes
+0
+2000
+4000
+6000
+8000
+10000
+12000
+Average Reward
+HalfCheetah
+Medium Replay
+Expert Level
+Figure 5: Reward Transfer. The recovered reward by Offline ML-IRL in the medium-expert dataset
+is transferred to the medium-replay datasets for solving offline RL tasks.
+from the expert demonstration dataset DE = {τ E}, and sample agent trajectory from the estimated
+world model bP to construct the stochastic reward gradient estimator following the expressing given
+in (16). Then we are able to update the reward network by a stochastic gradient step.
+For the benchmark algorithms, the official code base of CLARE is provided in https://
+openreview.net/forum?id=5aT4ganOd98. Moreover, the official implementation of ValueDICE
+is provided in https://github.com/google-research/google-research/tree/master/
+value_dice.
+A.2
+Additional numerical results
+In Fig. 3 - 4, we show the convergence curves of Offline ML-IRL when expert demonstration datasets
+DE include 1, 000 and 10, 000 expert demonstrations (1 and 10 expert trajectories) respectively.
+Moreover, we compare the performance with benchmark algorithms in Table 2 - 3. According to the
+numerical results, we show that our proposed method Offline ML-IRL is insensitive to the number of
+expert demonstrations. Even when only 1, 000 expert demonstrations are provided, Offline ML-IRL
+can achieve strong performance (close to the expert-level performance with the medium-expert
+dataset).
+In Fig. 5, we show the numerical results of reward transfer experiment. Here, we first use the
+medium-expert dataset and expert demonstration dataset to generate a reward estimator by running
+Offline ML-IRL. Then we transfer the recovered reward function r(·, ·; θ) to the medium-replay
+dataset for labelling all transition samples with the estimated reward value. With the transferred
+reward function r(·, ·; θ) to label the transition dataset as {
+ s, a, r(s, a; θ), s′
+}, we can treat the
+problem as an Offline RL task and run MOPO to solve it. The numerical result is shown in Fig. 5.
+Comparing Fig. 5 with the results in Fig 4 which are obtained by directly running Offline ML-IRL
+with expert demonstrations / trajectories, similar performance can be obtained by run Offline RL
+on the transition datset D with the transferred reward estimator. These results suggest that Offline
+ML-IRL can recover high-quality reward estimator, which can be transferred across different datasets
+to label those unlabeled data with the estimated reward value.
+B
+Related work
+Inverse reinforcement learning (IRL) consists of estimating the reward function and the optimal
+policy that best fits the expert demonstrations [16, 17, 18, 20, 31]. In the seminal work [18], a
+formulation for IRL is proposed based on the principle of maximum entropy which enjoys the
+theoretical guarantees to recover the reward function [29, 30, 55, 56]. Furthermore, in [57, 20, 21], a
+series of sample-efficient algorithms are proposed to solve the the maximum entropy IRL formulation.
+Moreover, there still exists one major limitation in IRL, due to the fact that most existing IRL methods
+require extensive online trials and errors which could be impractical in real-life applications.
+To side-step the online interactions with the environment, offline IRL is considered to recover the
+reward function from fixed datasets of expert demonstrations. In [13], by taking into account the
+bias of expert demonstrations, the authors propose a gradient-based IRL methods to jointly estimate
+the reward function and the transition dynamics. In [14], a model-free algorithm called IQ-Learn
+is proposed by implicitly representing the reward function and the policy from a soft Q-function.
+17
+
+Although avoiding the online interactions with the environment, IQ-Learn sacrifices the accuracy of
+the estimated reward function, since its recovered reward is highly dependent on the environment
+dynamics. In [9], the authors propose a variational Bayesian framework to estimate the approximate
+posterior distribution of the reward function from a collected demonstration dataset. Recently, in [15],
+a model-based offline IRL approach (called CLARE) is proposed, which implements IRL algorithm
+in an estimated dynamics model to learn the reward. To avoid distribution shift, CLARE incorporates
+conservatism into its estimated reward to ensure the corresponding policy generates a state-action
+visitation measure to match the joint data distribution of collected transition samples and expert
+demonstrations. However, when the number of expert demonstrations is limited and/or most of the
+transition samples about the state-action-next state observations are collected from a low-quality
+behavior policy, matching the empirical state-action visitation measure of all collected data will
+force the recovered reward / policy to mimic the low-quality behavior policy, which is not enough to
+guarantee an accurate model of the expert. Moreover, matching the visitation measure is sensitive
+to the quality of the estimated dynamics model. Matching the visitation measure in an estimated
+dynamics model with poor prediction quality cannot guarantee high-quality recovered reward.
+Here, we discuss the literature in several closely related areas as below.
+Online IRL. [18] is a seminal work in which the expert policy is formulated as the model that
+maximizes entropy subject to a constraint requiring that the expected features under such policy
+match the empirical averages in the expert’s observation dataset. [29, 19] propose algorithms with
+nested loop structure to solve such maximum entropy estimation problem. Those algorithms with a
+nested loop structure can suffer from computational burden, because they need to alternate between
+an outer loop with a reward update step and an inner loop that calculates the explicit policy estimates.
+In [58], the authors propose a method to estimate both reward functions and constraints from a
+group of experts. In [21], the authors propose an online IRL formulation based on maximum
+likelihood estimation perspective, which needs extensive interaction with the environment in order
+to learn the reward function. When the reward function is linearly parameterized, it is shown that
+the maximum likelihood IRL formulation is the dual problem to the classic maximum entropy IRL
+problem. Moreover, a theoretical analysis is provided to ensure the reward parameter can converge
+to a stationary solution in finite time. Despite the computational efficiency obtained in [21], it
+is not clear whether an optimal reward estimator can be recovered from the maximum likelihood
+formulation. As a remark, compared with the online IRL work [21], our paper extends the maximum
+likelihood formulation to the setting of offline IRL. We further provide a statistical guarantee to show
+that when the transition dataset has sufficient coverage over the expert-visited state-action space, an
+estimated world model can be constructed so that the optimal reward estimator can be recovered.
+Moreover, we provide a computational guarantee to show that the proposed algorithm can identify
+a stationary point in finite time. When the reward function is linearly parameterized, we show the
+optimal reward estimator of the maximum likelihood estimation formulation can be recovered by the
+proposed algorithm.
+Offline IRL. In [59], the authors propose a method to perform IRL through constructing a linearly
+parameterized score function-based multi-class classification algorithm. With an estimated of the
+feature expectation of the expert, the proposed algorithm is able to avoid direct RL subroutine. Given
+appropriate heuristic and expert trajectories, the proposed algorithm could recover the underlying
+reward function without any online environment interactions. In [60], the authors propose a model-free
+method to construct the Deep Successor Feature Networks (DSFN) to estimate the feature expectations
+in an off-policy setting. By parameterizing the reward as a linear function and estimating the feature
+expectation, the offline IRL can be solved computation-friendly with limited expert demonstrations.
+In [61], a modular algorithm called Offline Reinforcement Imitation Learning (ORIL) is proposed.
+In ORIL, a reward function is first constructed by constrasting expert demonstrations with other
+transition samples {(s, a, s′)} which are sampled from a behavior policy with unknown quality. With
+the constructed reward function, the quality of all unlabeled data can be evaluated and then an agent
+is trained via offline reinforcement learning. In [62], the authors proposed an IRL method which
+leverages multi-task RL pre-training and successor features to train IRL from past experience. When
+a set of related tasks can be provided for RL pre-training and the feature expectation is estimated
+accurately, the proposed method could benefit from the multi-task pre-training. However, in practice,
+it is difficult to obtain full knowledge of the feature structure in the ground-truth reward function.
+Offline Imitation Learning. Different from offline IRL, offline imitation learning aims to directly
+imitate the expert behavior by learning a policy in the offline setting. In [28], an algorithm called
+18
+
+ValueDICE is proposed to leverage off-policy data to learn an imitation policy with the use of any
+explicit reward functions. Moreover, the numerical results of ValueDICE show that it could be
+easily implemented in the offline regime, where additional interactions with the environment is not
+allowed. In [63], the authors propose method to learn both policies and environment and analyze the
+corresponding error bounds. In [64], a model-free offline imitation learning algorithm is proposed
+by energy-based distribution matching (EDM). EDM provides an effective way to minimize the
+divergence between the state-action visitation measure of the demonstrator and the imitation policy.
+In [65], the authors develop a variational model-based adversarial imitation learning (V-MAIL)
+algorithm for learning from visual demonstrations. By constructing a variational latent-space
+dynamics model, V-MAIL is able to solve high-dimensional visual tasks without any additional
+environment interactions. In [22], the authors introduce Model-based Imitation Learning from Offline
+data (MILO), which extends model-based offline reinforcement learning to imitation learning. The
+theoretical analysis of MILO shows that full coverage of the offline data is not necessary. When
+the offline dataset provides sufficient coverage to cover the expert-visited state-actions, MILO can
+provably avoid distribution shift in offline imitation learning by leveraging a constructed dynamics
+model.
+Offline RL. Offline RL considers the problem of learning a policy from a fixed datasets where the
+reward value is provided for each collected transition samples. For model-free offline RL algorithms,
+a world model is not estimated and the algorithms directly learn a policy from the collected dataset.
+In [66, 67], model-free offline RL algorithms are proposed to solve the importance sampling problem.
+In [23, 68], conservatism is incorporated into the value function to avoid overestimation in the
+offline RL setting. For the model-based offline RL algorithms, [24] constructs the estimated world
+model and sets hard threshold on the model uncertainty for constructing terminating states to avoid
+dangerous explorations. In [25], the authors proposes a model-based offline policy optimization
+algorithm (MOPO) which utilizes uncertainty estimation techniques to construct a penalty function to
+regularize the reward function. Therefore, MOPO can learn a conservative policy which stays in the
+low-uncertainty region to aviod the distribution shift issue. As a follow-up work, [37] revisits
+the design choices of several key hyperparameters in MOPO and fine-tune the corresponding
+hyperparameters in MOPO to guanrantee strong performance. In [26], the authors propose a
+model-based offline RL algorithm called COMBO which does not rely on explicit uncertainty
+estimation. By regularizing the value function on out-of-distribution state-action pairs generated in
+the estimated world model, COMBO can benefit from the conservatism without requiring explicit
+uncertainty estimation techiques. As a remark, the algorithms proposed in [25, 24, 37, 26] all perform
+conservative policy optimization in a well-constructed dynamics model and the estimated dynamics
+model keeps fixed during the training of the RL agent. Different from those algorithms mentioned
+above, [45, 47] incorporate conservatism into the constructed dynamics model. By adversarially
+modifying the estimated dynamics model to minimize the value function under the current policy, the
+proposed methods can learn a robust policy with respect to the environment dynamics and can obtain
+probably approximately correct (PAC) performance guarantee.
+C
+Auxiliary lemmas
+Before we introduce the auxiliary lemmas, we re-write Assumptions 1 - 3 here for convenience.
+Assumption 1 For any reward parameter θ and any state-action pair (s, a), the following conditions
+hold:
+|r(s, a; θ)| ≤Cr,
+|U(s, a)| ≤Cu
+where Cr and Cu are positive constants.
+Assumption 2 Given any policy π, the Markov chain under the estimated world model bP is irreducible
+and aperiodic. There exist constants κ > 0 and ρ ∈(0, 1) to ensure the following condition holds:
+max
+s∈S ∥bP(st ∈·|s0 = s, π) −µπ
+b
+P (·)∥TV ≤κρt,
+∀t ≥0
+where ∥· ∥TV denotes the total variation (TV) norm; µπ
+b
+P is the stationary distribution of visited states
+under the policy π and the world model bP.
+19
+
+Assumption 3 Under any reward parameter θ, the following conditions hold for any s ∈S and
+a ∈A:
+∇θr(s, a; θ)
+ ≤Lr,
+∇θr(s, a; θ1) −∇θr(s, a; θ2)
+ ≤Lg∥θ1 −θ2∥,
+where Lr and Lg are positive constants.
+Then we introduce the auxiliary lemmas as below.
+Lemma 5. (Proposition A.8. in [69]) Let z be a discrete random variable that takes values in
+{1, ..., d}, distributed according to q. We write q as a vector where ⃗q = [Pr(z = j)]d
+j=1. Assume
+there are N i.i.d. samples, and that the empirical estimate of ⃗q is [ˆq]j = 1
+N
+PN
+i=1 1[zi = j], where ˆq
+is a d-dimensional vector.
+Then for any ϵ > 0, the following result holds:
+Pr
+
+∥ˆq −⃗q∥2 ≥
+1
+√
+N
++ ϵ
+
+≤e−Nϵ2,
+(23)
+which implies that:
+Pr
+
+∥ˆq −⃗q∥1 ≥
+√
+d
+  1
+√
+N
++ ϵ
+
+≤e−Nϵ2.
+(24)
+Lemma 6. (Lemma 3 in [70]) Under any initial distribution η(·) and any transition dynamics
+P(·|s, a), we denote dw(·, ·) as the visitation measure of the visited state-action pair (s, a) with a
+softmax policy parameterized by parameter w. Suppose Assumption 2 holds, then for all policy
+parameter w and w′, we have
+∥dw(·, ·) −dw′(·, ·)∥TV ≤Cd∥w −w′∥
+(25)
+where Cd is a positive constant.
+Lemma 7. (Lemma 5 in [31]) Suppose Assumption 3 holds. Under the soft policy iteration defined
+in (13) - (14), we denote the soft Q-function under reward parameter θk and policy πk+1 as Qk+ 1
+2 .
+Moreover, recall that Qk+1 has been defined as the soft Q-function under the reward parameter θk+1
+and policy πk+1. Then for any s ∈S, a ∈A and k ≥0, the following inequality holds:
+|Qk+ 1
+2 (s, a) −Qk+1(s, a)| ≤Lq∥θk −θk+1∥,
+(26)
+where Lq :=
+Lr
+1−γ > 0 and Lr is the positive constant defined in Assumption 3.
+Lemma 8. (Lemma 6 in [31]) Following the soft policy iteration defined in (13) - (14), the following
+holds for any iteration k ≥0:
+Qk(s, a) ≤Qk+ 1
+2 (s, a) + 2γϵapp
+1 −γ ,
+∀s ∈S, a ∈A,
+(27a)
+∥Qθk −Qk+ 1
+2 ∥∞≤γ∥Qθk −Qk∥∞+ 2γϵapp
+1 −γ
+(27b)
+where Qk+ 1
+2 (·, ·) denotes the soft Q-function under reward parameter θk and updated policy πk+1,
+and Qθk(·, ·) denotes the soft Q-function under reward parameter θk and corresponding optimal
+policy πθk. Moreover, we denote ∥Qθk −Qk+ 1
+2 ∥∞= maxs∈S maxa∈A |Qθk(s, a) −Qk+ 1
+2 (s, a)|.
+Remark. In Lemma 7 and Lemma 8, the definitions of the soft Q-function Qk and the soft value
+function Vk under a conservative MDP are given below:
+Qk(s, a) := r(s, a; θk) + U(s, a) + γEs′∼b
+P (·|s,a)
+
+Vk(s′)
+
+(28a)
+Vk(s) := Eτ∼(η,πk, b
+P )
+h ∞
+X
+t=0
+γt r(st, at; θk) + U(st, at) + H(πk(·|st))
+s0 = s
+i
+(28b)
+where U(s, a) is the penalty function for the state-action pair (s, a), which is used to quantify the
+uncertainty in the estimated world model bP. If we rewrite the above defined soft Q-function Qk as:
+Qk(s, a) = ˜r(s, a; θk) + γEs′∼b
+P (·|s,a)
+
+Vk(s′)
+
+where ˜r(s, a; θk) := r(s, a; θk) + U(s, a), then we can directly follow the proof steps in [31] to
+prove Lemma 7 and Lemma 8.
+20
+
+D
+Proof of Lemma 1
+Proof. According to the closed-form expressions of the optimal policy πθ and the optimal soft value
+function Vθ in (4), let us decompose the objective L(θ) defined in (2a) as below:
+L(θ) = EτE∼(η,πE,P )
+ ∞
+X
+t=0
+γt log πθ(at|st)
+
+(i)
+= EτE∼(η,πE,P )
+ ∞
+X
+t=0
+γt log
+
+exp Qθ(st, at)
+P
+a∈A exp Qθ(st, a)
+
+(ii)
+= EτE∼(η,πE,P )
+ ∞
+X
+t=0
+γt
+Qθ(st, at) −Vθ(st)
+
+=
+∞
+X
+t=0
+γtE(st,at)∼(η,πE,P )
+
+Qθ(st, at)
+
+−
+∞
+X
+t=0
+γtEst∼(η,πE,P )
+
+Vθ(st)
+
+(iii)
+=
+∞
+X
+t=0
+γtE(st,at)∼(η,πE,P )
+
+r(st, at; θ) + U(st, at) + γEst+1∼b
+P (·|st,at)[Vθ(st+1)]
+
+−
+∞
+X
+t=0
+γtEst∼(η,πE,P )
+
+Vθ(st)
+
+=
+∞
+X
+t=0
+γtE(st,at)∼(η,πE,P )
+
+r(st, at; θ) + U(st, at)
+
+−Es0∼η(·)
+
+Vθ(s0)
+
++
+ ∞
+X
+t=0
+γt+1E(st,at)∼(η,πE,P ),st+1∼b
+P (·|st,at)
+
+Vθ(st+1)
+
+−
+∞
+X
+t=0
+γt+1Est+1∼(η,πE,P )
+
+Vθ(st+1)
+
+=
+ ∞
+X
+t=0
+γtE(st,at)∼(η,πE,P )
+
+r(st, at; θ) + U(st, at)
+
+−Es0∼η(·)
+
+Vθ(s0)
+
+|
+{z
+}
+T1: surrogate objective
++
+ ∞
+X
+t=0
+γt+1E(st,at)∼(η,πE,P ),st+1∼b
+P (·|st,at)
+
+Vθ(st+1)
+
+−
+∞
+X
+t=0
+γt+1E(st,at)∼(η,πE,P ),st+1∼P (·|st,at)
+
+Vθ(st+1)
+
+|
+{z
+}
+T2: error term due to transition probability mismatch
+(29)
+where (i) and (ii) follows the closed-form expression of the optimal policy πθ and the optimal soft
+value function in (4). Moreover, (iii) follows the definition of the soft Q-function in (3b).
+From the T2 term in (29), we observe that the error term comes from the transition dynamics
+mismatch between the estimated world model bP and the ground-truth dynamics model P. Then we
+analyze the transition dynamics mismatch:
+T2 =
+∞
+X
+t=0
+γt+1E(st,at)∼(η,πE,P ),st+1∼b
+P (·|st,at)
+
+Vθ(st+1)
+
+−
+∞
+X
+t=0
+γt+1E(st,at)∼(η,πE,P ),st+1∼P (·|st,at)
+
+Vθ(st+1)
+
+=
+∞
+X
+t=0
+γt+1E(st,at)∼(η,πE,P )
+
+Est+1∼b
+P (·|st,at)
+
+Vθ(st+1)
+
+−Est+1∼P (·|st,at)
+
+Vθ(st+1)
+
+=
+∞
+X
+t=0
+γt+1E(st,at)∼(η,πE,P )
+ X
+st+1∈S
+Vθ(st+1)
+  bP(st+1|st, at) −P(st+1|st, at)
+
+Recall that dE(·, ·) is defined in (5) where dE(s, a) := (1−γ)πE(a|s) P∞
+t=0 γtP πE(st = s|s0 ∼η),
+we obtain the following result:
+T2 =
+∞
+X
+t=0
+γt+1E(st,at)∼(η,πE,P )
+
+X
+st+1∈S
+Vθ(st+1)
+  bP(st+1|st, at) −P(st+1|st, at)
+
+= γ
+∞
+X
+t=0
+X
+s∈S,a∈A
+γtP(st = s|s0 ∼η)πE(at = a|st = s)
+
+X
+st+1∈S
+Vθ(st+1)
+  bP(st+1|st = s, at = a) −P(st+1|st = s, at = a)
+
+=
+γ
+1 −γ · E(s,a)∼dE(·,·)
+h X
+s′∈S
+Vθ(s′)
+
+bP(s′|s, a) −P(s′|s, a)
+i
+(30)
+21
+
+Then we further denote the surrogate objective bL(·) as below:
+bL(θ) :=
+∞
+X
+t=0
+γtE(st,at)∼(η,πE,P )
+
+r(st, at; θ) + U(st, at)
+
+−Es0∼η(·)
+
+Vθ(s0)
+
+.
+(31)
+By plugging (30) and (31) into (29), we obtain the decomposition of the likelihood objective L(θ) as
+below:
+L(θ) = bL(θ) +
+γ
+1 −γ · E(s,a)∼dE(·,·)
+h X
+s′∈S
+Vθ(s′)
+
+bP(s′|s, a) −P(s′|s, a)
+i
+.
+(32)
+The lemma is proved.
+E
+Proof of Lemma 2
+Proof. According to (32), we have the following series of relations:
+|L(θ) −bL(θ)| =
+γ
+1 −γ ·
+E(s,a)∼dE(·,·)
+h X
+s′∈S
+Vθ(s′)
+
+bP(s′|s, a) −P(s′|s, a)
+i
+≤
+γ
+1 −γ · E(s,a)∼dE(·,·)
+h X
+s′∈S
+Vθ(s′)
+ ·
+ bP(s′|s, a) −P(s′|s, a)
+
+i
+≤
+γ
+1 −γ · max
+˜s∈S |Vθ(˜s)| · E(s,a)∼dE(·,·)
+h X
+s′∈S
+ bP(s′|s, a) −P(s′|s, a)
+
+i
+=
+γ
+1 −γ · R(θ) · E(s,a)∼dE(·,·)
+h bP(·|s, a) −P(·|s, a)
+
+1
+i
+(33)
+where (33) follows the definition R(θ) := maxs∈S
+Vθ(s)
+ and the definition of the visitation measure
+dE(·, ·) in (5). According to the definition of Vθ(·) in (3a), we have
+R(θ) = max
+s∈S
+Vθ(s)
+
+(i)
+= max
+s∈S
+Eτ∼(η,πθ, b
+P )
+h ∞
+X
+t=0
+γt r(st, at; θ) + U(st, at) + H(πθ(·|st))
+s0 = s
+i
+≤max
+s∈S Eτ∼(η,πθ, b
+P )
+h ∞
+X
+t=0
+γt |r(st, at; θ)| + |U(st, at)| + |H(πθ(·|st))|
+s0 = s
+i
+(ii)
+≤max
+s∈S Eτ∼(η,πθ, b
+P )
+h ∞
+X
+t=0
+γt Cr + Cu + |H(πθ(·|st))|
+s0 = s
+i
+(iii)
+≤max
+s∈S Eτ∼(η,πθ, b
+P )
+h ∞
+X
+t=0
+γt Cr + Cu + log |A|
+s0 = s
+i
+= Cr + Cu + log |A|
+1 −γ
+.
+where (i) follows the definition of Vθ(·) in (3a) and (ii) follows (8). Moreover, (iii) follows the
+fact that information entropy is non-negative and the maximum entropy is obtained under uniform
+distribution where we have |H(πθ(·|s))| = H(πθ(·|s)) ≤−P
+a∈A
+1
+|A| log | 1
+|A|| = log |A|.
+Denote Cv := Cr+Cu+log |A|
+1−γ
+, we obtain the property: R(θ) = maxs∈S
+Vθ(s)
+ ≤Cv. Plugging this
+result into (33), we obtain the following result to finish the proof:
+|L(θ) −bL(θ)| ≤γCv
+1 −γ · E(s,a)∼dE(·,·)
+h bP(·|s, a) −P(·|s, a)
+
+1
+i
+.
+The lemma is proved.
+22
+
+F
+Proof of Lemma 3
+Proof. To start the analysis, we first take gradient of the surrogate objective bL(θ) (as defined in (7))
+w.r.t. θ:
+∇bL(θ)
+(i)
+= Eτ E∼(η,πE,P )
+h ∞
+X
+t=0
+γt
+∇θr(st, at; θ) + ∇θU(st, at)
+i
+−Es0∼η(·)
+
+∇θVθ(s0)
+
+(ii)
+= Eτ E∼(η,πE,P )
+h ∞
+X
+t=0
+γt∇θr(st, at; θ)
+i
+−Es0∼η(·)
+
+∇θ log
+  X
+a∈A
+exp Qθ(s0, a)
+
+= Eτ E∼(η,πE,P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ)
+
+−Es0∼η(·)
+ X
+a∈A
+
+exp Qθ(s0, a)
+P
+˜a∈A exp Qθ(s0, ˜a)∇θQθ(s0, a)
+
+(iii)
+= Eτ E∼(η,πE,P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ)
+
+−Es0∼η(·)
+ X
+a∈A
+πθ(a|s0)∇θQθ(s0, a)
+
+= Eτ E∼(η,πE,P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ)
+
+−Es0∼η(·),a0∼πθ(·|s0)
+
+∇θQθ(s0, a0)
+
+(34)
+where (i) follows the definition of the surrogate objective bL(θ) in (7), and (ii) follows the closed-form
+expression of the optimal soft value function Vθ in (4) and the penalty function U(s, a) is independent
+of the reward parameter θ. Moreover, (iii) follows the closed-form expression of the optimal policy
+πθ in (4). To further analyze the gradient expression in (34), we must derive the gradient of the
+optimal soft Q-function Qθ. Recall that Qθ is the soft Q-function under the optimal policy πθ, the
+penalty function U and the estimated world model bP. Therefore, we have the following derivations:
+∇θQθ(s0, a0)
+(i)
+= ∇θ
+
+r(s0, a0; θ) + U(s0, a0) + γEs1∼b
+P (·|s0,a0)
+
+Vθ(s1)
+
+(ii)
+= ∇θr(s0, a0; θ) + ∇θU(s0, a0) + γEs1∼b
+P (·|s0,a0)
+
+∇θ log
+ X
+˜a∈A
+exp Qθ(s0, ˜a)
+
+= ∇θr(s0, a0; θ) + γEs1∼b
+P (·|s0,a0)
+ X
+a∈A
+exp Qθ(s1, a)
+P
+˜a∈A exp Qθ(s1, ˜a)∇θQθ(s1, a)
+
+(iii)
+= ∇θr(s0, a0; θ) + γEs1∼b
+P (·|s0,a0)
+ X
+a∈A
+πθ(a|s1)∇θQθ(s1, a)
+
+(iv)
+= ∇θr(s0, a0; θ) + γEs1∼b
+P (·|s0,a0),a1∼πθ(·|s1)
+
+∇θ
+
+r(s1, a1; θ) + U(s1, a1) + γEs2∼b
+P (·|s1,a1)
+
+Vθ(s2)
+
+where (i) and (iv) follows the definition of the optimal soft Q-function in (3b); (ii) follows the
+closed-form expression of Vθ in (4); (iii) is from (4). By recursively applying the equalities (i) and
+(iv), we obtain the following result:
+∇θQθ(s0, a0)
+= ∇θ
+
+r(s0, a0; θ) + U(s0, a0) + γEs1∼b
+P (·|s0,a0)
+
+Vθ(s1)
+
+= ∇θr(s0, a0; θ) + γEs1∼b
+P (·|s0,a0),a1∼πθ(·|s1)
+
+∇θ
+
+r(s1, a1; θ) + U(s1, a1) + γEs2∼b
+P (·|s1,a1)
+
+Vθ(s2)
+
+= Eτ A∼(πθ, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ) | s0, a0
+
+.
+(35)
+23
+
+Finally, by plugging (35) into (34), we obtain the gradient expression of the surrogate objective bL(θ)
+as below:
+∇bL(θ) = Eτ E∼(η,πE,P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ)
+
+−Es0∼η(·),a0∼πθ(·|s0)
+
+∇θQθ(s0, a0)
+
+= Eτ E∼(η,πE,P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ)
+
+−Es0∼η(·),a0∼πθ(·|s0)
+
+Eτ A∼(πθ, b
+P )
+h ∞
+X
+t=0
+γt∇θr(st, at; θ) | s0, a0
+i
+= Eτ E∼(η,πE,P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ)
+
+−Eτ A∼(η,πθ, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ)
+
+.
+(36)
+The lemma is proved.
+G
+Proof of Lemma 4
+Suppose Assumptions 2 - 3 hold, we prove the Lipschitz continuous property of the optimal soft
+Q-function Qθ in (19a) and the Lipschitz smooth property of the surrogate objective bL(θ) in (19b)
+respectively.
+G.1
+Proof of Inequality (19a)
+Proof. In order to show that the optimal soft Q-function Qθ(s, a) is Lipschitz continuous w.r.t. the
+reward parameter θ. for any state-action pair (s, a), we take two steps to finish the proof. First, we
+show that Qθ has bounded gradient under any reward parameter θ. Then we could use the mean value
+theorem to complete the proof.
+According to the gradient expression of the optimal soft Q-function Qθ in (35), the following result
+holds:
+∥∇θQθ(s, a)∥=
+Eτ A∼(πθ, b
+P )
+h ∞
+X
+t=0
+γt∇θr(st, at; θ) | s0 = s, a0 = a
+i
+(i)
+≤Eτ A∼(πθ, b
+P )
+h ∞
+X
+t=0
+γt∥∇θr(st, at; θ)∥| s0 = s, a0 = a
+i
+(ii)
+≤Eτ A∼(πθ, b
+P )
+h ∞
+X
+t=0
+γtLr | s0 = s, a0 = a
+i
+=
+Lr
+1 −γ
+(37)
+where (i) follows the Jensen’s inequality and (ii) follows from the assumption that the reward gradient
+is bounded; see (18) in Assumption 3. Denote Lq :=
+Lr
+1−γ , we are able to show the Lipschitz
+continuous property of the optimal soft Q-function Qθ as below:
+|Qθ1(s, a) −Qθ2(s, a)|
+(i)
+=
+⟨θ1 −θ2, ∇θQ˜θ(s, a)⟩
+ ≤∥θ1 −θ2∥· ∥∇θQ˜θ(s, a)∥
+(ii)
+≤Lq∥θ1 −θ2∥
+where ˜θ is a convex combination between θ1 and θ2. Moreover, (i) is from the mean value theorem
+and (ii) follows (37).
+24
+
+G.2
+Proof of Inequality (19b)
+Proof. In Lemma 3, we have shown the expression of the gradient of the surrogate objective bL(θ).
+Then for any reward parameters θ1 and θ2, we are able to obtain the following result:
+∥∇bL(θ1) −∇bL(θ2)∥
+(i)
+:=
+
+
+Eτ E∼(η,πE,P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ1)
+
+−Eτ A∼(η,πθ1, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ1)
+
+−
+
+Eτ E∼(η,πE,P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ2)
+
+−Eτ A∼(η,πθ2, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ2)
+
+≤
+Eτ E∼(η,πE,P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ1)
+
+−Eτ E∼(η,πE,P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ2)
+
++
+Eτ A∼(η,πθ1, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ1)
+
+−Eτ A∼(η,πθ2, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ2)
+ (38)
+where (i) follows the gradient expression in (15). For the first term in (38), the following series of
+relations holds:
+Eτ E∼(η,πE,P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ1)
+
+−Eτ E∼(η,πE,P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ2)
+
+=
+Eτ E∼(η,πE,P )
+ ∞
+X
+t=0
+γt ∇θr(st, at; θ1) −∇θr(st, at; θ2)
+
+(i)
+≤Eτ E∼(η,πE,P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ1) −∇θr(st, at; θ2)
+
+
+(ii)
+≤Eτ E∼(η,πE,P )
+ ∞
+X
+t=0
+γtLg
+θ1 −θ2
+
+
+=
+Lg
+1 −γ
+θ1 −θ2
+
+(39)
+where (i) follows Jensen’s inequality and (ii) follows (18) from the Assumption 3. For the second
+term in (38), we have
+Eτ A∼(η,πθ1, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ1)
+
+−Eτ A∼(η,πθ2, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ2)
+
+≤
+Eτ A∼(η,πθ1, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ1)
+
+−Eτ A∼(η,πθ2, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ1)
+
+|
+{z
+}
+T1: error term due to policy mismatch
++
+Eτ A∼(η,πθ2, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ1)
+
+−Eτ A∼(η,πθ2, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ2)
+.
+|
+{z
+}
+T2: error term due to reward parameter mismatch
+(40)
+In (40), we decompose the difference between reward gradient trajectories into two error terms. The
+first error term is due to the policy mismatch between πθ1 and πθ2. The second error term is due to
+25
+
+the reward parameter mismatch between θ1 and θ2. Here, we first bound the error term T1 in (40):
+Eτ A∼(η,πθ1, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ1)
+
+−Eτ A∼(η,πθ2, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ1)
+
+(i)
+=
+
+1
+1 −γ E(s,a)∼d
+πθ1
+b
+P
+(·,·)
+
+∇θr(s, a; θ1)
+
+−
+1
+1 −γ E(s,a)∼d
+πθ2
+b
+P
+(·,·)
+
+∇θr(s, a; θ1)
+
+=
+1
+1 −γ
+
+X
+s∈S,a∈A
+∇θr(s, a; θ1) ·
+ d
+πθ1
+b
+P (s, a) −d
+πθ2
+b
+P (s, a)
+
+≤
+1
+1 −γ
+X
+s∈S,a∈A
+∇θr(s, a; θ1)
+ ·
+d
+πθ1
+b
+P (s, a) −d
+πθ2
+b
+P (s, a)
+
+(ii)
+≤
+2Lr
+1 −γ ∥d
+πθ1
+b
+P (·, ·) −d
+πθ2
+b
+P (·, ·)∥TV
+(iii)
+≤2LrCd
+1 −γ ∥Qθ1 −Qθ2∥
+(iv)
+≤2LrCd
+p
+|S| · |A|
+1 −γ
+∥Qθ1 −Qθ2∥∞
+(v)
+≤2LqLrCd
+p
+|S| · |A|
+1 −γ
+∥θ1 −θ2∥
+(41)
+where (i) is from the definition of the visitation measure and (ii) follows the bounded gradient
+of reward function in (18) in Assumption 3. Moreover, (iii) is from (25) in Lemma 6 and (v)
+follows the Lipschitz property (19a) in Lemma 4. For the inequality (iv), it holds due to the fact
+|Qθ1(s, a) −Qθ2(s, a)| ≤∥Qθ1 −Qθ2∥∞for any state-action pair (s, a) and thus ∥Qθ1 −Qθ2∥≤
+p
+|S| · |A| ∥Qθ1 −Qθ2∥∞.
+Next, let us bound the second error term in (40):
+Eτ A∼(η,πθ2, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ1)
+
+−Eτ A∼(η,πθ2, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ2)
+
+=
+Eτ A∼(η,πθ2, b
+P )
+h ∞
+X
+t=0
+γt ∇θr(st, at; θ1) −∇θr(st, at; θ2)
+i
+(i)
+≤Eτ A∼(η,πθ2, b
+P )
+h ∞
+X
+t=0
+γt∇θr(st, at; θ1) −∇θr(st, at; θ2)
+
+i
+(ii)
+≤Eτ A∼(η,πθ2, b
+P )
+h ∞
+X
+t=0
+γtLg∥θ1 −θ2∥
+i
+=
+Lg
+1 −γ ∥θ1 −θ2∥
+(42)
+where (i) follows Jensen’s inequality and (ii) follows the Lipschitz property in (18) from Assumption
+3. Plugging (41) and (42) into (40), we could show the following result:
+EτA∼(η,πθ1 , b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ1)
+
+−EτA∼(η,πθ2 , b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θ2)
+ ≤2LqLrCd
+p
+|S| · |A| + Lg
+1 −γ
+· ∥θ1 −θ2∥.
+(43)
+We denote the constant Lc =
+2LqLrCd√
+|S|·|A|+2Lg
+1−γ
+. By plugging (39) and (43) into (38), we arrive
+at the desired Lipschitz property of the surrogate objective bL(θ), as shown below:
+∥∇bL(θ1) −∇bL(θ2)∥≤Lc∥θ1 −θ2∥.
+We completed the proof of the Inequality (19b).
+26
+
+H
+Proof of Proposition 1
+Proof. Before starting the proof, first recall that we have defined the expert-visited state-action space
+Ω:= {(s, a) | dE(s, a) > 0} and the expert-visited state space SE := {s | P
+a∈A dE(s, a) > 0}.
+Then we have the following analysis.
+For all state-action pairs (s, a) ∈Ω, there are at most |SE| active states in the distribution P(·|s, a)
+such that P(s′|s, a) > 0. This is due to the fact that the next state s′ of an expert-visited state-action
+pair (s, a) must belong to the expert-visited state space SE. Then suppose there are N i.i.d. samples
+on each state-action pair (s, a) ∈Ω, we can obtain an empirical estimate of the transition probability
+as bP(s′|s, a) = N(s,a,s′)
+N
+for any s′ ∈SE, where N(s, a, s′) is the number of observed transition
+samples (s, a, s′). For any (s, a) ∈Ωand s′ /∈SE, we know bP(s′|s, a) = N(s,a,s′)
+N
+= 0, since the
+expert only visit states in SE.
+Therefore, at any state-action pair (s, a) ∈Ωand by following (24) in Lemma 5, the following result
+holds with probability greater than 1 −e−Nϵ2:
+∥P(·|s, a) −bP(·|s, a)∥1 ≤
+q
+|SE| ·
+ 1
+√
+N
++ ϵ
+
+.
+(44)
+Let us denote ˜δ := e−Nϵ2, then we have ϵ =
+q
+1
+N ln 1
+˜δ. By plugging ϵ into (44), we can show that
+the following result holds with probability greater than 1 −˜δ:
+∥P(·|s, a) −bP(·|s, a)∥1 ≤
+q
+|SE| ·
+ 1
+√
+N
++
+r
+1
+N ln 1
+˜δ
+
+= c
+s
+|SE|
+N
+ln 1
+˜δ
+.
+(45)
+where we define c := 1 +
+1
+q
+ln 1
+˜δ
+as a positive constant dependent on the probability ˜δ. Then we can
+further show that
+P
+
+max
+(s,a)∈Ω∥P(·|s, a) −bP(·|s, a)∥1 ≥c
+s
+|SE|
+N
+ln 1
+˜δ
+
+(i)
+≤
+X
+(s,a)∈Ω
+P
+
+∥P(·|s, a) −bP(·|s, a)∥1 ≥c
+s
+|SE|
+N
+ln 1
+˜δ
+
+(ii)
+≤|Ω| · ˜δ
+where (i) follows the union bound and (ii) follows (45). Therefore, with probability greater than
+1 −|Ω| · ˜δ, we have
+max
+(s,a)∈Ω∥P(·|s, a) −bP(·|s, a)∥1 ≤c
+s
+|SE|
+N
+ln 1
+˜δ
+.
+(46)
+Denoting δ := |Ω| · ˜δ, then we have ˜δ =
+δ
+|Ω|. Therefore, with probability greater than 1 −δ, the
+following result holds
+max
+(s,a)∈Ω∥P(·|s, a) −bP(·|s, a)∥1 ≤c
+r
+|SE|
+N
+ln
+|Ω|
+δ
+
+.
+(47)
+In order to control the estimation error max(s,a)∈Ω∥P(·|s, a) −bP(·|s, a)∥1 ≤ε , the number of
+samples N at each state-action pair (s, a) ∈Ωshould satisfy:
+c
+r
+|SE|
+N
+ln
+|Ω|
+δ
+
+≤ε =⇒N ≥c2 · |SE|
+ε2
+ln
+|Ω|
+δ
+
+.
+Suppose we uniformly sample each expert-visited state-action pair (s, a) ∈Ωand the total number
+of samples in the transition dataset D = {(s, a, s′)} satisfies:
+#transition samples ≥|Ω| · N ≥c2 · |Ω| · |SE|
+ε2
+ln
+|Ω|
+δ
+
+.
+(48)
+27
+
+Then with probability greater than 1−δ, the generalization error between P and bP could be controlled:
+E(s,a)∼dE(·,·)
+
+∥P(·|s, a) −bP(·|s, a)∥1
+
+≤max
+(s,a)∈Ω∥P(·|s, a) −bP(·|s, a)∥1 ≤ε.
+(49)
+The theorem is proved.
+I
+Proof of Theorem 1
+Proof. First, we have the following decomposition of the error between the loss function evaluated at
+θ∗and ˆθ, respectively:
+L(θ∗) −L(ˆθ)
+=
+ L(θ∗) −bL(θ∗)
+
++
+ bL(θ∗) −bL(ˆθ)
+
++
+ bL(ˆθ) −L(ˆθ)
+
+(i)
+≤γCv
+1 −γ · E(s,a)∼dE(·,·)
+ bP(·|s, a) −P(·|s, a)
+
+1
+
++
+ bL(θ∗) −bL(ˆθ)
+
++ γCv
+1 −γ · E(s,a)∼dE(·,·)
+ bP(·|s, a) −P(·|s, a)
+
+1
+
+= 2γCv
+1 −γ · E(s,a)∼dE(·,·)
+ bP(·|s, a) −P(·|s, a)
+
+1
+
++
+ bL(θ∗) −bL(ˆθ)
+
+(50)
+where (i) follows (9). Since we have defined ˆθ as the optimal solution to bL(·), we know that
+bL(θ) −bL(ˆθ) ≤0 for any θ. Plugging this result into (50), the following result holds:
+L(θ∗) −L(ˆθ) ≤2γCv
+1 −γ · E(s,a)∼dE(·,·)
+ bP(·|s, a) −P(·|s, a)
+
+1
+
++
+ bL(θ∗) −bL(ˆθ)
+
+≤2γCv
+1 −γ · E(s,a)∼dE(·,·)
+ bP(·|s, a) −P(·|s, a)
+
+1
+
+.
+Based on (48) and (49), we assume that each expert-visited state-action pair is uniformly sampled
+and the total number of transition samples satisfies:
+#transition samples ≥c2 · |Ω| · |SE|
+  (1−γ)ε
+2γCv
+2
+ln
+|Ω|
+δ
+
+= 4γ2 · C2
+v · c2 · |Ω| · |SE|
+(1 −γ)2ε2
+ln
+|Ω|
+δ
+
+.
+Then with probability greater than 1 −δ, the generalization error between transition dynamics and
+the optimality gap between reward estimates could be controlled:
+E(s,a)∼dE(·,·)
+ bP(·|s, a) −P(·|s, a)
+
+1
+
+≤(1 −γ)ε
+2γCv
+,
+L(θ∗) −L(ˆθ) ≤2γCv
+1 −γ · E(s,a)∼dE(·,·)
+ bP(·|s, a) −P(·|s, a)
+
+1
+
+≤ε.
+The theorem is proved.
+J
+Proof of Theorem 2
+Proof. In this section, we prove the convergence results (20a) - (20b) respectively.
+J.1
+Proof of convergence of the policy estimates in (20a)
+In this section, we show the convergence result of the policy estimates {πk+1}k≥0, which track the
+optimal solutions {πθk}k≥0. Recall that each policy πk+1 is generated from the soft policy iteration
+in (14), then we track the approximation error between πk+1 and πθk as below:
+ log πk+1(a|s) −log πθk(a|s)
+
+(i)
+=
+ log
+
+exp bQk(s, a)
+P
+˜a∈A exp bQk(s, ˜a)
+
+−log
+
+exp Qθk(s, a)
+P
+˜a∈A exp Qθk(s, ˜a)
+
+=
+
+
+bQk(s, a) −log
+  X
+˜a∈A
+exp bQk(s, ˜a)
+
+−
+
+Qθk(s, a) −log
+  X
+˜a∈A
+exp Qθk(s, ˜a)
+
+≤
+ bQk(s, a) −Qθk(s, a)
+ +
+ log
+  X
+˜a∈A
+exp bQk(s, ˜a)
+
+−log
+  X
+˜a∈A
+exp Qθk(s, ˜a)
+
+(51)
+28
+
+where (i) follows (14) and (4). In order to analyze the second error term in (51), we first denote two
+|A|-dimensional vectors −→a := [a1, a2, · · · , a|A|] and −→b := [b1, b2, · · · , b|A|]. Then we could obtain
+the following result:
+ log
+ ∥exp(−→a )∥1
+
+−log
+ ∥exp(−→b )∥1
+
+(i)
+=
+⟨−→a −−→b , ∇−
+→
+v log
+ ∥exp(−→v )∥1
+
+⟩
+
+≤∥−→a −−→b ∥∞· ∥∇−
+→
+v log
+ ∥exp(−→v )∥1
+
+∥1
+(ii)
+= ∥−→a −−→b ∥∞
+(52)
+where (i) follows the mean value theorem and −→v is a convex combination between vectors −→a and −→b .
+Moreover, (ii) is due to the equality that
+[∇−
+→
+v log
+ ∥exp(−→v )∥1
+
+]i =
+exp(vi)
+∥exp(−→v )∥1
+,
+∥∇−
+→
+v log
+ ∥exp(−→v )∥1
+
+∥1 = 1,
+∀−→v ∈R|A|.
+Based on the property we show in (52), we could further analyze (51) as below:
+ log πk+1(a|s) −log πθk(a|s)
+ ≤
+ bQk(s, a) −Qθk(s, a)
+ +
+ log
+  X
+˜a∈A
+exp bQk(s, ˜a)
+
+−log
+  X
+˜a∈A
+exp Qθk(s, ˜a)
+
+≤
+ bQk(s, a) −Qθk(s, a)
+ + max
+˜a∈A
+ bQk(s, ˜a) −Qθk(s, ˜a)
+.
+(53)
+If we take the maximum over all state-action pairs on the both sides of (53) and denote ∥log π∥∞:=
+maxs∈S,a∈A | log π(a|s)|, then we obtain the following property:
+ log πk+1 −log πθk
+
+∞≤2
+ bQk −Qθk
+
+∞.
+(54)
+Recall that bQk is an approximation to the soft Q-function Qk where ϵapp is the approximation error,
+then we have:
+ log πk+1 −log πθk
+
+∞≤2
+ bQk −Qθk
+
+∞= 2
+ bQk −Qk + Qk −Qθk
+
+∞≤2ϵapp + 2
+Qk −Qθk
+
+∞.
+(55)
+In order to track the approximation error ∥log πk+1 −log πθk∥∞, we could analyze the convergence
+between the Qk and Qθk according to (55). Here, we define an auxiliary sequence {Qk+ 1
+2 }k≥0 in
+the conservative MDP where Qk+ 1
+2 is the soft Q-function under the reward parameter θk and the
+policy πk+1 defined in (14). Then we have the following analysis:
+Qk −Qθk
+
+∞=
+Qk −Qθk + Qθk−1 −Qθk−1 + Qk−1
+2 −Qk−1
+2
+
+∞
+≤
+Qθk −Qθk−1
+
+∞+
+Qθk−1 −Qk−1
+2
+
+∞+
+Qk −Qk−1
+2
+
+∞
+(i)
+≤
+Qθk−1 −Qk−1
+2
+
+∞+ 2Lq∥θk −θk−1∥
+(ii)
+≤γ
+Qθk−1 −Qk−1
+
+∞+ 2Lq∥θk −θk−1∥+ 2γϵapp
+1 −γ
+(56)
+where (i) follows (19a) in Lemma 4 and (26) in Lemma 7. Moreover, the inequality (ii) follows
+(27b) in Lemma 8. Recall that the update rule of the reward parameter θ is defined in (17), then the
+following result holds:
+∥θk −θk−1∥= α∥gk−1∥
+(i)
+= α∥h(θk−1; τ E
+k−1) −h(θk−1; τ A
+k−1)∥≤α∥h(θk−1; τ E
+k−1)∥+ α∥h(θk−1; τ A
+k−1)∥
+(ii)
+≤2αLr
+1 −γ
+where (i) follows the definition of the reward gradient estimator defined in (16). The inequality (ii)
+follows the definition of h(θ; τ) in (16) and the bound gradient property ∥∇θr(s, a; θ)∥≤Lr in
+(18) from Assumption 3. Recall that we have defined the constant Lq :=
+Lr
+1−γ , then we obtain the
+following result:
+∥θk −θk−1∥≤2αLq.
+(57)
+Plugging (57) into (56), we can show that
+Qk −Qθk
+
+∞≤γ
+Qk−1 −Qθk−1
+
+∞+ 4αL2
+q + 2γϵapp
+1 −γ .
+(58)
+29
+
+Summing (58) from k = 1 to k = K and dividing K on both sides, then we have the following result:
+1
+K
+K
+X
+k=1
+Qk −Qθk
+
+∞≤γ
+K
+K−1
+X
+k=0
+Qk −Qθk
+
+∞+ 4αL2
+q + 2γϵapp
+1 −γ .
+(59)
+By rearranging (59), we obtain the following inequality:
+1 −γ
+K
+K
+X
+k=1
+Qk −Qθk
+
+∞≤γ
+K
+ Q0 −Qθ0
+
+∞−
+QK −QθK
+
+∞
+
++ 4αL2
+q + 2γϵapp
+1 −γ .
+(60)
+Assuming the initial error ∥Q0−Qθ0∥∞is bounded by a positive constant ∆0 where ∥Q0−Qθ0∥∞≤
+∆0 and dividing 1 −γ on the both sides of (60), then the following inequality holds:
+1
+K
+K
+X
+k=1
+Qk −Qθk
+
+∞≤
+γ
+K(1 −γ)∆0 + 4αL2
+q
+1 −γ + 2γϵapp
+(1 −γ)2 .
+(61)
+Then we subtract 1
+K
+QK −QθK
+
+∞and add 1
+K
+Q0 −Qθ0
+
+∞on both sides on (61), we obtain the
+following result:
+1
+K
+K−1
+X
+k=0
+Qk −Qθk
+
+∞≤
+γ
+K(1 −γ)∆0 + 1
+K ∆0 −1
+K
+QK −QθK
+
+∞+ 4αL2
+q
+1 −γ + 2γϵapp
+(1 −γ)2
+≤
+1
+K(1 −γ)∆0 + 4αL2
+q
+1 −γ + 2γϵapp
+(1 −γ)2 .
+(62)
+Plugging (62) into (55), then we obtain the convergence result of the policy estimates:
+1
+K
+K−1
+X
+k=0
+ log πk+1 −log πθk
+
+∞
+(i)
+≤2ϵapp + 2
+K
+K−1
+X
+k=0
+Qk −Qθk
+
+∞
+(ii)
+≤
+
+2 +
+4γ
+(1 −γ)2
+
+ϵapp +
+2∆0
+K(1 −γ) + 8αL2
+q
+1 −γ
+(63)
+where (i) follows (55) and (ii) is from (62). Recall that the stepsize α is defined to be α = α0 ×K−1
+2 ,
+then we could obtain the convergence rate of the policy estimates as below:
+1
+K
+K−1
+X
+k=0
+ log πk+1 −log πθk
+
+∞= O(ϵapp) + O(K−1
+2 ).
+(64)
+The relation (20a) has been proven.
+J.2
+Proof of the convergence of reward parameter (20b)
+Proof. In the section, we prove the convergence of the reward parameters {θk}k≥0. Recall that we
+have shown the Lipschitz property of the surrogate objective bL(θ) in (19b) of Lemma 4. Based on
+the Lipschitz smooth property, we are able to have following analysis:
+bL(θk+1)
+(i)
+≥bL(θk) +
+
+∇bL(θk), θk+1 −θk
+
+−Lc
+2 ∥θk+1 −θk∥2
+(ii)
+= bL(θk) + α
+
+∇bL(θk), gk
+
+−Lcα2
+2
+∥gk∥2
+= bL(θk) + α
+
+∇bL(θk), gk −∇bL(θk)
+
++ α∥∇bL(θk)∥2 −Lcα2
+2
+∥gk∥2
+(65)
+where (i) is due to the Lipschitz smooth property in (19b) and (ii) follows the update rule of the
+reward parameter in (17). Recall that the gradient estimator gk is defined in (16). Due to the bound
+gradient of any reward parameter, we could obtain the following bound:
+∥gk∥
+(i)
+= ∥h(θk; τ E
+k ) −h(θk; τ A
+k )∥≤∥h(θk; τ E
+k )∥+ ∥h(θk; τ A
+k )∥
+(ii)
+≤
+2Lr
+1 −γ
+(66)
+30
+
+where (i) is from (16) and (ii) follows the bounded gradient of reward parameter in (18) of Assumption
+3. Recall that we have defined the constant Lq :=
+Lr
+1−γ , then the following result holds:
+bL(θk+1) ≥bL(θk) + α
+
+∇bL(θk), gk −∇bL(θk)
+
++ α∥∇bL(θk)∥2 −2LcL2
+qα2.
+(67)
+After taking expectation on both sides of (67), we have
+E
+bL(θk+1)
+
+≥E
+bL(θk)
+
++ αE
+
+∇bL(θk), gk −∇bL(θk)
+
++ αE
+
+∥∇bL(θk)∥2
+−2LcL2
+qα2
+= E
+bL(θk)
+
++ αE
+
+∇bL(θk), E[gk −∇bL(θk)|θk]
+
++ αE
+
+∥∇bL(θk)∥2
+−2LcL2
+qα2
+(i)
+= E
+bL(θk)
+
++ αE
+hD
+∇bL(θk), Eτ A∼(η,πθk , b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θk)
+
+−Eτ A∼(η,πk+1, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θk)
+Ei
++ αE
+
+∥∇bL(θk)∥2
+−2LcL2
+qα2
+(ii)
+≥E
+bL(θk)
+
+−2αLqE
+hEτ A∼(η,πθk , b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θk)
+
+−Eτ A∼(η,πk+1, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θk)
+
+i
+|
+{z
+}
+T1: error term due to policy mismatch
++ αE
+
+∥∇bL(θk)∥2
+−2LcL2
+qα2
+(68)
+where (i) is from the definitions of the reward gradient estimator in (16) and the reward gradient
+expression in (15) of Lemma 3; (ii) follows ∥∇bL(θk)∥≤2Lq which could be proved according to
+(66). Then we analyze the error term due to policy mismatch as below:
+E
+hEτ A∼(η,πθk , b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θk)
+
+−Eτ A∼(η,πk+1, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θk)
+
+i
+(i)
+= E
+h
+1
+1 −γ E(s,a)∼d
+πθk
+b
+P
+(·,·)
+
+∇θr(s, a; θk)
+
+−
+1
+1 −γ E(s,a)∼d
+πk+1
+b
+P
+(·,·)
+
+∇θr(s, a; θk)
+
+i
+=
+1
+1 −γ E
+h
+X
+s∈S,a∈A
+∇θr(s, a; θk) ·
+ d
+πθk
+b
+P
+(s, a) −dπk+1
+b
+P
+(s, a)
+
+i
+≤
+1
+1 −γ E
+h
+X
+s∈S,a∈A
+∇θr(s, a; θk)
+ ·
+d
+πθk
+b
+P
+(s, a) −dπk+1
+b
+P
+(s, a)
+
+i
+(ii)
+≤
+Lr
+1 −γ E
+h
+X
+s∈S,a∈A
+d
+πθk
+b
+P
+(s, a) −dπk+1
+b
+P
+(s, a)
+
+i
+(iii)
+=
+2Lr
+1 −γ E
+hd
+πθk
+b
+P
+(·, ·) −dπk+1
+b
+P
+(·, ·)
+
+TV
+i
+(69)
+where (i) follows the definition of the visitation measures d
+πθk
+b
+P
+(·, ·) and dπk+1
+b
+P
+, (ii) follows the bound
+gradient of reward parameter in (18) of Assumption 3 and (iii) follows the definition of the total
+variation norm. Recall that we have defined the constant Lq :=
+Lr
+1−γ . Due to the fact that πθk and
+πk+1 are softmax policies parameterized by Qθk and bQk, then we obtain the following result based
+31
+
+on Lemma 6:
+E
+hEτ A∼(η,πθk , b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θk)
+
+−Eτ A∼(η,πk+1, b
+P )
+ ∞
+X
+t=0
+γt∇θr(st, at; θk)
+
+i
+= 2LqE
+hd
+πθk
+b
+P
+(·, ·) −dπk+1
+b
+P
+(·, ·)
+
+TV
+i
+(i)
+≤2LqCdE
+hQθk −bQk
+
+i
+(ii)
+≤2LqCd
+p
+|S| × |A| E
+hQθk −bQk
+
+∞
+i
+= 2LqCd
+p
+|S| × |A| E
+hQθk −Qk + Qk −bQk
+
+∞
+i
+≤2LqCd
+p
+|S| × |A| E
+hQθk −Qk
+
+∞+ ϵapp
+i
+(70)
+where (i) follows (25) in Lemma 6 and (ii) follows the conversion between Frobenius norm and the
+infinity norm. Plugging (70) into (68), we have
+E
+bL(θk+1)
+
+≥E
+bL(θk)
+
+−4αCdL2
+q
+p
+|S| × |A| E
+hQθk −Qk
+
+∞+ ϵapp
+i
++ αE
+
+∥∇bL(θk)∥2
+−2LcL2
+qα2
+(71)
+Rearranging (71) and dividing its both sides by α, we could obtain the following result:
+E
+
+∥∇bL(θk)∥2
+≤1
+αE
+bL(θk+1) −bL(θk)
+
++ 4CdL2
+q
+p
+|S| × |A| E
+hQθk −Qk
+
+∞+ ϵapp
+i
++ 2αLcL2
+q.
+(72)
+Let us denote the constant C0 := 4CdL2
+q
+p
+|S| × |A|. Summing (72) from k = 0 to k = K −1 and
+dividing K on the both sides, then we obtain
+1
+K
+K−1
+X
+k=0
+E
+
+∥∇bL(θk)∥2
+≤E
+bL(θK) −bL(θ0)
+
+αK
++ C0
+K
+K−1
+X
+k=0
+hQθk −Qk
+
+∞+ ϵapp
+i
++ 2αLcL2
+q
+(73)
+Recall that we bound the gap between the likelihood objective and the surrogate objective in (9).
+Then we have
+|L(θ) −bL(θ)| ≤γCv
+1 −γ · E(s,a)∼dE(·,·)
+
+∥P(·|s, a) −bP(·|s, a)∥1
+
+≤2γCv
+1 −γ
+(74)
+where the last inequality is due to the fact that ∥P(·|s, a) −bP(·|s, a)∥1 ≤2 holds for any state-action
+pair (s, a). Since L(θ) is the log-likelihood function which is always negative, we can show that the
+surrogate objective bL(θ) is upper bounded under any reward parameter θ. Denote a positive constant
+C1 := 2γCv
+1−γ , we have
+bL(θ) ≤L(θ) + 2γCv
+1 −γ ≤2γCv
+1 −γ = C1.
+(75)
+Furthermore, considering bL(θ0) is the initial value of the surrogate objective, we can simply denote
+C2 := bL(θ0). After plugging (62) into (73), we obtain the following result:
+1
+K
+K−1
+X
+k=0
+E
+
+∥∇bL(θk)∥2
+≤C1 −C2
+αK
++ C0ϵapp +
+C0∆0
+K(1 −γ) + 4αC0L2
+q
+1 −γ
++ 2γϵappC0
+(1 −γ)2 + 2αLcL2
+q.
+Recall that the stepsize α is defined as α = α0 · K−1
+2 , then we can show the order of the convergence
+error as
+1
+K
+K−1
+X
+k=0
+E
+
+∥∇bL(θk)∥2
+= O(K−1
+2 ) + O(ϵapp).
+This completes the entire proof.
+32
+
+K
+Proof of Theorem 3
+Proof. In this section, we prove the optimality guarantee when the reward function is linearly
+parameterized as r(s, a; θ) := ϕ(s, a)⊤θ where ϕ(s, a) is the feature vector of the state-action pair
+(s, a). Based on the definition of the surrogate objective in (7) and the definition of the soft value
+function in (3a), we can rewrite the formulation (12) as below:
+max
+θ
+bL(θ) := Eτ E∼(η,πE,P )
+h ∞
+X
+t=0
+γt
+r(st, at; θ) + U(st, at)
+i
+−Eτ A∼(η,πθ, b
+P )
+h ∞
+X
+t=0
+γt
+r(st, at; θ) + U(st, at) + H(πθ(·|st))
+i
+(76a)
+s.t. πθ := arg max
+π
+Eτ A∼(η,π, b
+P )
+h ∞
+X
+t=0
+γt
+r(st, at; θ) + U(st, at) + H
+ π(·|st)
+i
+.
+(76b)
+As a remark, there is a common term Eτ A∼(η,π, b
+P )
+h P∞
+t=0 γt
+r(st, at; θ)+U(st, at)+H
+ π(·|st)
+i
+in both (76a) and (76b). Then we can obtain the following formulation which is equivalent to (76):
+max
+θ
+min
+π
+L(θ, π) := Eτ E∼(η,πE,P )
+h ∞
+X
+t=0
+γt
+r(st, at; θ) + U(st, at)
+i
+−Eτ A∼(η,π, b
+P )
+h ∞
+X
+t=0
+γt
+r(st, at; θ) + U(st, at) + H(π(·|st))
+i
+.
+(77)
+Based on the equivalence between (76) and (77), we further show that any stationary point ˜θ in (76)
+together with its corresponding optimal policy π˜θ consist of a saddle point (˜θ, π˜θ) to the problem
+(77) when the reward is linearly parameterized. We summarize this statement in the following claim:
+Claim 1: Assume the reward function is linearly parameterized, i.e., r(s, a; θ) := ϕ(s, a)⊤θ where
+ϕ(s, a) is the feature vector of the state-action pair (s, a). Any stationary point ˜θ in (76) together
+with its optimal policy π˜θ consist of a saddle point (˜θ, π˜θ) to the problem (77).
+Here, we show the proof to Claim 1 as below.
+Under the linearly parameterized reward function r(s, a; θ) := ϕ(s, a)⊤θ, we can further rewrite
+L(θ, π) as below:
+L(θ, π) :=
+*
+θ, Eτ E∼(η,πE,P )
+h ∞
+X
+t=0
+γtϕ(st, at)
+i
+−Eτ A∼(η,π, b
+P )
+h ∞
+X
+t=0
+γtϕ(st, at)
+i+
+|
+{z
+}
+Term A: a linear function of the reward parameter θ
++ Eτ E∼(η,πE,P )
+h ∞
+X
+t=0
+γtU(st, at)
+i
+−Eτ A∼(η,π, b
+P )
+h ∞
+X
+t=0
+γt
+U(st, at) + H(π(·|st))
+i
+.
+|
+{z
+}
+Term B: independent of the reward parameter θ
+(78)
+Note that the max-min objective L(·, ·) is linear (thus concave) in the reward parameter θ given any
+fixed policy π. We can utilize this property to prove the statement in Claim 1.
+Recall that a tuple (˜θ, π˜θ) is called a saddle point of L(·, ·) if the following condition holds:
+L(θ, π˜θ) ≤L(˜θ, π˜θ) ≤L(˜θ, π)
+(79)
+for any other reward parameter θ and policy π. To show that (˜θ, π˜θ) satisfies the condition (79), we
+prove the following conditions respectively:
+˜θ ∈arg max
+θ
+L(θ, π˜θ),
+(80a)
+π˜θ ∈arg min
+π L(˜θ, π).
+(80b)
+33
+
+Here, we first show that any stationary point ˜θ of the surrogate objective bL(·) satisfies the optimality
+condition (80a). Recall the gradient expression of bL(·) in (15), any stationary point ˜θ of the surrogate
+objective bL(·) satisfies the following first-order condition:
+∇bL(˜θ) = Eτ E∼(η,πE,P )
+h ∞
+X
+t=0
+γt∇θr(st, at; ˜θ)
+i
+−Eτ A∼(η,π˜
+θ, b
+P )
+h ∞
+X
+t=0
+γt∇θr(st, at; ˜θ)
+i
+= 0
+Moreover, when the reward function is linearly parameterized as r(s, a; θ) := ϕ(s, a)⊤θ, we obtain
+the following condition for any stationary point ˜θ:
+∇bL(˜θ) = Eτ E∼(η,πE,P )
+h ∞
+X
+t=0
+γtϕ(st, at)
+i
+−Eτ A∼(η,π˜
+θ, b
+P )
+h ∞
+X
+t=0
+γtϕ(st, at)
+i
+= 0
+(81)
+Then we can go back to the formulation L(·, ·) in (78). Given any fixed policy π, we can show the
+gradient of L(θ, π) w.r.t. the reward parameter θ as below:
+∇θL(θ, π) = Eτ E∼(η,πE,P )
+h ∞
+X
+t=0
+γtϕ(st, at)
+i
+−Eτ A∼(η,π, b
+P )
+h ∞
+X
+t=0
+γtϕ(st, at)
+i
+.
+(82)
+Due to the first-order condition we show in (81), we obtain the following result:
+∇θL(θ = ˜θ, π = π˜θ) = 0.
+(83)
+Recall that we have shown L(·, ·) is concave in terms of the reward parameter θ given any fixed
+policy π. Due to the concavity as shown in (78) and the condition in (83), we have completed the
+proof of the optimality condition (80a).
+Then we prove the optimality condition (80b). Recall that π˜θ is the optimal policy defined in (76b)
+under the reward parameter θ. By observing the objective L(·, ·), we obtain the following result:
+L(θ, π) := Eτ E∼(η,πE,P )
+h ∞
+X
+t=0
+γt
+r(st, at; θ) + U(st, at)
+i
+|
+{z
+}
+Term I1: independent of π
+−Eτ A∼(η,π, b
+P )
+h ∞
+X
+t=0
+γt
+r(st, at; θ) + U(st, at) + H(π(·|st))
+i
+|
+{z
+}
+Term I2: a function of the policy π
+.
+(84)
+Here, we can observe that the second term in (84) is exactly the objective in (76b). Moreover, since
+π˜θ is the optimal policy defined in (76b) under reward parameter ˜θ, we obtain the result that
+π˜θ ∈arg min
+π L(˜θ, π)
+which completes the proof to show the opitmality condition (80b). Hence, we obtain that any
+stationary point ˜θ of the surrogate objective bL(·, ·) together with its optimal policy π˜θ is a saddle
+point of L(·, ·).
+Therefore, we complete the proof of Claim 1.
+Next, we show that for any saddle point of (77), its reward parameter is a globally optimal solution to
+(76). We summarize this statement in the following claim:
+Claim 2: For any saddle point (˜θ, π˜θ) of the saddle point problem (77), the reward parameter ˜θ is a
+globally optimal solution to the surrogate objective bL(·) in (76).
+Here, we start to show the proof to Claim 2 as below.
+Given a saddle point (˜θ, π˜θ) of L(·, ·) defined in (77), we have the following property that
+min
+π max
+θ
+L(θ, π) ≤max
+θ
+L(θ, π˜θ)
+(i)
+= L(˜θ, π˜θ)
+(ii)
+= min
+π L(˜θ, π) ≤max
+θ
+min
+π L(θ, π)
+(85)
+34
+
+where (i) follows the optimality condition (80a) and (ii) follows the optimality condition (80b).
+According to the minimax inequality, we always have the following condition that
+max
+θ
+min
+π L(θ, π) ≤min
+π max
+θ
+L(θ, π).
+(86)
+Through combining the saddle point inequality (85) and the minimax inequality (86), we obtain the
+following equality:
+min
+π max
+θ
+L(θ, π) = max
+θ
+L(θ, π˜θ) = L(˜θ, π˜θ) = min
+π L(˜θ, π) = max
+θ
+min
+π L(θ, π).
+(87)
+Therefore, for any saddle point (˜θ, π˜θ), we obtain the following property of the reward parameter ˜θ
+and the corresponding policy π˜θ:
+˜θ ∈arg max
+θ
+min
+π L(θ, π),
+(88a)
+π˜θ ∈arg min
+π max
+θ
+L(θ, π).
+(88b)
+Due to the expression of the surrogate objective bL(·) in (76) and the objective L(·, ·) in (77), we have
+the following equality holds for any reward parameter θ:
+bL(θ) = min
+π L(θ, π).
+(89)
+Combining (88a) and (89), we obtain the following result:
+˜θ ∈arg max
+θ
+min
+π
+L(θ, π) = arg max
+θ
+bL(θ).
+(90)
+According to the property we shown in (90), we obtain that for any saddle point (˜θ, π˜θ) of L(·, ·), the
+reward parameter ˜θ is a globally optimal solution of the surrogate objective bL(·) in (76).
+Therefore, we complete the entire proof of Claim 2.
+Through combining Claim 1 - Claim 2, we obtain that when the reward function is linearly
+parameterized, any stationary point of the surrogate problem (76) is a global optimum.
+Let’s denote the optimal reward parameters associated with L(·) and bL(·) as below, respectively:
+θ∗∈arg max
+θ
+L(θ),
+ˆθ ∈arg max
+θ
+bL(θ).
+(91)
+Recall that in Theorem 1, we have shown for any ϵ ∈(0, 2), suppose there are more than N data
+points on each state-action pair (s, a) ∈Ωand the number of transition dataset D satisfies:
+#transition samples ≥|Ω| · N ≥4γ2 · C2
+v · c2 · |Ω| · |SE|
+(1 −γ)2ε2
+ln
+|Ω|
+δ
+
+(92)
+where c is a constant dependent on δ. With probability greater than 1 −δ, the following result holds:
+L(θ∗) −L(ˆθ) ≤ε.
+Through combining Claim 1 - Claim 2, we have already shown that any stationary point ˜θ is a global
+optimum of the surrogate problem (76) when the reward function is linearly parameterized. Therefore,
+we obtain that when the number of transition samples satisfies (92), any stationary point ˜θ of the
+surrogate problem (76) is an epsilon-optimal solution to the maximum likelihood estimation problem
+(2). For any stationary point ˜θ of the surrogate problem (76), with probability greater than 1 −δ, it
+holds that
+L(θ∗) −L(˜θ) ≤ε.
+This completes the entire proof of Theorem 3.
+35
+

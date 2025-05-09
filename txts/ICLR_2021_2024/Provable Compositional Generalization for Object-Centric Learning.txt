@@ -1,0 +1,2241 @@
+PROVABLE COMPOSITIONAL GENERALIZATION FOR
+OBJECT-CENTRIC LEARNING
+Thadd¨aus Wiedemer1,2,3∗
+Jack Brady1,2,3∗
+Alexander Panfilov1,2,3∗
+Attila Juhos1,2,3∗
+Matthias Bethge1,3
+Wieland Brendel2,3,4
+1University of T¨ubingen
+2Max Planck Institute for Intelligent Systems
+3T¨ubingen AI Center
+4ELLIS Institute T¨ubingen
+{thaddaeus.wiedemer, jack.brady, attila.juhos}@tuebingen.mpg.de
+ABSTRACT
+Learning representations that generalize to novel compositions of known con-
+cepts is crucial for bridging the gap between human and machine perception. One
+prominent effort is learning object-centric representations, which are widely con-
+jectured to enable compositional generalization. Yet, it remains unclear when this
+conjecture will be true, as a principled theoretical or empirical understanding of
+compositional generalization is lacking. In this work, we investigate when com-
+positional generalization is guaranteed for object-centric representations through
+the lens of identifiability theory. We show that autoencoders that satisfy structural
+assumptions on the decoder and enforce encoder-decoder consistency will learn
+object-centric representations that provably generalize compositionally. We vali-
+date our theoretical result and highlight the practical relevance of our assumptions
+through experiments on synthetic image data.
+1
+INTRODUCTION
+Despite tremendous advances in machine learning, a large gap still exists between humans and
+machines in terms of learning efficiency and generalization (Tenenbaum et al., 2011; Behrens et al.,
+2018; Sch¨olkopf et al., 2021). A key reason for this is thought to be that machines lack the ability to
+generalize compositionally, which humans heavily rely on (Fodor and Pylyshyn, 1988; Lake et al.,
+2017; Battaglia et al., 2018; Goyal and Bengio, 2022; Greff et al., 2020). Namely, humans are able
+to recompose previously learned knowledge to generalize to never-before-seen situations.
+Significant work has thus gone into the problem of learning representations that can generalize
+compositionally. One prominent effort is object-centric representation learning (Burgess et al.,
+2019; Greff et al., 2019; Locatello et al., 2020a; Lin et al., 2020; Singh et al., 2022; Elsayed et al.,
+2022; Seitzer et al., 2023), which aims to represent each object in an image via a distinct subset
+of the image’s latent code. Due to this modular structure, object-centric representations are widely
+conjectured to enable compositional generalization (Battaglia et al., 2018; Kipf et al., 2020; Greff
+et al., 2020; Locatello et al., 2020a). Yet, it remains unclear when this conjecture is actually true
+because a theoretical understanding of compositional generalization for unsupervised object-centric
+representations is lacking, and empirical methods are frequently not scrutinized for their ability to
+generalize compositionally. Consequently, it is uncertain to what extent advancements in object-
+centric learning promote compositional generalization and what obstacles still need to be overcome.
+In this work, we take a step towards addressing this point by investigating theoretically when compo-
+sitional generalization is possible in object-centric representation learning. To do this, we formulate
+compositional generalization as a problem of identifiability under a latent variable model in which
+objects are described by subsets of latents called slots (see Fig. 1 left). Identifiability provides a rig-
+orous framework to study representation learning, but previous results have only considered identi-
+fiability of latents in-distribution (ID), i.e., latents that generate the training distribution (Hyv¨arinen
+*Equal contribution, order decided by dice roll.
+Code at github.com/brendel-group/objects-compositional-generalization
+1
+
+Figure 1: Compositional generalization in object-centric learning. We assume a latent variable
+model where objects in an image (here, a triangle and a circle) are described by latent slots. Our
+notion of compositional generalization requires a model to identify the ground-truth latent slots (slot
+identifiability, Def. 2) on the train distribution and to transfer this identifiability to out-of-distribution
+(OOD) combinations of slots (Def. 3). An autoencoder achieves slot identifiability on the train distri-
+bution if its decoder is compositional (Thm. 1). Further, we prove that decoders that are additive are
+able to generalize OOD as visualized in (A) via the isolated decoder reconstruction error over a 2D
+projection of the latent space (see App. B.3). However, this does not guarantee that the entire model
+generalizes OOD, as the encoder will generally not invert the decoder on OOD slot combinations,
+leading to a large overall reconstruction error (B). To address this, we introduce a compositional
+consistency regularizer (Def. 6), which allows the full autoencoder to generalize OOD (C, Thm. 3).
+et al., 2023). Compositional generalization, however, requires identifying the ground-truth latents
+not just ID, but also out-of-distribution (OOD) for unseen combinations of latent slots.
+We pinpoint the core challenges in achieving this form of identifiability in Sec. 2 and show how
+they can be overcome theoretically by autoencoder models which satisfy two properties: additiv-
+ity (Def. 5) and compositional consistency (Def. 6). Informally, additivity states that the latents are
+decoded as the sum of individual slot-wise decodings, while compositional consistency states that
+the encoder inverts the decoder ID as well as OOD. When coupled with previous identifiability re-
+sults from Brady et al. (2023), we prove that autoencoders that satisfy these assumptions will learn
+object-centric representations which provably generalize compositionally (Thm. 3).
+We discuss implementing additivity in practice and propose a regularizer that enforces compositional
+consistency by ensuring that the encoder inverts the decoder on novel combinations of ID latent slots
+(Sec. 4). We use this to empirically verify our theoretical results in Sec. 6.1 and find that additive
+autoencoders that minimize our proposed regularizer on a multi-object dataset are able to generalize
+compositionally. In Sec. 6.2, we study the importance of our theoretical assumptions for the popular
+object-centric model Slot Attention (Locatello et al., 2020a) on this dataset.
+Notation
+Vectors or vector-valued functions are denoted by bold letters. For vectors with fac-
+torized dimensionality (e.g., z usually from RKM) or functions with factorized output (usually ˆg
+mapping to RKM), indexing with k denotes the k-th contiguous sub-vector (i.e., zk ∈RM or
+ˆgk(x) ∈RM). Additionally, for a positive integer K we write the set {1, . . . , K} as [K].
+2
+PROBLEM SETUP
+Informally, we say that a model generalizes compositionally if it yields an object-centric represen-
+tation for images containing unseen combinations of known objects, i.e., objects observed during
+training (Zhao et al., 2022; Frady et al., 2023; Wiedemer et al., 2023). For example, a model trained
+on images containing a red square and others containing a blue triangle should generalize to images
+containing both objects simultaneously—even if this combination has not previously been observed.
+To formalize this idea, we first define scenes of multiple objects through a latent variable model.
+Specifically, we assume that observations x of multi-object scenes are generated from latent vectors
+z by a diffeomorphic generator f : Z →X mapping from a latent space Z to a data space
+X ⊆RN, i.e., x = f(z) (see also App. A.1). Each object in x should be represented by a unique
+sub-vector zk in the latent vector z, which we refer to as a slot. Thus, we assume that the latent
+space Z factorizes into K slots Zk with M dimensions each:
+Zk ⊆RM
+and
+Z = Z1 × · · · × ZK ⊆RKM.
+(1)
+2
+
+A slot Zk contains all possible configurations for the k-th object, while Z encompasses all possible
+combinations of objects. For our notion of compositional generalization, a model should observe all
+possible configurations of each object but not necessarily all combinations of objects. This corre-
+sponds to observing samples generated from a subset ZS of the latent space Z, where ZS contains
+all possible values for each slot. We formalize this subset below.
+Definition 1 (Slot-supported subset). For ZS ⊆Z = Z1 × · · · × ZK, let ZS
+k ··=
+
+zk|z ∈ZS	
+.
+ZS is said to be a slot-supported subset of Z if ZS
+k = Zk for any k ∈[K].
+One extreme example of a slot-supported subset ZS is the trivial case ZS = Z; another is a set
+containing the values for each slot exactly once such that ZS resembles a 1D manifold in RKM.
+We assume observations x from a training space X S are generated by a slot-supported subset ZS,
+i.e., X S ··= f(ZS). The following generative process describes this:
+x = f(z),
+z ∼pz,
+supp(pz) = ZS.
+(2)
+Samples from such a generative process are visualized in Fig. 1 for a simple setting with two objects
+described only by their y-coordinate. We can see that the training space contains each possible
+configuration for the two objects but not all possible combinations of objects.
+Now, assume we have an inference model which only observes data on X S generated according to
+Eq. 2. In principle, this model could be any sufficiently expressive diffeomorphism; however, we will
+assume it to be an autoencoder, as is common in object-centric learning (Yuan et al., 2023). Namely,
+we assume the model consists of a pair of differentiable functions: an encoder ˆg : RN →RKM
+and a decoder ˆf : RKM →RN, which induce the inferred latent space ˆZ ··= ˆg(X) and the
+reconstructed data space ˆ
+X ··= ˆf( ˆZ). The functions are optimized to invert each other on X S by
+minimizing the reconstruction objective
+Lrec(X S) = Lrec
+ ˆg, ˆf, X S ··= Ex∼px
+h ˆf
+ ˆg(x)
+
+−x
+2
+2
+i
+,
+supp(px) = X S.
+(3)
+We say that an autoencoder
+ ˆg, ˆf
+
+produces an object-centric representation via ˆz ··= ˆg(x) if each
+inferred latent slot ˆzj encodes all information from exactly one ground-truth latent slot zk, i.e., the
+model separates objects in its latent representation. We refer to this notion as slot identifiability,
+which we formalize below, building upon Brady et al. (2023):
+Definition 2 (Slot identifiability). Let f : Z →X be a diffeomorphism. Let ZS be a slot-supported
+subset of Z. An autoencoder
+ ˆg, ˆf
+
+is said to slot-identify z on ZS w.r.t. f via ˆz ··= ˆg
+ f(z)
+
+if it minimizes Lrec(X S) and there exists a permutation π of [K] and a set of diffeomorphisms
+hk : zπ(k) 7→ˆzk for any k ∈[K].
+Intuitively, by assuming
+ ˆg, ˆf
+
+minimizes Lrec(X S), we know that on the training space X S, ˆg is
+a diffeomorphism with ˆf as its inverse. This ensures that ˆz preserves all information from ground-
+truth latent z. Furthermore, requiring that the slots ˆzk and zπ(k) are related by a diffeomorphism
+ensures that this information factorizes in the sense that each inferred slot contains only and all
+information from a corresponding ground-truth slot.* We can now formally define what it means for
+an autoencoder to generalize compositionally.
+Definition 3 (Compositional generalization). Let f : Z →X be a diffeomorphism and ZS be a
+slot-supported subset of Z. An autoencoder
+ ˆg, ˆf
+
+that slot-identifies z on ZS w.r.t. f is said to
+generalize compositionally w.r.t. ZS, if it also slot-identifies z on Z w.r.t. f.
+This definition divides training an autoencoder that generalizes compositionally into two challenges.
+Challenge 1: Identifiability
+Firstly, the model must slot-identify the ground-truth latents on the
+slot-supported subset ZS. Identifiability is generally difficult and is known to be impossible without
+further assumptions on the generative model (Hyv¨arinen and Pajunen, 1999; Locatello et al., 2019).
+The majority of previous identifiability results have addressed this by placing some form of statistical
+independence assumptions on the latent distribution pz (Hyv¨arinen et al., 2023). In our setting,
+however, pz is only supported on ZS, which can lead to extreme dependencies between latents (e.g.,
+*Note that when ZS = Z, we recover the definition of slot identifiability in Brady et al. (2023).
+3
+
+unobserved
+slot 1
+slot 2
+slot-supported subset
+Latent Space
+compositional
+& irreducible
+generator
+u
+no
+b
+s
+e
+r
+ve
+d
+o
+b
+s
+e
+r
+v
+ed
+Data Space
+compositional
+decoder
+encoder
+Inferred latents
+additive
+decoder
+Reconstructed data
+encoder
+Inferred latents
+4
+3
+2
+1
+Figure 2: Overview of our theoretical contribution. (1) We assume access to data from a train-
+ing space X S ⊆X, which is generated from a slot-supported subset ZS of the latent space Z
+(Def. 1), via a compositional and irreducible generator f. (2) We show that an autoencoder with a
+compositional decoder ˆf trained via the reconstruction objective Lrec on this data will slot-identify
+ground-truth latents z on ZS (Thm. 1). Since the inferred latents ˆz slot-identify z ID on ZS, their
+slot-wise recombinations Z′ slot-identify z OOD on Z. However, the encoder ˆg is not guaranteed
+to infer OOD latents such that ˆg(X) = ˆZ = Z′. (3) On the other hand, if the decoder ˆf is addi-
+tive, its reconstructions are guaranteed to generalize such that ˆf(Z′) = X (Thm. 2). (4) Therefore,
+regularizing the encoder ˆg to invert ˆf using our proposed compositional consistency objective Lcons
+(Def. 6) enforces ˆZ = Z′, thus enabling the model to generalize compositionally (Thm. 3).
+see Fig. 2 where slots are related almost linearly on ZS). It is thus much more natural to instead
+place assumptions on the generator f to sufficiently constrain the problem, in line with common
+practices in object-centric learning that typically assume a structured decoder (Yuan et al., 2023).
+Challenge 2: Generalization
+Even if we can train an autoencoder
+ ˆg, ˆf
+
+that slot-identifies z
+in-distribution (ID) on the slot-supported subset ZS, we still require it to also slot-identify z out-of-
+distribution (OOD) on all of Z. Empirically, multiple prior works have demonstrated in the context
+of disentanglement that this form of OOD generalization does not simply emerge for models that
+can identify the ground-truth latents ID (Montero et al., 2021; 2022; Schott et al., 2022). From a
+theoretical perspective, OOD generalization of this form implies that the behavior of the generator f
+on the full latent space Z is completely determined by its behavior on ZS, which could essentially
+be a one-dimensional manifold. This will clearly not be the case if f is an arbitrary function,
+necessitating constraints on its function class to make any generalization guarantees.
+3
+COMPOSITIONAL GENERALIZATION IN THEORY
+In this section, we show theoretically how the ground-truth generator f and autoencoder
+ ˆg, ˆf
+
+can
+be constrained to address both slot identifiability and generalization, thereby facilitating composi-
+tional generalization (complete proofs and further details are provided in App. A).
+To address the problem of slot identifiability, Brady et al. (2023) proposed to constrain the genera-
+tor f via assumptions on its Jacobian, which they called compositionality and irreducibility. Infor-
+mally, compositionality states that each image pixel is locally a function of at most one latent slot,
+while irreducibility states that pixels belonging to the same object share information. We relegate a
+formal definition of irreducibility to App. A.4 and only restate the definition for compositionality.
+Definition 4 (Compositionality). A differentiable f : Z →RN is called compositional in z ∈Z if
+∂fn
+∂zk
+(z) ̸= 0 =⇒∂fn
+∂zj
+(z) = 0,
+for any k, j ∈[K], k ̸= j and any n ∈[N].
+(4)
+For a generator f satisfying these assumptions on Z, Brady et al. (2023) showed that an autoen-
+coder
+ ˆg, ˆf
+
+with a compositional decoder (Def. 4) will slot-identify z on Z w.r.t. f. This result
+is appealing for addressing Challenge 1 since it does not rely on assumptions on pz; however, it
+requires that the training space X S is generated from the entire latent space Z. We here show an
+extension for cases when the training space X S arises from a convex, slot-supported subset ZS.
+Theorem 1 (Slot identifiability on slot-supported subset). Let f : Z →X be a compositional and
+irreducible diffeomorphism. Let ZS be a convex, slot-supported subset of Z. An autoencoder
+ ˆg, ˆf
+
+4
+
+that minimizes Lrec(X S) for X S = f(ZS) and whose decoder ˆf is compositional on ˆg(X S), slot-
+identifies z on ZS w.r.t. f in the sense of Def. 2.
+Thm. 1 solves Challenge 1 of slot identifiability on the slot-supported subset ZS, but to generalize
+compositionally, we still need to address Challenge 2 and extend this to all of Z. Because we have
+slot identifiability on ZS, we know each ground-truth slot and corresponding inferred slot are related
+by a diffeomorphism hk. Since hk is defined for all configurations of slot zπ(k), the representation
+which slot-identifies z = (z1, . . . , zK) for any combination of slots (ID or OOD) in Z is given by
+z′ =
+ h1(zπ(1)), . . . , hK(zπ(K))
+
+,
+Z′ = h1(Zπ(1)) × · · · × hK(Zπ(K)).
+(5)
+Therefore, for an autoencoder to generalize its slot identifiability from ZS to Z, it should match this
+representation such that for any z ∈Z,
+ˆg
+ f(z)
+
+= z′
+and
+ˆf(z′) = f(z).
+(6)
+We aim to satisfy these conditions by formulating properties of the decoder ˆf such that it fulfills the
+second condition, which we then leverage to regularize the encoder ˆg to fulfill the first condition.
+3.1
+DECODER GENERALIZATION VIA ADDITIVITY
+We know from Thm. 1 that ˆf renders each inferred slot hk(zπ(k)) correctly to a corresponding object
+in x for all possible values of zπ(k). Furthermore, because the generator f satisfies compositionality
+(Def. 4), we know that these slot-wise renders should not be affected by changes to the value of any
+other slot zj. This implies that for ˆf to satisfy Eq. 6, we only need to ensure that its slot-wise renders
+remain invariant when constructing z′ with an OOD combination of slots z. We show below that
+additive decoders can achieve this invariance.
+Definition 5 (Additive decoder). For an autoencoder
+ ˆg, ˆf
+
+the decoder ˆf is said to be additive if
+ˆf(z) =
+K
+X
+k=1
+φk(ˆzk),
+where φk : RM →RN for any k ∈[K] and ˆz ∈RKM.
+(7)
+We can think of an additive decoder ˆf as rendering each slot ˆzk to an intermediate image via slot
+functions φk, then summing these images to create the final output. These decoders are expressive
+enough to represent compositional generators (see App. A.7). Intuitively, they globally remove inter-
+actions between slots such that the correct renders learned on inferred latents of ZS are propagated
+to inferred latents of the entire Z. This is formalized with the following result.
+Theorem 2 (Decoder generalization). Let f : Z →X be a compositional diffeomorphism and ZS
+be a slot-supported subset of Z. Let
+ ˆg, ˆf
+
+be an autoencoder that slot-identifies z on ZS w.r.t. f.
+If the decoder ˆf is additive, then it generalizes in the following sense: ˆf(z′) = f(z) for any z ∈Z,
+where z′ is defined according to Eq. 5.
+Consequently, ˆf is now injective on Z′ and we get ˆf(Z′) = f(Z) = X.
+3.2
+ENCODER GENERALIZATION VIA COMPOSITIONAL CONSISTENCY
+Because the decoder ˆf generalizes such that ˆf(z′) = f(z) (Thm. 2) and ˆf(Z′) = X, the condition
+on the encoder from Eq. 6 corresponds to enforcing that ˆg inverts ˆf on all of X. This is ensured ID
+on the training space X S by minimizing the reconstruction objective Lrec (Eq. 3). However, there is
+nothing enforcing that ˆg also inverts ˆf OOD outside of X S (see Fig. 1B for a visualization of this
+problem). To address this, we propose the following regularizer.
+Definition 6 (Compositional consistency). Let qz′ be a distribution with supp(qz′) = Z′ (Eq. 5).
+An autoencoder
+ ˆg, ˆf
+
+is said to be compositionally consistent if it minimizes the compositional
+consistency loss
+Lcons
+ ˆg, ˆf, Z′
+= Ez′∼qz′
+hˆg
+  ˆf(z′)
+
+−z′2
+2
+i
+.
+(8)
+5
+
+The loss can be understood as first sampling an OOD combination of slots z′ by composing inferred
+ID slots hk(zπ(k)). The decoder can then render z′ to create an OOD sample ˆf(z′). Re-encoding
+this sample such that ˆg( ˆf(z′)) = z′ then regularizes the encoder to invert the decoder OOD. We
+discuss how this regularization can be implemented in practice in Sec. 4.
+3.3
+PUTTING IT ALL TOGETHER
+Thm. 1 showed how slot identifiability can be achieved ID on ZS if ˆf satisfies compositionality, and
+Thm. 2, Def. 6 showed how this identifiability can be generalized to all of Z if the decoder is addi-
+tive and compositional consistency is minimized. Putting these results together, we can now prove
+conditions for which an autoencoder will generalize compositionally (see Fig. 2 for an overview).
+Theorem 3 (Compositionally generalizing autoencoder). Let f : Z →X be a compositional and
+irreducible diffeomorphism. Let ZS be a convex, slot-supported subset of Z. Let
+ ˆg, ˆf
+
+be an
+autoencoder with additive decoder ˆf (Def. 5). If ˆf is compositional on ˆg(X S) and ˆg, ˆf solve
+Lrec
+ ˆg, ˆf, X S
++ λLcons
+ ˆg, ˆf, Z′
+= 0,
+for some λ > 0,
+(9)
+then the autoencoder
+ ˆg, ˆf
+
+generalizes compositionally w.r.t. ZS in the sense of Def. 3.
+Moreover, ˆg : X →ˆZ inverts ˆf : Z′ →X and also ˆZ = Z′ = h1(Zπ(1)) × · · · × hK(Zπ(K)).
+4
+COMPOSITIONAL GENERALIZATION IN PRACTICE
+Compositionality
+Thm. 3 explicitly assumes that the decoder ˆf satisfies compositionality on
+ˆg(X S) but does not give a recipe to enforce this in practice. Brady et al. (2023) proposed a reg-
+ularizer that enforces compositionality if minimized (see App. B.4), but their objective is computa-
+tionally infeasible to optimize for larger models, thus limiting its practical use. At the same time,
+Brady et al. (2023) showed that explicitly optimizing this objective may not always be necessary, as
+the object-centric models used in their experiments seemed to minimize it implicitly, likely through
+the inductive biases in these models. We observe a similar phenomenon (see Fig. 4, right) and thus
+rely on these inductive biases to satisfy compositionality in our experiments in Sec. 6.
+Additivity
+It is trivial to implement an additive decoder by parameterizing the slot functions φk
+from Eq. 7 as, e.g., deconvolution neural networks. This resembles the decoders typically used in
+object-centric learning, with the key difference being the use of slot-wise masks mk. Specifically,
+existing models commonly use a decoder of the form
+ˆf(z) =
+K
+X
+k=1
+˜mk ⊙xk,
+˜mk = σ(m)k,
+(mk, xk) = φk(zk),
+(10)
+where ⊙is an element-wise multiplication and σ(·) denotes the softmax function. Using masks mk
+in this way facilitates modeling occluding objects but violates additivity as the softmax normalizes
+masks across slots, thus introducing interactions between slots during rendering. We empirically
+investigate how this interaction affects compositional generalization in Sec. 6.2.
+Compositional Consistency
+The main challenge with implementing the proposed compositional
+consistency loss Lcons (Def. 6) is sampling z′ from qz′ with support over ˆZ. First, note that we
+defined Z′ in Eq. 5 through use of the functions hk, but can equivalently write
+hk(zπ(k)) = ˆgk
+ f(z)
+
+and
+Z′ = ˆg1(X S) × · · · × ˆgK(X S).
+(11)
+The reformulation highlights that we can construct OOD samples in the consistency regulariza-
+tion from ID observations by randomly shuffling the slots of two inferred ID latents ˆz(1), ˆz(2) via
+ρk ∼U{1, 2}. Because ZS is a slot-supported subset, constructing z′ as
+z′ =
+ ˆz(ρ1)
+1
+, . . . , ˆz(ρK)
+K
+
+,
+where for i ∈{1, 2}
+ˆz(i) = ˆg
+ x(i)
+, x(i) ∼px
+(12)
+ensures that the samples z′ cover the entire Z′. Practically, we sample ˆz(1), ˆz(2) uniformly from
+the current batch. The compositional consistency objective with this sampling strategy is illustrated
+6
+
+recombination
+recombination
+stop-gradient
+connection
+slot 2
+slot 1
+slot 2
+slot 1
+slot 2
+slot 1
+slot 2
+slot 1
+Figure 3: Compositional consistency regularization. In addition to the reconstruction objective,
+Lcons is minimized on recombined latents z′. Recombining slots of the inferred latents ˆz of two ID
+samples produces a latent z′, which can be rendered to an OOD sample x′ due to the decoder ˆf
+generalizing OOD. The encoder ˆg is optimized to re-encode this sample to match z′.
+in Fig. 3. Note that the order of slots is generally not preserved between ˆg
+  ˆf(z′)
+
+and z′ so that
+we pair slots using the Hungarian algorithm (Kuhn, 1955) before calculating the loss. Furthermore,
+enforcing the consistency loss can be challenging in practice if the encoder contains stochastic op-
+erations such as the random re-initialization of slots in the Slot Attention module (Locatello et al.,
+2020a) during each forward pass. We explore the impact of this in Sec. 6.2.
+5
+RELATED WORK
+Theoretical Analyses of Compositional Generalization
+Prior works have addressed identifiabil-
+ity and generalization theoretically in isolation. For example, several results show how identifiability
+can be achieved through assumptions on the latent distribution Hyv¨arinen and Morioka (2016; 2017);
+Hyv¨arinen et al. (2019); Khemakhem et al. (2020a;b); Shu et al. (2020); Locatello et al. (2020b);
+Gresele et al. (2019); Lachapelle et al. (2021); Klindt et al. (2021); H¨alv¨a et al. (2021); von K¨ugelgen
+et al. (2021); Liang et al. (2023) or via structural assumptions on the generator function (Gresele
+et al., 2021; Horan et al., 2021; Moran et al., 2022; Buchholz et al., 2022; Zheng et al., 2022; Brady
+et al., 2023). However, none of these deal with generalization. On the other hand, frameworks for
+OOD generalization were proposed in the context of object-centric world models (Zhao et al., 2022)
+and regression problems (e.g., Netanyahu et al., 2023), with latent variable formulations that closely
+resemble our work. In this context, OOD generalization was proven for additive inference mod-
+els (Dong and Ma, 2022) or slot-wise functions composed with a known nonlinearity (Wiedemer
+et al., 2023). Yet, these results are formulated in a regression setting, which assumes the problem of
+identifiability is solved a priori. Concurrent work from Lachapelle et al. (2023) also considers identi-
+fiability and generalization. Similar to us, they leverage additivity to achieve decoder generalization
+and show that additivity is sufficient for identifiability under additional assumptions on the decoder,
+while allowing more general supports. However, they only focus on decoder generalization, while
+we show theoretically and empirically how to enforce that the encoder also generalizes OOD.
+Compositional Consistency Regularization
+Our compositional consistency loss (Def. 6), which
+generates and trains on novel data by composing previously learned concepts, resembles ideas in
+both natural and artificial intelligence. In natural intelligence, (Schwartenbeck et al., 2021; Kurth-
+Nelson et al., 2022; Bakermans et al., 2023) propose that the hippocampal formation implements a
+form of compositional replay in which new knowledge is derived by composing previously learned
+abstractions. In machine learning, prior works Rezende and Viola (2018); Cemgil et al. (2020);
+Sinha and Dieng (2021); Leeb et al. (2022) have shown that an encoder can fail to correctly encode
+samples generated by a decoder, though not in the context of compositional generalization. For pro-
+gram synthesis, Ellis et al. (2023) propose training a recognition model on compositions of learned
+programs. In object-centric learning, Assouel et al. (2022) also train an encoder using on images
+from recomposed slots; however, the model is tailored to a specific visual reasoning task.
+6
+EXPERIMENTS
+This section first verifies our main theoretical result (Thm. 3) on synthetic multi-object data
+(Sec. 6.1). We then ablate the impact of each of our theoretical assumptions on compositional gen-
+eralization using the object-centric model Slot Attention (Locatello et al., 2020a) (Sec. 6.2).
+7
+
+0.1
+1.0
+10.0
+Lcons
+1.0
+10.0
+Lrec
+with Lcons
+without Lcons
+0
+100
+200
+300
+Epoch
+1
+10
+100
+1000
+Compositional Contrast
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Identiﬁability Score OOD
+Figure 4:
+Experimental validation of Thm. 3. Left: Slot identifiability is measured through-
+out training as a function of reconstruction loss (Lrec, Eq. 3) and compositional consistency (Lcons,
+Def. 6). As predicted by Thm. 3, models which minimize Lrec and Lcons learn representations that
+are slot identifiable OOD. Right: Compositional contrast (see App. B.4) decreases throughout train-
+ing, indicating that the decoder is implicitly optimized to be compositional (Def. 4).
+Data
+We generate multi-object data using the Spriteworld renderer (Watters et al., 2019). Images
+contain two objects on a black background (Fig. 6), each specified by four continuous latents (x/y
+position, size, color) and one discrete latent (shape). To ensure that the generator satisfies com-
+positionality (Def. 4), we exclude images with occluding objects. Irreducibility is almost certainly
+satisfied due to the high dimensionality of each image, as argued in (Brady et al., 2023). We sample
+latents on a slot-supported subset by restricting support to a diagonal strip in Z (see App. B.1).
+Metrics
+To measure a decoder’s compositionality (Def. 4), we rely on the compositional contrast
+regularizer from Brady et al. (2023) (App. B.4), which was proven to be zero if a function is com-
+positional. To measure slot identifiability, we follow Locatello et al. (2020a); Dittadi et al. (2021);
+Brady et al. (2023) and fit nonlinear regressors to predict each ground-truth slot zi from an inferred
+slot ˆzj for every possible pair of slots. The regressor’s fit measured by R2 score quantifies how
+much information ˆzj encodes about ˆzi. We subsequently determine the best assignment between
+slots using the Hungarian algorithm (Kuhn, 1955) and report the R2 averaged over all matched slots.
+6.1
+VERIFYING THE THEORY
+Experimental Setup
+We train an autoencoder with an additive decoder on the aforementioned
+multi-object dataset. The model uses two latent slots with 6 dimensions each. We train the model
+to minimize the reconstruction loss Lrec (Eq. 3) for 100 epochs, then introduce the compositional
+consistency loss Lcons (Def. 6) and jointly optimize both objectives for an additional 200 epochs.
+Results
+Fig. 4 (Right) shows that compositional contrast decreases over the course of training
+without additional regularization, thus justifying our choice not to optimize it explicitly. Fig. 4 (Left)
+visualizes slot identifiability of OOD latents as a function of Lrec and Lcons. OOD slot identifiability
+is maximized exactly when Lrec and Lcons are minimized, as predicted by Thm. 3. This is corrobo-
+rated by the heatmaps in Fig. 1A-C, which illustrate that additivity enables the decoder to generalize
+as predicted by Thm. 2 but minimizing Lcons is required for the encoder to also generalize OOD.
+6.2
+ABLATING IMPACT OF THEORETICAL ASSUMPTIONS
+Experimental Setup
+While Sec. 6.1 showed that our theoretical assumption can empirically en-
+able compositional generalization, these assumptions differ from typical practices in object-centric
+models. We, therefore, ablate the relevance of each assumption for compositional generalization in
+the object-centric model Slot Attention. We investigate the effect of additivity by comparing a non-
+additive decoder that normalizes masks across slots using a softmax with an additive decoder that
+replaces the softmax with slot-wise sigmoid functions. We also train the model with and without op-
+timizing compositional consistency. Finally, we explore the impact of using a deterministic encoder
+by replacing Slot Attention’s random initialization of slots with a fixed initialization. All models use
+two slots with 16 dimensions each and are trained on the multi-object dataset from Sec. 6.1.
+8
+
+Figure 5: Compositional generalization for Slot Attention. Visualizing the decoder reconstruc-
+tion error over a 2D projection of the latent space (see App. B.3 for details) reveals that the non-
+additive masked decoder in Slot Attention does not generalize OOD on our dataset (A). Making the
+decoder additive by replacing softmax mask normalization with slot-wise sigmoid functions makes
+the decoder additive and enables OOD generalization (B, Thm. 2). The full model does not general-
+ize compositionally, however, since the encoder fails to invert the decoder OOD (C). Regularizing
+with the compositional consistency loss addresses this, enabling generalization (D, Thm. 3).
+Table 1:
+Compositional generalization for Slot Attention in terms of slot identifiability and
+reconstruction quality. Both metrics are close to optimal ID but degrade OOD with the standard
+assumptions in Slot Attention. Incorporating decoder additivity (Add.), compositional consistency
+(Lcons), and deterministic inference (Det.) improves OOD performance.
+Identifiability R2↑
+Reconstruction R2↑
+Add. Lcons
+Det.
+ID
+OOD
+ID
+OOD
+✗
+✗
+✗
+0.99±1.7e−3
+0.81±9.0e−2
+0.99±1.0e−4
+0.71±1.9e−2
+✓
+✗
+✗
+0.99±2.3e−3
+0.83±5.4e−2
+0.99±5.8e−4
+0.72±2.1e−2
+✓
+✓
+✗
+0.99±2.9e−2
+0.92±3.4e−2
+0.99±8.3e−4
+0.79±7.2e−2
+✓
+✓
+✓
+0.99±1.9e−3
+0.94±2.2e−2
+0.99±1.9e−4
+0.92±2.1e−2
+Results
+Fig. 5 illustrates that the non-additive decoder in Slot Attention does not generalize OOD
+on our multi-object dataset. Moreover, regularization via the consistency loss is required to make
+the encoder generalize. Tab. 1 ablates the effect of these assumptions for Slot Attention. We see that
+satisfying additivity and compositional consistency and making inference deterministic (see Sec. 4)
+improves OOD identifiability and reconstruction performance.
+7
+DISCUSSION
+Extensions of Experiments
+Our experiments in Sec. 6.2 provide evidence that compositional gen-
+eralization will not emerge naturally in object-centric models such as Slot Attention. However, to
+gain a more principled understanding of the limits of compositional generalization in these models,
+experiments with a broader set of architectures on more datasets are required. Additionally, Lcons,
+as implemented in Sec. 6, samples novel slot combinations in a naive uniform manner, potentially
+giving rise to implausible images in more complex settings, e.g., by sampling two background slots.
+Thus, a more principled sampling scheme should be employed to scale this loss.
+Extensions of Theory
+The assumptions of compositionality and additivity on the decoder make
+progress towards a theoretical understanding of compositional generalization, yet are inherently
+limiting. Namely, they do not allow slots to interact during rendering and thus cannot adequately
+model general multi-object scenes or latent abstractions outside of objects. Thus, a key direction is to
+understand how slot interactions can be introduced while maintaining compositional generalization.
+Conclusion
+Compositional generalization is crucial for robust machine perception; however, a
+principled understanding of how it can be realized has been lacking. We show in object-centric
+learning that compositional generalization is theoretically and empirically possible for autoencoders
+that possess a structured decoder and regularize the encoder to invert the decoder OOD. While our
+results do not provide an immediate recipe for compositional generalization in real-world object-
+centric learning, they lay the foundation for future theoretical and empirical works.
+9
+
+REPRODUCIBILITY STATEMENT
+Detailed versions of all theorems and definitions, as well as the full proofs for all results are included
+in App. A. We attach our codebase to facilitate the reproduction of our experiments. All hyperpa-
+rameters, model architectures, training regimes, datasets, and evaluation metrics are provided in the
+codebase. Explanations for design choices are given in Sec. 6 in the main text and App. B. The
+implementation of the compositional consistency loss is detailed in Sec. 4, paragraph 3.
+CONTRIBUTIONS
+TW, JB, and WB initiated the project. JB and TW led the project. AP conducted all experiments with
+advising from TW and JB. AJ, JB, and TW conceived the conceptual ideas behind the theorems. AJ
+developed the theoretical results and presented them in App. A. TW and JB led the writing of the
+manuscript with contributions to the theory presentation from AJ and additional contributions from
+AP, WB, and MB. TW created Figs. 1, 2, and 3 with insights from all authors. AP and TW created
+Figs. 4 and 5 with insights from JB.
+ACKNOWLEDGEMENTS
+The authors would like to thank (in alphabetical order): Andrea Dittadi, Egor Krasheninnikov, Ev-
+genii Kortukov, Julius von K¨ugelgen, Prasanna Mayilvahannan, Roland Zimmermann, S´ebastien
+Lachapelle, and Thomas Kipf for helpful insights and discussions.
+This work was supported by the German Federal Ministry of Education and Research (BMBF):
+T¨ubingen AI Center, FKZ: 01IS18039A, 01IS18039B. WB acknowledges financial support via an
+Emmy Noether Grant funded by the German Research Foundation (DFG) under grant no. BR
+6382/1-1 and via the Open Philantropy Foundation funded by the Good Ventures Foundation. WB
+is a member of the Machine Learning Cluster of Excellence, EXC number 2064/1 – Project num-
+ber 390727645. This research utilized compute resources at the T¨ubingen Machine Learning Cloud,
+DFG FKZ INST 37/1057-1 FUGG. The authors thank the International Max Planck Research School
+for Intelligent Systems (IMPRS-IS) for supporting TW and AJ.
+REFERENCES
+Joshua B. Tenenbaum, Charles Kemp, Thomas L. Griffiths, and Noah D. Goodman. How to grow a
+mind: Statistics, structure, and abstraction. Science, 331:1279 – 1285, 2011.
+Timothy E.J. Behrens, Timothy H. Muller, James C.R. Whittington, Shirley Mark, Alon B. Baram,
+Kimberly L. Stachenfeld, and Zeb Kurth-Nelson. What is a cognitive map? organizing knowledge
+for flexible behavior. Neuron, 100(2):490–509, 2018. ISSN 0896-6273. doi: https://doi.org/10.
+1016/j.neuron.2018.10.002.
+Bernhard Sch¨olkopf, Francesco Locatello, Stefan Bauer, Nan Rosemary Ke, Nal Kalchbrenner,
+Anirudh Goyal, and Yoshua Bengio.
+Toward causal representation learning.
+Proceedings of
+the IEEE, 109(5):612–634, 2021.
+Jerry A. Fodor and Zenon W. Pylyshyn. Connectionism and cognitive architecture: A critical anal-
+ysis. Cognition, 28:3–71, 1988.
+Brenden M. Lake, Tomer D. Ullman, Joshua B. Tenenbaum, and Samuel J. Gershman. Building
+machines that learn and think like people. Behavioral and Brain Sciences, 40:e253, 2017. doi:
+10.1017/S0140525X16001837.
+Peter W. Battaglia, Jessica B. Hamrick, Victor Bapst, Alvaro Sanchez-Gonzalez, Vin´ıcius Flo-
+res Zambaldi, Mateusz Malinowski, Andrea Tacchetti, David Raposo, Adam Santoro, Ryan
+Faulkner, C¸ aglar G¨ulc¸ehre, H. Francis Song, Andrew J. Ballard, Justin Gilmer, George E. Dahl,
+Ashish Vaswani, Kelsey R. Allen, Charlie Nash, Victoria Langston, Chris Dyer, Nicolas Man-
+fred Otto Heess, Daan Wierstra, Pushmeet Kohli, Matthew M. Botvinick, Oriol Vinyals, Yujia
+Li, and Razvan Pascanu. Relational inductive biases, deep learning, and graph networks. ArXiv,
+abs/1806.01261, 2018.
+10
+
+Anirudh Goyal and Yoshua Bengio. Inductive biases for deep learning of higher-level cognition.
+Proceedings of the Royal Society A, 478(2266):20210068, 2022.
+Klaus Greff, Sjoerd Van Steenkiste, and J¨urgen Schmidhuber. On the binding problem in artificial
+neural networks. arXiv preprint arXiv:2012.05208, 2020.
+Christopher P. Burgess, Loic Matthey, Nicholas Watters, Rishabh Kabra, Irina Higgins, Matt
+Botvinick, and Alexander Lerchner. MONet: Unsupervised Scene Decomposition and Repre-
+sentation, January 2019.
+Klaus Greff, Rapha¨el Lopez Kaufman, Rishabh Kabra, Nick Watters, Chris Burgess, Daniel Zoran,
+Loic Matthey, Matthew M. Botvinick, and Alexander Lerchner. Multi-object representation learn-
+ing with iterative variational inference. In ICML, volume 97 of Proceedings of Machine Learning
+Research, pages 2424–2433, 2019.
+Francesco Locatello, Dirk Weissenborn, Thomas Unterthiner, Aravindh Mahendran, Georg Heigold,
+Jakob Uszkoreit, Alexey Dosovitskiy, and Thomas Kipf. Object-Centric Learning with Slot At-
+tention. In Advances in Neural Information Processing Systems, volume 33, pages 11525–11538.
+Curran Associates, Inc., 2020a.
+Zhixuan Lin, Yi-Fu Wu, Skand Vishwanath Peri, Weihao Sun, Gautam Singh, Fei Deng, Jindong
+Jiang, and Sungjin Ahn. Space: Unsupervised object-oriented scene representation via spatial
+attention and decomposition. In International Conference on Learning Representations, 2020.
+Gautam Singh, Fei Deng, and Sungjin Ahn. Illiterate DALL-e learns to compose. In International
+Conference on Learning Representations, 2022.
+Gamaleldin Elsayed, Aravindh Mahendran, Sjoerd van Steenkiste, Klaus Greff, Michael C Mozer,
+and Thomas Kipf. Savi++: Towards end-to-end object-centric learning from real-world videos.
+Advances in Neural Information Processing Systems, 35:28940–28954, 2022.
+Maximilian Seitzer, Max Horn, Andrii Zadaianchuk, Dominik Zietlow, Tianjun Xiao, Carl-Johann
+Simon-Gabriel, Tong He, Zheng Zhang, Bernhard Sch¨olkopf, Thomas Brox, and Francesco Lo-
+catello. Bridging the gap to real-world object-centric learning. In The Eleventh International
+Conference on Learning Representations, 2023.
+Thomas Kipf, Elise van der Pol, and Max Welling. Contrastive learning of structured world models.
+In International Conference on Learning Representations, 2020.
+Aapo Hyv¨arinen, Ilyes Khemakhem, and Hiroshi Morioka. Nonlinear independent component anal-
+ysis for principled disentanglement in unsupervised deep learning. ArXiv, abs/2303.16535, 2023.
+Jack Brady, Roland S. Zimmermann, Yash Sharma, Bernhard Sch¨olkopf, Julius Von K¨ugelgen, and
+Wieland Brendel. Provably learning object-centric representations. In Proceedings of the 40th
+International Conference on Machine Learning, volume 202 of Proceedings of Machine Learning
+Research, pages 3038–3062. PMLR, 23–29 Jul 2023.
+Linfeng Zhao, Lingzhi Kong, Robin Walters, and Lawson LS Wong. Toward compositional gener-
+alization in object-oriented world modeling. In International Conference on Machine Learning,
+pages 26841–26864. PMLR, 2022.
+E Paxon Frady, Spencer Kent, Quinn Tran, Pentti Kanerva, Bruno A Olshausen, and Friedrich T
+Sommer. Learning and generalization of compositional representations of visual scenes. arXiv
+preprint arXiv:2303.13691, 2023.
+Thadd¨aus Wiedemer, Prasanna Mayilvahanan, Matthias Bethge, and Wieland Brendel. Composi-
+tional generalization from first principles. arXiv preprint arXiv:2307.05596, 2023.
+Jinyang Yuan, Tonglin Chen, Bin Li, and Xiangyang Xue.
+Compositional scene representation
+learning via reconstruction: A survey. IEEE Transactions on Pattern Analysis and Machine Intel-
+ligence, 2023.
+Aapo Hyv¨arinen and Petteri Pajunen. Nonlinear independent component analysis: Existence and
+uniqueness results. Neural Networks, 12(3):429–439, 1999. ISSN 0893-6080.
+11
+
+Francesco Locatello, Stefan Bauer, Mario Lucic, Gunnar R¨atsch, Sylvain Gelly, Bernhard
+Sch¨olkopf, and Olivier Bachem. Challenging common assumptions in the unsupervised learn-
+ing of disentangled representations. In ICML, volume 97 of Proceedings of Machine Learning
+Research, pages 4114–4124, 2019.
+Milton Llera Montero, Casimir JH Ludwig, Rui Ponte Costa, Gaurav Malhotra, and Jeffrey Bow-
+ers. The role of disentanglement in generalisation. In International Conference on Learning
+Representations, 2021.
+Milton Montero, Jeffrey Bowers, Rui Ponte Costa, Casimir Ludwig, and Gaurav Malhotra. Lost
+in latent space: Examining failures of disentangled models at combinatorial generalisation. In
+Advances in Neural Information Processing Systems, volume 35, pages 10136–10149. Curran
+Associates, Inc., 2022.
+Lukas Schott, Julius Von K¨ugelgen, Frederik Tr¨auble, Peter Vincent Gehler, Chris Russell, Matthias
+Bethge, Bernhard Sch¨olkopf, Francesco Locatello, and Wieland Brendel. Visual representation
+learning does not generalize strongly within the same domain. In International Conference on
+Learning Representations, 2022.
+H. W. Kuhn. The Hungarian method for the assignment problem. Naval Research Logistics Quar-
+terly, 2(1-2):83–97, March 1955. ISSN 00281441, 19319193. doi: 10.1002/nav.3800020109.
+Aapo Hyv¨arinen and Hiroshi Morioka. Unsupervised feature extraction by time-contrastive learning
+and nonlinear ICA. In NIPS, pages 3765–3773, 2016.
+Aapo Hyv¨arinen and Hiroshi Morioka. Nonlinear ICA of temporally dependent stationary sources.
+In AISTATS, volume 54 of Proceedings of Machine Learning Research, pages 460–469, 2017.
+Aapo Hyv¨arinen, Hiroaki Sasaki, and Richard E. Turner. Nonlinear ICA using auxiliary variables
+and generalized contrastive learning. In AISTATS, volume 89 of Proceedings of Machine Learning
+Research, pages 859–868, 2019.
+Ilyes Khemakhem, Diederik P. Kingma, Ricardo Pio Monti, and Aapo Hyv¨arinen. Variational au-
+toencoders and nonlinear ICA: A unifying framework. In AISTATS, volume 108 of Proceedings
+of Machine Learning Research, pages 2207–2217, 2020a.
+Ilyes Khemakhem, Ricardo Pio Monti, Diederik P. Kingma, and Aapo Hyv¨arinen. Ice-beem: Iden-
+tifiable conditional energy-based deep models based on nonlinear ICA. In Advances in Neural
+Information Processing Systems 33: Annual Conference on Neural Information Processing Sys-
+tems 2020, NeurIPS 2020, December 6-12, 2020, virtual, 2020b.
+Rui Shu, Yining Chen, Abhishek Kumar, Stefano Ermon, and Ben Poole. Weakly supervised disen-
+tanglement with guarantees. In ICLR, 2020.
+Francesco Locatello, Ben Poole, Gunnar R¨atsch, Bernhard Sch¨olkopf, Olivier Bachem, and Michael
+Tschannen. Weakly-supervised disentanglement without compromises. In ICML, volume 119 of
+Proceedings of Machine Learning Research, pages 6348–6359, 2020b.
+Luigi Gresele, Paul K. Rubenstein, Arash Mehrjou, Francesco Locatello, and Bernhard Sch¨olkopf.
+The incomplete rosetta stone problem: Identifiability results for multi-view nonlinear ICA. In
+Proceedings of the Thirty-Fifth Conference on Uncertainty in Artificial Intelligence, UAI 2019,
+Tel Aviv, Israel, July 22-25, 2019, volume 115 of Proceedings of Machine Learning Research,
+pages 217–227, 2019.
+S´ebastien Lachapelle, Pau Rodriguez, Yash Sharma, Katie E Everett, R´emi Le Priol, Alexandre
+Lacoste, and Simon Lacoste-Julien. Disentanglement via mechanism sparsity regularization: A
+new principle for nonlinear ica. In First Conference on Causal Learning and Reasoning, 2021.
+David A. Klindt, Lukas Schott, Yash Sharma, Ivan Ustyuzhaninov, Wieland Brendel, Matthias
+Bethge, and Dylan M. Paiton. Towards nonlinear disentanglement in natural data with tempo-
+ral sparse coding. In ICLR, 2021.
+12
+
+Hermanni H¨alv¨a, Sylvain Le Corff, Luc Leh´ericy, Jonathan So, Yongjie Zhu, Elisabeth Gassiat, and
+Aapo Hyv¨arinen. Disentangling identifiable features from noisy data with structured nonlinear
+ICA. In NeurIPS, pages 1624–1633, 2021.
+Julius von K¨ugelgen, Yash Sharma, Luigi Gresele, Wieland Brendel, Bernhard Sch¨olkopf, Michel
+Besserve, and Francesco Locatello. Self-supervised learning with data augmentations provably
+isolates content from style. In Advances in Neural Information Processing Systems, volume 34,
+pages 16451–16467, 2021.
+Wendong Liang, Armin Keki’c, Julius von K¨ugelgen, Simon Buchholz, Michel Besserve, Luigi
+Gresele, and Bernhard Sch¨olkopf. Causal component analysis. ArXiv, abs/2305.17225, 2023.
+Luigi Gresele, Julius von K¨ugelgen, Vincent Stimper, Bernhard Sch¨olkopf, and Michel Besserve.
+Independent mechanism analysis, a new concept? Advances in Neural Information Processing
+Systems, 34:28233–28248, 2021.
+Daniella Horan, Eitan Richardson, and Yair Weiss. When is unsupervised disentanglement possible?
+In Advances in Neural Information Processing Systems, 2021.
+Gemma Elyse Moran, Dhanya Sridhar, Yixin Wang, and David Blei. Identifiable deep generative
+models via sparse decoding. Transactions on Machine Learning Research, 2022. ISSN 2835-
+8856.
+Simon Buchholz, Michel Besserve, and Bernhard Sch¨olkopf. Function classes for identifiable non-
+linear independent component analysis. In NeurIPS, 2022.
+Yujia Zheng, Ignavier Ng, and Kun Zhang. On the identifiability of nonlinear ICA: sparsity and
+beyond. In NeurIPS, 2022.
+Aviv Netanyahu, Abhishek Gupta, Max Simchowitz, Kaiqing Zhang, and Pulkit Agrawal. Learning
+to Extrapolate: A Transductive Approach. In The Eleventh International Conference on Learning
+Representations, February 2023.
+Kefan Dong and Tengyu Ma. First Steps Toward Understanding the Extrapolation of Nonlinear
+Models to Unseen Domains. In The Eleventh International Conference on Learning Representa-
+tions, September 2022.
+S´ebastien Lachapelle, Divyat Mahajan, Ioannis Mitliagkas, and Simon Lacoste-Julien. Additive
+decoders for latent variables identification and cartesian-product extrapolation. arXiv preprint
+arXiv:2307.02598, 2023.
+Philipp Schwartenbeck, Alon Baram, Yunzhe Liu, Shirley Mark, Timothy Muller, Raymond Dolan,
+Matthew Botvinick, Zeb Kurth-Nelson, and Timothy Behrens.
+Generative replay for com-
+positional visual understanding in the prefrontal-hippocampal circuit.
+bioRxiv, 2021.
+doi:
+10.1101/2021.06.06.447249.
+Zeb Kurth-Nelson, Timothy Edward John Behrens, Greg Wayne, Kevin J. Miller, Lennart Luettgau,
+Raymond Dolan, Yunzhe Liu, and Philipp Schwartenbeck. Replay and compositional computa-
+tion. Neuron, 111:454–469, 2022.
+Jacob J.W. Bakermans, Joseph Warren, James C.R. Whittington, and Timothy E.J. Behrens. Con-
+structing future behaviour in the hippocampal formation through composition and replay. bioRxiv,
+2023. doi: 10.1101/2023.04.07.536053.
+Danilo Jimenez Rezende and Fabio Viola. Taming vaes. arXiv preprint arXiv:1810.00597, 2018.
+Taylan Cemgil, Sumedh Ghaisas, Krishnamurthy Dvijotham, Sven Gowal, and Pushmeet Kohli. The
+autoencoding variational autoencoder. Advances in Neural Information Processing Systems, 33:
+15077–15087, 2020.
+Samarth Sinha and Adji Bousso Dieng. Consistency regularization for variational auto-encoders.
+Advances in Neural Information Processing Systems, 34:12943–12954, 2021.
+13
+
+Felix Leeb, Stefan Bauer, Michel Besserve, and Bernhard Sch¨olkopf. Exploring the latent space of
+autoencoders with interventional assays. In Advances in Neural Information Processing Systems,
+2022.
+Kevin Ellis, Lionel Wong, Maxwell Nye, Mathias Sable-Meyer, Luc Cary, Lore Anaya Pozo, Luke
+Hewitt, Armando Solar-Lezama, and Joshua B Tenenbaum. Dreamcoder: growing generalizable,
+interpretable knowledge with wake–sleep bayesian program learning. Philosophical Transactions
+of the Royal Society A, 381(2251):20220050, 2023.
+Rim Assouel, Pau Rodriguez, Perouz Taslakian, David Vazquez, and Yoshua Bengio. Object-centric
+compositional imagination for visual abstract reasoning. In ICLR2022 Workshop on the Elements
+of Reasoning: Objects, Structure and Causality, 2022.
+Nicholas
+Watters,
+Loic
+Matthey,
+Sebastian
+Borgeaud,
+Rishabh
+Kabra,
+and
+Alexander
+Lerchner.
+Spriteworld:
+A flexible,
+configurable reinforcement learning environment.
+https://github.com/deepmind/spriteworld/, 2019.
+Andrea Dittadi, Samuele Papa, Michele De Vita, Bernhard Sch¨olkopf, Ole Winther, and Francesco
+Locatello. Generalization and robustness implications in object-centric learning. In International
+Conference on Machine Learning, 2021.
+Christopher P. Burgess, Irina Higgins, Arka Pal, Loic Matthey, Nick Watters, Guillaume Desjardins,
+and Alexander Lerchner. Understanding disentangling in β-vae, 2018.
+Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In International Confer-
+ence on Learning Representations, 2019.
+Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory Chanan, Trevor
+Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, Alban Desmaison, Andreas K¨opf, Ed-
+ward Z. Yang, Zachary DeVito, Martin Raison, Alykhan Tejani, Sasank Chilamkurthy, Benoit
+Steiner, Lu Fang, Junjie Bai, and Soumith Chintala.
+Pytorch: An imperative style, high-
+performance deep learning library. In NeurIPS, pages 8024–8035, 2019.
+Klaus Greff, Francois Belletti, Lucas Beyer, Carl Doersch, Yilun Du, Daniel Duckworth, David J
+Fleet, Dan Gnanapragasam, Florian Golemo, Charles Herrmann, et al. Kubric: A scalable dataset
+generator. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recog-
+nition, pages 3749–3761, 2022.
+14
+
+Table 2: General notation and nomenclature.
+K
+number of slots
+M
+dimensionality of slots
+N
+dimensionality of observations
+[n]
+the set {1, 2, . . . , n}
+f : A ↣B
+function f is defined on a subset of A, i.e. dom(f) ⊆A
+f ∈Ck(A, B)
+function f defined on A with values in B is k-times continuously differen-
+tiable
+f ∈CkDiffeo(A, B)
+function f is a Ck-diffeomorphism around A with values in B (Def. 7)
+Df(x)
+(total) derivative of function f in point x
+Lin(V, W)
+space of all linear operators between linear spaces V and W
+˜Z (and ˜
+X)
+a generic subset of RKM (and RN), whose role will usually be fulfilled by
+either ZS or Z (and X S or X)
+ZS
+k
+projection of ZS onto the k-th slot space Zk
+∂kfn(z)
+∂fn
+∂zk
+(z)
+If
+k (z)
+
+n ∈[N]
+ ∂kfn(z) ̸= 0
+	
+fS(z)
+subvector of f(z) corresponding to coordinates S ⊆[N]
+A
+DEFINITIONS, THEOREMS, AND PROOFS
+In this section, we detail the theoretical contributions of the paper, including all the proofs. Although
+there is no change in their contents, the formulation of some definitions and theorems are slightly
+altered here to be more precise and cover edge cases omitted in the main text. Hence, the numbering
+of the restated elements is reminiscent of that used in the main text.
+Throughout the following subsections, let the number of slots K, the slot dimensionality M, and the
+observed dimensionality N be arbitrary but fixed positive integers such that N ≥KM.
+A.1
+INTRODUCTION AND DIFFEOMORPHISMS
+This subsection aims to provide an accesible and completely formal definition of what we would
+call throughout Sec. 2 and 3 a diffeomorphism.
+Definition 7 (Ck-Diffeomorphism). Let ˜Z be a closed subset of RKM. A function f : RKM ↣RN
+is said to be a Ck-diffeomorphism around ˜Z, denoted by f ∈CkDiffeo( ˜Z, RN), if
+i) f is defined in an open neighbourhood W ⊆RKM of ˜Z,
+ii) f is k-times continuously differentiable on W, i.e. f ∈Ck(W),
+iii) f is injective on ˜Z, i.e. bijective between ˜Z and f( ˜Z) and
+iv) for any z ∈˜Z the derivative Df(z) ∈Lin(RKM, RN) is injective (or equivalently, of full
+column-rank).
+Remark. In the special case when a function h is a diffeomorphism around ˜Z ⊆RKM, but also
+maps to RKM, for any z ∈˜Z the derivative Dh(z) is a bijective, hence invertible linear transforma-
+tion of RKM. Besides that, because of iii), h is injective. Based on the inverse function theorem we
+may conclude that h is injective in an open neighbourhood W′ of ˜Z and h−1|h(W′) is also k-times
+continuously differentiable (where, of course, h( ˜Z) ⊆h(W′)).
+Hence, we arrive to the more familiar definition of a diffeomorphism, i.e. h being bijective with both
+h and h−1 being continuously differentiable. However, the latter definition cannot be applied in the
+more general case when the dimensionality of the co-domain is larger than that of the domain, since
+f −1|f( ˜
+Z) cannot be differentiable on a lower dimensional submanifold f( ˜Z).
+15
+
+With some variations, the mathematical object with the properties listed in Def. 7 is often called an
+embedding and serves as a generator or a parametrization of a lower dimensional submanifold of
+RN. This is closer to the interpretation we employ here.
+Remark. The literature on diffeomorphisms often defines them as smooth, i.e. infinitely many times
+differentiable functions with smooth inverses. In our results and proofs, twice differentiability will
+suffice.
+A.2
+DEFINITION OF GENERATIVE PROCESS, AUTOENCODER
+Here we recall the definition of slot-supported subsets from Def. 1 and provide a definition of the
+latent variable model that encapsulates all of our assumptions on the generative process outlined in
+Sec. 2.
+Definition 8 (Projection onto a slot space). For any ZS ⊆Z = Z1 × · · · × ZK, let
+ZS
+k ··=
+
+zk|z ∈ZS	
+(13)
+be the projection of ZS onto the k-th slot space Zk.
+Definition 1b (Slot-supported subset). Let Z = Z1 × · · · × ZK. A set ZS ⊆Z is said to be a
+slot-supported subset of Z if
+ZS
+k
+Def. 8
+=
+
+zk|z ∈ZS	
+= Zk for any k ∈[K].
+(14)
+Definition 9 (Partially observed generative process, POGP). A triplet (Z, ZS, f) is called a par-
+tially observed generative process (POGP), if
+i) Z = Z1 × . . . × ZK for convex, closed sets Zk ⊆RM,
+ii) ZS ⊆Z is a closed, slot-supported subset of Z (Def. 1b) and
+iii) f ∈C1Diffeo(Z, RN) is a diffeomorphism around Z (in the sense of Def. 7).
+For a given POGP (Z, ZS, f), we refer to Z as the latent space and ZS as the training latent
+space. f is the generator, X ··= f(Z) and X S ··= f(ZS) are the data space and training space
+respectively.
+We also provide a definition for our object-centric model alongside the optimization objective.
+Definition 10 (Autoencoder, AE). A pair
+ ˆg, ˆf
+
+is called an autoencoder (AE), if ˆg : RN →RKM
+and ˆf : RKM →RN are continuously differentiable functions, i.e. ˆg, ˆf ∈C1. We refer to the
+function ˆg as the encoder and ˆf as the decoder.
+In case a POGP (Z, ZS, f) is given, we refer to ˆZ ··= ˆg(X) = ˆg
+ f(Z)
+
+as the inferred latent space
+and ˆ
+X ··= ˆf( ˆZ) as the reconstructed data space.
+If for a given set ˜
+X ⊆RN it holds that ˆg : ˜
+X →ˆg( ˜
+X) is bijective and its inverse is ˆf : ˆg( ˜
+X) →˜
+X
+(also invertible), then we say that the autoencoder
+ ˆg, ˆf
+
+is consistent on ˜
+X.
+Definition 11 (Reconstruction Loss). Let
+ ˆg, ˆf
+
+be an autoencoder. Let ˜
+X ⊆RN be an arbitrary
+set and px be an arbitrary continuous distribution function with supp(px) = ˜
+X. The following
+quantity is called the reconstruction loss of
+ ˆg, ˆf
+
+with respect to px:
+Lrec
+ ˆg, ˆf, px
+ ··= Ex∼px
+h ˆf
+ ˆg(x)
+
+−x
+2
+2
+i
+.
+(15)
+The following simple lemma tells us that for Lrec
+ ˆg, ˆf, px
+
+to vanish, the exact choice of px is
+irrelevant, and that in this case the decoder (left) inverts the encoder on ˜
+X. In other words, the
+autoencoder is consistent on ˜
+X.
+Lemma 4 (Vanishing Lrec implies invertibility on ˜
+X). Let
+ ˆg, ˆf
+
+be an autoencoder and let
+˜
+X ⊆RN be an arbitrary set. The following statements are equivalent:
+i) there exists a cont. distribution function px with supp(px) = ˜
+X such that Lrec
+ ˆg, ˆf, px
+
+= 0;
+ii) for any cont. distribution function px with supp(px) = ˜
+X we have Lrec
+ ˆg, ˆf, px
+
+= 0;
+iii) ˆf ◦ˆg| ˜
+X = id or, in other words,
+ ˆg, ˆf
+
+is consistent on ˜
+X.
+16
+
+Notation
+Since Lrec
+ ˆg, ˆf, px
+
+vanishes either for all px or none at the same time, henceforth in
+the context of vanishing reconstruction loss, we are going to denote the reconstruction loss of
+ ˆg, ˆf
+
+w.r.t. px as Lrec
+ ˆg, ˆf, ˜
+X
+
+or just Lrec( ˜
+X).
+Proof of Lem. 4. We prove the equivalence of these statements by proving ii) ⇒i) ⇒iii) ⇒ii).
+The implication ii) ⇒i) is trivial.
+For the implication i) ⇒iii), let us suppose that there exists a px with supp(px) = ˜
+X such that
+Lrec
+ ˆg, ˆf, px
+
+= 0. Equivalently:
+Ex∼px
+h ˆf
+ ˆg(x)
+
+−x
+2
+2
+i
+= 0.
+(16)
+This shows that
+ ˆf
+ ˆg(x)
+
+−x
+2
+2 = 0 or ˆf
+ ˆg(x)
+
+= x holds almost surely w.r.t. x ∼px. Since
+both ˆg, ˆf are continuous functions, this implies that ˆf ◦ˆg| ˜
+X = id, which is exactly what was to be
+proven.
+Now, for iii) ⇒ii), let us suppose that ˆf ◦ˆg| ˜
+X = id and let px be any continuous distribution
+function with supp(px) = ˜
+X. Since, ˆf
+ ˆg(x)
+
+= x holds for any non-random x ∈˜
+X, then with
+probability 1, ˆf
+ ˆg(x)
+
+= x also holds. From this, we conclude that:
+Lrec
+ ˆg, ˆf
+
+= Ex∼px
+h ˆf
+ ˆg(x)
+
+−x
+2
+2
+i
+= 0.
+(17)
+A.3
+DEFINITION OF SLOT IDENTIFIABILITY AND COMPOSITIONAL GENERALIZATION
+We are now ready to recall the definition of slot identifiability (Def. 2, originally in Brady et al.
+(2023)) in its most abstract form, followed by the definition of compositional generalization (Def. 3).
+Definition 2b (Slot identifiability). Let f ∈C1Diffeo(Z, RN), where Z = Z1 × . . . × ZK for
+closed sets Zk ⊆RM, and let ˜Z ⊆Z be a closed, slot-supported subset of Z (e.g. Z or ZS from a
+POGP).
+An autoencoder
+ ˆg, ˆf
+
+is said to slot-identify z on ˜Z w.r.t. f via ˆh(z) ··= ˆg
+ f(z)
+
+if it minimizes
+Lrec( ˜
+X) for ˜
+X = f( ˜Z) and there exists a permutation π of [K] and a set of diffeomorphisms
+hk ∈C1Diffeo
+ Zπ(k), ˆhk( ˜Z)
+
+such that ˆhk(z) = hk(zπ(k)) for any k and z, where ˆhk( ˜Z) is the
+projection of the set ˆh( ˜Z) (c.f. Def. 8).
+Definition 3b (Compositional generalization). Let (Z, ZS, f) be a POGP. An autoencoder
+ ˆg, ˆf
+
+that slot-identifies z on ZS w.r.t. f is said to generalize compositionally w.r.t. ZS, if it also slot-
+identifies z on Z w.r.t. f.
+A.4
+COMPOSITIONALITY AND IRREDUCIBILITY ASSUMPTIONS
+In this subsection we present the formal definitions of compositionality and irreducibility, already
+mentioned in Sec. 3 and originally introduced in Brady et al. (2023). These two properties represent
+sufficient conditions for POGPs (Def. 9) to be slot-identifiable on the training latent space (Def. 2b).
+Let f ∈C1(Z, RN), Z ⊆RKM, k ∈[K], z ∈Z. For the sake of brevity let us denote ∂kfn(z) =
+∂fn/∂zk(z). In this case, let us define
+If
+k (z) =
+
+n ∈[N]
+ ∂kfn(z) ̸= 0
+	
+(18)
+the set of coordinates locally influenced (i.e., in point z) by slot zk w.r.t. the generator f.
+Definition 4b (Compositionality). We say that a function f ∈C1(Z, RN), Z ⊆RKM, is compo-
+sitional on ˜Z ⊆Z if for any z ∈˜Z and k ̸= j, k, j ∈[N]:
+If
+k (z) ∩If
+j (z) = ∅.
+(19)
+17
+
+Let fS(z) denote the subvector of f(z) corresponding to coordinates S
+⊆
+[N] and let
+DfS(z) ∈Lin(RKM, R|S|) be the corresponding derivative.
+Definition 12 (Irreducibility). We say that a function f ∈C1(Z, RN), Z ⊆RKM is irreducible
+on ˜Z ⊆Z if for any z ∈˜Z and k ∈[N] and any non-trivial partition If
+k (z) = S1 ∪S2 (i.e.,
+S1 ∩S2 = ∅and S1, S2 ̸= ∅) we have:
+rank
+ DfS1(z)
+
++ rank
+ DfS2(z)
+
+> rank
+ DfIf
+k (z)(z)
+
+.
+(20)
+Remark. Given linear operators A ∈Lin(U, V ), B ∈Lin(U, W), the following upper bound holds
+for the rank of (A, B) ∈Lin(U, V × W):
+rank(A) + rank(B) ≥rank
+ (A, B)
+
+.
+(21)
+Therefore, it holds in general that:
+rank
+ DfS1(z)
+
++ rank
+ DfS2(z)
+
+≥rank
+ DfIf
+i (z)(z)
+
+,
+(22)
+hence, irreducibility only prohibits equality.
+A.5
+IDENTIFIABILITY ON THE TRAINING LATENT SPACE
+Here we recall Thm. 1, originally presented in a slightly less general form in Brady et al. (2023).
+Theorem 1b (Slot identifiability on slot-supported subset). Let (Z, ZS, f) be a POGP (Def. 9) such
+that
+i) ZS is convex and
+ii) f is compositional and irreducible on ZS.
+Let
+ ˆg, ˆf
+
+be an autoencoder (Def. 10) such that
+iii)
+ ˆg, ˆf
+
+minimizes Lrec(X S) for X S = f(ZS) and
+iv) ˆf is compositional on ˆZS ··= ˆg(X S).
+Then
+ ˆg, ˆf
+
+slot-identifies z on ZS w.r.t. f in the sense of Def. 2b.
+Remark. Due to Lem. 4, assumption iii) is equivalent to
+ ˆg, ˆf
+
+being consistent on X S, i.e., ˆg|X S
+is injective and its inverse is ˆf| ˆ
+ZS.
+In its original framework, Brady et al. (2023) assumed the training latent space to be the entirety of
+RKM. In our case, however, ZS is a closed, convex, slot-supported subset of Z. Therefore, it is
+required to reprove Thm. 1b.
+A.6
+PROOF OF SLOT IDENTIFIABILITY ON SLOT-SUPPORTED SUBSET
+In this subsection we reprove Thm. 1b via 3 steps. First, we prove that the latent reconstruction
+function ˆh = ˆg ◦f is, under the consistency of the autoencoder, a diffeomorphism. Secondly, we
+restate Prop. 3 of Brady et al. (2023) using our notation. It is a result that locally describes the
+behaviour of ˆh, irrespective of the shape of the latent training space. Hence, no proof is required.
+The third and final step is concluding Thm. 1b itself.
+Lemma 5 (Latent reconstruction is diffeomorphism). Let f ∈C1Diffeo( ˜Z, RN) for ˜Z ⊆RKM
+closed and
+ ˆg, ˆf
+
+an autoencoder consistent on ˜
+X
+··= f( ˜Z).
+Then ˆh ··= ˆg ◦f is a C1-
+diffeomorphism around ˜Z (Def. 7).
+In particular, for any z ∈
+˜Z, Dˆh(z) is invertible linear transformation of RKM, continuously
+depending on z.
+Proof. Since f is C1 in an open neighbourhood of ˜Z and ˆg is C1 on RN, it follows that ˆh = ˆg ◦f
+is also C1 in an open neighbourhood of ˜Z.
+18
+
+The autoencoder
+ ˆg, ˆf
+
+is consistent on ˜
+X, hence ˆg| ˜
+X is injective and ˆh : ˜Z →ˆg( ˜
+X) is bijective.
+Moreover, the inverse of ˆg| ˜
+X is ˆf restricted to ˆg( ˜
+X). Therefore, ˆh = ˆg ◦f implies that for any
+z ∈˜Z it holds that ˆf
+ ˆh(z)
+
+= f(z). After differentiation we receive that for any z ∈˜Z:
+D ˆf
+ ˆh(z)
+
+Dˆh(z) = Df(z).
+(23)
+However, f is a C1-diffeomorphism, consequently Df(z) ∈Lin(RKM, RN) is injective. On the
+left-hand side, we then have an injective composition of linear functions. Therefore, Dˆh(z) ∈
+Lin(RKM, RKM) is injective and, of course, bijective.
+Consequently, ˆh is a C1-diffeomorphism.
+Lemma 6 (Prop. 3 of Brady et al. (2023)). Let (Z, ZS, f) POGP and
+ ˆg, ˆf
+
+autoencoder satisfy
+the assumptions of Thm. 1b and let ˆh ··= ˆg ◦f (now a C1-diffeomorphism around ZS because of
+remark after Thm. 1b and Lem. 5).
+Then for any z ∈ZS and any j ∈[K] there exists a unique k ∈[K] such that ∂jˆhk(z) ̸= 0. For
+this particular k it holds that ∂jˆhk(z) ∈Lin(RM, RM) is invertible.
+Remark. Since ˆh is a diffeomorphism, Dˆh(z) is invertible. Thus, the statement of Lem. 6 is equiv-
+alent to saying that for any z ∈ZS and any k ∈[K] there exists a unique j ∈[K] such that
+∂jˆhk(z) ̸= 0.
+Proof of Thm. 1b. Let ˆh ··= ˆg ◦f. Based on Lem. 6 and the latest remark, for any z and any k there
+exists a unique j such that ∂jˆhk(z) ̸= 0, and for this j, ∂jˆhk(z) ∈Lin(RKM, RKM) is invertible.
+Step 1.
+Firstly, we claim that, in this case, the mapping k 7→j is bijective and independent of z.
+More precisely, we show that there exists a permutation π of [K] such that
+for any z, k and j:
+∂jˆhk(z) ̸= 0 ⇐⇒j = π(k)
+(24)
+and, in the latter case, ∂π(k)ˆhk(z) is invertible.
+To prove this, we conclude from the invertibility of Dˆh(z) that for any z there exists such a π. Now
+suppose that there exist two distinct points z(1), z(2) ∈ZS and indices k and j1 ̸= j2 from [K]
+such that ∂j1 ˆhk(z(1)) ̸= 0, ∂j2 ˆhk(z(2)) ̸= 0. Then, since ZS is path-connected (as being convex),
+it provides us with a continuous function ϕ : [0, 1] →ZS such that ϕ(0) = z(1) and ϕ(1) = z(2).
+Let
+t∗= sup{t ∈[0, 1] | ∂j1 ˆhk
+ ϕ(t)
+
+̸= 0}.
+(25)
+On one hand, ∂j2 ˆhk
+ ϕ(1)
+
+= ∂j2 ˆhk(z(2)) ̸= 0, hence ∂j1 ˆhk
+ ϕ(1)
+
+= 0 and for any t > t∗:
+∂j1 ˆhk
+ ϕ(t)
+
+= 0. Therefore, because ∂j1 ˆhk ◦ϕ is continuous, it follows that ∂j1 ˆhk
+ ϕ(t∗)
+
+= 0.
+On the other hand, ∂j1 ˆhk
+ ϕ(0)
+
+= ∂j1 ˆhk(z(1)) ̸= 0 implies that t∗̸= 0 and there exists a con-
+vergent sequence (tn) ⊆[0, t∗) with limn→∞tn = t∗such that ∂j1 ˆhk
+ ϕ(tn)
+
+̸= 0. Therefore, for
+any j ̸= j1, ∂jˆhk
+ ϕ(tn)
+
+= 0. From the continuity of ∂jˆhk ◦ϕ we conclude that for any j ̸= j1,
+∂jˆhk
+ ϕ(t∗)
+
+= 0.
+Subsequently, for any j ∈[K] (either j ̸= j1 or j = j1) it holds that ∂jˆhk
+ ϕ(t∗)
+
+= 0. Thus, we
+get Dˆhk
+ ϕ(t∗)
+
+= 0, which contradicts ˆh being a diffeomorphism. Hence, there exists π such that
+for any z, k: ∂jˆhk(z) ̸= 0 ⇔j = π(k).
+Step 2.
+Secondly, we now prove that ˆh acts slot-wise with permutation π, i.e. for any k there
+exists hk C1-diffeomorphism around Zπ(k) such that for any z, ˆhk(z) = hk(zπ(k)). By Def. 2b
+this would imply that
+ ˆg, ˆf
+
+slot-identifies z on ZS w.r.t. f.
+19
+
+To see this, let z(1), z(2) ∈ZS with z(1)
+π(k) = z(2)
+π(k). To be proven: ˆhk(z(1)) = ˆhk(z(2)). Since ZS
+is convex, the path t ∈[0, 1] 7→z(t) = z(1) + t · (z(2) −z(1)) is inside ZS. Then
+ˆhk(z(2)) −ˆhk(z(1)) = ˆhk(z(t))
+1
+0 =
+Z 1
+0
+d
+dt[ˆhk(z(t))]dt
+(26)
+=
+Z 1
+0
+Dˆhk(z(t))(z(2) −z(1))dt =
+Z 1
+0
+K
+X
+j=1
+∂jˆhk(z(t))(z(2)
+j
+−z(1)
+j )dt.
+(27)
+First using the fact that ∂jˆhk(z(t)) ̸= 0 ⇔j = π(k) and then substituting z(1)
+π(k) = z(2)
+π(k), we
+receive:
+ˆhk(z(2)) −ˆhk(z(1)) =
+Z 1
+0
+∂π(k)ˆhk(z(t))(z(2)
+π(i) −z(1)
+π(i))dt = 0.
+(28)
+A.7
+ADDITIVITY AND CONNECTION TO COMPOSITIONALITY
+This subsection presents a special subset of decoders that will allow autoencoders to generalize
+compositionally in the sense of Def. 3b.
+Definition 5b (Additivity). A function f : Z = Z1 × . . . × ZK →RN is called additive on Z if
+for any k there exists φk : Zk →RN such that
+f(z) =
+K
+X
+k=1
+φk(zk)
+holds for any z ∈Z.
+(29)
+Lemma 7 (Compositionality implies additivity). Let Zk ⊆RKM be convex sets and let f : Z =
+Z1 × . . . × ZK →RN be C2 (i.e., twice continuously differentiable) and compositional on Z (in
+the sense of Def. 4b). Then f is additive on Z.
+Proof of Lem. 7. The proof is broken down into two steps. First, we prove that the coordinate func-
+tions of compositional functions have a diagonal Hessian. Second, we prove that real-valued func-
+tions defined on a convex set with diagonal Hessian are additive.
+Step 1.
+Observe that f is additive if and only if for any p ∈[N], fp is additive. Let p ∈[N] be
+arbitrary but fixed and let q ··= fp. To be proven: q is additive. Note that since f is C2, q is C2 as
+well.
+We first prove that q has a diagonal Hessian, i.e., for any i, j ∈[K], i ̸= j we have ∂2
+ijq(z) = 0 for
+any z. Proving it indirectly, let us assume there exist i ̸= j and ˜z such that ∂2
+ijq(˜z) ̸= 0.
+The function q is C2, thus ∂2
+ijq is continuous. Therefore, there exists a neighborhood V of ˜z such
+that ∂2
+ijq(z) ̸= 0 for any z ∈V . Hence, ∂iq cannot be constant on V , for otherwise ∂j(∂iq) = ∂2
+ijq
+would be 0. Consequently, there exists z∗∈V such that ∂iq(z∗) ̸= 0. Again, ∂iq is continuous,
+hence there exists a neighborhood W ⊆V of z∗such that ∂iq(z) ̸= 0 for any z ∈W.
+However, f is compositional, hence either ∂iq(z) or ∂jq(z) is 0. Therefore ∂jq(z) = 0 for any
+z ∈W. After taking the partial derivative with respect to slot zi, we receive that ∂2
+ijq(z) =
+∂i(∂jq(z)) = 0 for any z ∈W ⊆V . This contradicts the fact that ∂2
+ijq(z) ̸= 0 for any z ∈W.
+Step 2.
+Secondly, we prove that q defined on Z convex, having a diagonal Hessian, has to be
+additive. Observe that by slightly reformulating the property of a diagonal Hessian, we receive:
+for any z, i and j:
+∂j[∂iq](z) ̸= 0 =⇒j = i.
+(30)
+Comparing Eq. 30 to Eq. 24 from the proof of Thm. 1b, we realize that the derivative of Dq(z) has
+a blockdiagonal structure, similar to ˆh (except, the blocks may become 0). By repeating the same
+argument from Step 2. of the proof of Thm. 1b, we get that Dq is a slot-wise ambiguity with the
+identity permutation, i.e. for some C1-diffeomorphisms Qk we have ∂kq(z) = Qk(zk) for any
+z, k.
+20
+
+However, then let z, z(0) ∈Z and let ϕ(t) : [0, 1] →Z be a smooth path with ϕ(0) = z(0), ϕ(1) =
+z (Z being convex, such a path exists). Then:
+q(z) −q(z(0)) =
+Z 1
+0
+d
+dt
+
+q
+ ϕ(t)
+
+dt =
+Z 1
+0
+Dq
+ ϕ(t)
+
+ϕ′(t)dt
+(31)
+=
+Z 1
+0
+K
+X
+k=1
+∂kq
+ ϕ(t)
+
+ϕ′
+k(t)dt =
+K
+X
+k=1
+Z 1
+0
+Qk
+ ϕk(t)
+
+ϕ′
+k(t)dt.
+(32)
+Functions Qk are continuous; hence, they can give rise to an integral function ˜φk. Using the rule of
+integration by substitution, we receive:
+q(z) −q(z(0)) =
+K
+X
+k=1
+˜φk
+ ϕ(t)
+
+1
+0 =
+K
+X
+k=1
+  ˜φk(zk) −˜φk(z(0)
+k )
+
+.
+(33)
+Denoting φk(zk) = ˜φk(zk) −˜φk(z(0)
+k ) + 1
+K q(z(0)), we conclude that q is additive, as
+q(z) =
+K
+X
+k=1
+φk(zk).
+(34)
+A.8
+DECODER GENERALIZATION
+In this subsection we recall in a more precise format and prove Thm. 2. However, before that, we
+also precisely introduce the slot-wise recombination space (Z′) and -function (h′), where Z′ is an
+extension of Eq. 5. The latter was only defined for the case when our autoencoder slot-identified z
+on the training latent space.
+Definition 13 (Slot-wise recombination space and -function). Let (Z, ZS, f) be a POGP and let
+ ˆg, ˆf
+
+be an autoencoder. Let ˆZS ··= ˆg
+ f(ZS)
+
+. We call
+Z′ ··= ˆZS
+1 × . . . × ˆZS
+K
+(35)
+the slot-wise recombination space, where ˆZS
+k is the projection of the set ˆZS (c.f. Def. 8).
+In the case when
+ ˆg, ˆf
+
+slot-identifies z on ZS w.r.t. generator f, let the slot-wise recombination
+function be the concatenation of all slot-functions hk(zπ(k)):
+h′(z) ··=
+ h1(zπ(1)), . . . , hK(zπ(K))
+
+.
+(36)
+The space of all values taken by h′(z) is:
+h′(Z) = h1(Zπ(1)) × · · · × hK(Zπ(K)).
+(37)
+Since in this case hk(Zπ(k)) = ˆZS
+k , we have that Z′ = h′(Z).
+Theorem 2b (Decoder generalization). Let (Z, ZS, f) be a POGP such that
+i) f is compositional on Z and
+ii) f is C2-diffeomorphism around Z.
+Let
+ ˆg, ˆf
+
+be an autoencoder such that
+iii)
+ ˆg, ˆf
+
+slot-identifies z on ZS w.r.t. f and
+iv) ˆf is additive (on RKM).
+Then ˆf generalizes in the sense that ˆf
+ h′(z)
+
+= f(z) holds for any z ∈Z. What is more, ˆf is
+injective on Z′ and we get ˆf(Z′) = f(Z) = X.
+21
+
+Proof of Thm. 2b. Let X S = f(ZS) and ˆZS = ˆg(X S). Condition iii) implies that
+ ˆg, ˆf
+
+mini-
+mizes Lrec(X S), or equivalently, because of Lem. 4, ˆg : X S →ˆZS and ˆf : ˆZS →X S invert each
+other. Also, the projection of ˆZS to the k-th slot is ˆZS
+k = hk(Zπ(k)). Furthermore, from Def. 13
+we know that ˆg
+ f(z)
+
+= h′(z), for any z ∈ZS. Hence, by applying ˆf on both sides, we receive:
+f(z) = ˆf
+ h′(z)
+
+for any z ∈ZS.
+(38)
+Besides, ˆf is additive. Due to ii) and Lem. 7, f is also additive on Z. More precisely: for any
+k ∈[K] there exist functions φk : Zk →RN, ˆφk : hk(Zπ(k)) →RN such that:
+f(z) =
+K
+X
+k=1
+φk(zk) for any z ∈Z and
+(39)
+ˆf(ˆz) =
+K
+X
+k=1
+ˆφk(ˆzk) for any ˆz ∈Z′.
+(40)
+Substituting this into Eq. 38, we receive:
+K
+X
+k=1
+φk(zk) =
+K
+X
+k=1
+ˆφk
+ h′
+k(z)
+
+=
+K
+X
+k=1
+ˆφk
+ hk(zπ(k))
+
+for any z ∈ZS.
+(41)
+It is easily seen that functions φk, ˆφk are C1. After differentiating Eq. 41 with respect to zk, we
+receive:
+Dφk(zk) = D
+  ˆφπ−1(k) ◦hπ−1(k)
+
+(zk) for any z ∈ZS.
+(42)
+Since ZS is a slot-supported subset of Z, Eq. 42 holds for any zk
+∈Zk. Let us denote
+γk = ˆφπ−1(k) ◦hπ−1(k) ∈C1(Zk).
+Since Zk is convex, let z(0)
+k
+∈Zk fixed and define the path t ∈[0, 1] 7→u(t) = z(0)
+k +t(zk−z(0)
+k ) ∈
+Zk. Then:
+φk(zk) −φk(z(0)
+k ) = φk
+ u(t)
+
+1
+0 =
+Z 1
+0
+Dφk(u(t)) u′(t)dt
+(43)
+Due to Eq. 42, we may continue:
+φk(zk) −φk(z(0)
+k ) =
+Z 1
+0
+Dγk(u(t)) u′(t)dt = γk
+ u(t)
+
+1
+0 = γk(zk) −γk(z(0)
+k ).
+(44)
+Consequently, there exist constants ck ∈RN such that for any k:
+φk(zk) = ˆφπ−1(k)
+ hπ−1(k)(zk)
+
++ ck
+for any zk ∈Zk.
+(45)
+After adding them up for all k and using Eq. 39:
+f(z) =
+K
+X
+k=1
+φk(zk) =
+K
+X
+k=1
+
+ˆφπ−1(k)
+ hπ−1(k)(zk)
+
++ ck
+
+(46)
+=
+K
+X
+k=1
+ˆφk
+ hk(zπ(k))
+
++
+K
+X
+k=1
+ck.
+(47)
+Now, based on Eq. 40, we receive:
+f(z) = ˆf
+ h1(zπ(1)), . . . , hK(zπ(K))
+
++
+K
+X
+k=1
+ck = ˆf
+ h′(z)
+
++
+K
+X
+k=1
+ck
+(48)
+holds for any z ∈Z. In particular, Eq. 48 holds for z ∈ZS, which together with 38 implies that
+K
+X
+k=1
+ck = 0.
+22
+
+Finally, we arrive at:
+f(z) = ˆf
+ h′(z)
+
+for any z ∈Z.
+(49)
+Note that previously Eq. 38 only held for z ∈ZS.
+Moreover, since h′ : Z →ˆZ is a diffeomorphism, we see that
+f(Z) = ˆf
+ h′(Z)
+
+= ˆf(Z′).
+(50)
+Remark. In the process of the proof, we have also proven the identifiability of the slot-wise addi-
+tive components up to constant translations: There exists a permutation π ∈S(K) and for any k,
+constants ck such that
+φk(zk) = ˆφπ−1(k)
+ hπ−1(k)(zk)
+
++ ck
+for any zk ∈Zk.
+(51)
+A.9
+ENCODER GENERALIZATION
+Definition 6b (Compositional consistency). Let
+ ˆg, ˆf
+
+be an autoencoder. Let Z′ ⊆RKM be an
+arbitrary set and let qz′ be an arbitrary continuous distribution with supp(qz′) = Z′. The following
+quantity is called the compositional consistency loss of
+ ˆg, ˆf
+
+with respect to qz′:
+Lcons
+ ˆg, ˆf, qz′
+= Ez′∼qz′
+hˆg
+  ˆf(z′)
+
+−z′2
+2
+i
+.
+(52)
+We say that
+ ˆg, ˆf
+
+is compositionally consistent if the compositional consistency loss w.r.t. qz′
+vanishes.
+We now state a lemma that, similarly to Lem. 4, states that for Lcons
+ ˆg, ˆf, qz′
+to vanish, the exact
+choice of qz′ is irrelevant and that in this case the decoder (right) inverts the encoder on Z′, meaning
+that the autoencoder is consistent on ˆf(Z′) to Z′.
+Lemma 8 (Vanishing Lcons implies invertibility on Z′). For
+ ˆg, ˆf
+
+and Z′ ⊆RKM the following
+statements are equivalent:
+i) there exists qz′ with supp(qz′) = Z′ such that Lcons
+ ˆg, ˆf, qz′
+= 0;
+ii) for any qz′ with supp(px) = Z′ we have Lcons
+ ˆg, ˆf, qz′
+= 0;
+iii) ˆg ◦ˆf|Z′ = id or, in other words,
+ ˆg, ˆf
+
+is consistent on ˆf(Z′) to Z′.
+Remark. The proof is analogous to the one of Lem. 4. Henceforth, in the context of vanishing con-
+sistency loss, we are going to denote Lcons
+ ˆg, ˆf, qz′
+simply either by Lcons
+ ˆg, ˆf, Z′
+or Lcons(Z′).
+Theorem 3b (Compositionally generalizing autoencoder). Let (Z, ZS, f) be a POGP (Def. 9) such
+that
+i) ZS is convex,
+ii) f is compositional and irreducible on Z and
+iii) f is C2-diffeomorphism around Z.
+Let
+ ˆg, ˆf
+
+be an autoencoder with X S = f(ZS) (Def. 10) such that
+iv)
+ ˆg, ˆf
+
+minimizes Lrec
+ ˆg, ˆf, X S
++λLcons
+ ˆg, ˆf, Z′
+for some λ > 0, where Z′ is the slot-wise
+recombination space (see definition of Z′ in Def. 13),
+v) ˆf is compositional on ˆZS ··= ˆg(X S) and
+vi) ˆf is additive (on RKM).
+Then the autoencoder
+ ˆg, ˆf
+
+generalizes compositionally w.r.t. ZS in the sense of Def. 3b. More-
+over, ˆg : X →ˆZ = ˆg(X) inverts ˆf : Z′ →X and ˆZ = Z′ = h1(Zπ(1)) × · · · × hK(Zπ(K)).
+23
+
+Proof of Thm. 3b. Observe that assumption iv) is equivalent to
+Lrec
+ ˆg, ˆf, X S
++ λLcons
+ ˆg, ˆf, Z′
+= 0,
+(53)
+which may happen if and only if Lrec
+ ˆg, ˆf, X S
+= Lcons
+ ˆg, ˆf, Z′
+= 0, i.e.
+ ˆg, ˆf
+
+minimizes both
+Lrec(X S) and Lcons(Z′).
+Firstly, as i) f is compositional on Z, and hence on ZS, ii) ˆf is compositional on ˆZS ··= ˆg(X S)
+and iii)
+ ˆg, ˆf
+
+minimizes Lrec(X S), we may conclude based on Thm. 1b that
+ ˆg, ˆf
+
+slot-identifies
+z on ZS. Consequently, the slot-wise recombination function h′ is well-defined.
+Secondly, i) f is compositional on Z; ii) f ∈C2Diffeo(Z); iii) ˆf is additive and iv)
+ ˆg, ˆf
+
+slot-identifies z on ZS. Therefore, Thm. 2b implies that ˆf in injective on Z′, ˆf
+ h′(z)
+
+= f(z)
+holds for any z ∈Z and ˆf(Z′) = f(Z) = X.
+Finally, from Lem. 8 and the fact that
+ ˆg, ˆf
+
+minimizes Lcons(Z′), we deduce that
+ ˆg, ˆf
+
+is consis-
+tent on ˆf(Z′), meaning that ˆg is injective on ˆf(Z′) = X and its inverse is ˆf : Z′ →X. However,
+by definition, ˆg(X) = ˆZ. Consequently, we proved that ˆZ = Z′.
+Furthermore, we recall that ˆf
+ h′(z)
+
+= f(z) holds for any z ∈Z. As ˆf is invertible on Z′ = ˆZ
+with inverse ˆg, we may pre-apply ˆg on both sides and receive
+ˆg
+ f(z)
+
+= h′(z),
+for any z ∈Z,
+(54)
+which proves that
+ ˆg, ˆf
+
+also slot-identifies z on Z and concludes our proof.
+B
+EXPERIMENT DETAILS
+B.1
+DATA GENERATION
+The multi-object sprites dataset used in all experiments was generated using DeepMind’s Sprite-
+world renderer (Watters et al., 2019). Each image consists of two sprites where the ground-truth
+latents for each sprite were sampled uniformly in the following intervals: x-position in [0.1, 0.9],
+y-position in [0.2, 0.8], shape in {0, 1} corresponding to {triangle, square}, scale in [0.09, 0.22], and
+color (HSV) in [0.05, 0.95] where saturation and value are fixed and only hue is sampled.
+All latents were scaled such that their sampling intervals become equivalent to a hypercube [0, 1]2×5
+(2 slots with 5 latents each) and then scaled back to their original values before rendering. The
+slot-supported subset ZS of the latent space was defined as a slot-wise band around the diagonal
+through this hypercube with width δ = 0.25 along each latent slot, i.e.,
+ZS =
+n
+(z1, z2)|∀i ∈[5] : (z1 −z2)i ≤
+√
+2δ
+o
+.
+(55)
+In this sampling region, sprites would almost entirely overlap for small δ. Therefore, we apply an
+offset to the x-position latent of slot z2. Specifically, we set it to (x + 0.5) mod 1, where x is the
+sampled x-position.
+The training set and ID test set were then sampled uniformly from the resulting region, ZS, while
+the OOD test set was sampled uniformly from Z \ ZS. Objects with Euclidean distance smaller
+than 0.2 in their position latents were filtered to avoid overlaps. The resulting training set consists
+of 100,000 samples, while the ID and OOD test set each consist of 5,000 samples. Each rendered
+image is of size 64 × 64 × 3.
+B.2
+MODEL ARCHITECTURE AND TRAINING SETTINGS
+The encoder and decoder for the additive autoencoder used in Sec. 6.1 closely resemble the archi-
+tectures from Burgess et al. (2018). The encoder consists of four convolutional layers, followed by
+four linear layers, and outputs a vector of dimensions 2 × h, where h represents the latent size of
+a single slot and is set to 16. The decoder consists of three linear layers, followed by four trans-
+posed convolutional layers, and is applied to each slot separately; the slot-wise reconstructions are
+24
+
+Figure 6: Samples from dataset used in Sec. 6. Left: In-distribution samples with latents sampled
+from the diagonal region. Objects are highly correlated in all latents and use an offset in their x-
+position to avoid direct overlaps. Right: Out-of-distribution samples with latents sampled from the
+off-diagonal region.
+subsequently summed to produce the final output. The ReLU activations were replaced with ELU
+in both the encoder and decoder. The Slot Attention model in Sec. 6.2 follows the implementation
+from the original paper Locatello et al. (2020a), where hyperparameters were chosen in accordance
+with the Object-Centric library (Dittadi et al., 2021) for the Multi-dSprites setting, but with the slot
+dimension set to 16.
+The additive autoencoder is trained for 300 epochs, while Slot Attention is trained for 400
+epochs.
+Both models are trained using a batch size of 64.
+We optimize both models with
+AdamW (Loshchilov and Hutter, 2019) with a warmup of eleven epochs. The initial learning rate
+is set as 1 × 10−7 and doubles every epoch until it reaches the value of 0.0004. Subsequently, the
+learning rate is halved every 50 epochs until it reaches 1 × 10−7. Both models were trained using
+PyTorch (Paszke et al., 2019).
+For the experiments verifying our theoretical results in Sec. 6.1, we only included models in our
+results which were able to adequately minimize their training objective. More specifically, we only
+selected models that achieved reconstruction loss on the ID test set less than 2.0. For the experiments
+with Slot Attention in Sec. 6.2, we only reported results for models that were able to separate objects
+ID where seeds were selected by visual inspection. This was done since the primary purpose of these
+experiments was not to see the effect of our assumptions on slot identifiability ID but instead OOD.
+Thus, we aimed to ensure that the effect of our theoretical assumptions on our OOD metrics were
+not influenced by the confounder of poor slot identifiability ID. Using these selection criteria gave
+us between 5 and 10 seeds for both models, which were used to compute our results.
+If used, the composition consistency loss is introduced with λ = 1 from epoch 100 onwards for the
+additive autoencoder model and epoch 150 onwards for Slot Attention. The number of recombined
+samples z′ in each forward pass of the consistency loss is equal to the batch size for all experiments.
+In our compositional consistency implementation, normalization of both the latents z′ and the re-
+encoded latents ˆg( ˆf(z′)) proved to be essential before matching them with the Hungarian algorithm
+and calculating the loss value. Without this normalization, we encountered numerical instabilities,
+which resulted in exploding gradients.
+B.3
+MEASURING RECONSTRUCTION ERROR
+For the heatmaps in Figs. 1 and 5, we first calculate the normalized reconstruction MSE on both the
+ID and OOD test sets. We then project the ground-truth latents of each test point onto a 2D plane
+with the x and y-axes corresponding to the color latent of each object. We report the average MSE
+in each bin. In this projection, some OOD points would end up in the ID region. Since we do not
+observe a difference in MSE for OOD points that are projected to the ID or OOD region, we simply
+filter those OOD points to allow for a clear visual separation of the regions.
+When reporting the isolated decoder reconstruction error in Fig. 1 A and Fig. 5 A and B, we aim
+to visualize how much of the overall MSE can attributed to only the decoder. Since the models
+approximately slot-identify the ground-truth latents ID on the training distribution, the MSE of the
+full autoencoder serves as a tight upper bound for the isolated decoder reconstruction error. Thus,
+in the ID region, we use this MSE when reporting the isolated decoder error. For the OOD region,
+25
+
+however, the reconstruction error could be attributed to a failure of the encoder to infer the correct
+latent representations or to a failure of the decoder in rendering the inferred latents. To remove
+the effect of the encoder’s OOD generalization error, we do the following: For a given OOD test
+image, we find two ID test images that each contain one of the objects in the OOD image in the
+same configuration. Because the encoder is approximately slot identifiable ID, we know that the
+correct representation OOD for each object in the image is given by the encoder’s ID representation
+for the individual objects in both ID images. To get these ID representations, we must solve a
+matching problem to find which ID latent slot corresponds to a given object in each image. We do
+this by matching slot-wise renders of the decoder with the ground-truth slot-wise renders for each
+object based on MSE using the Hungarian algorithm (Kuhn, 1955). Using this representation then
+allows us to obtain the correct representation for an OOD image without relying on the encoder to
+generalize OOD. The entire reconstruction error on this image can thus be attributed to a failure of
+the decoder to generalize OOD.
+B.4
+COMPOSITIONAL CONTRAST
+The compositional contrast given by Brady et al. (2023) is defined as follows:
+Definition 14 (Compositional Contrast). Let f : Z →X be differentiable. The compositional
+contrast of f at z is
+Ccomp(f, z) =
+N
+X
+n=1
+K
+X
+k=1
+K
+X
+j=k+1
+
+∂fn
+∂zk
+(z)
+
+
+∂fn
+∂zj
+(z)
+ .
+(56)
+This contrast function was proven to be zero if and only if f is compositional according to Def. 4.
+The function can be understood as computing each pairwise product of the (L2) norms for each
+pixel’s gradients w.r.t. any two distinct slots k ̸= j and taking the sum. This quantity is non-negative
+and will only be zero if each pixel is affected by at most one slot such that f satisfies Def. 4. We
+use this contrast function to measure compositionality of a decoder in our experiments in Sec. 6.1.
+More empirical and theoretical details on the function may be found in Brady et al. (2023).
+B.5
+COMPUTATIONAL COST OF THE PROPOSED CONSISTENCY LOSS
+Computing the consistency loss as illustrated in Fig. 3 poses some additional computational over-
+head. Namely, it requires additional passes through the encoder and decoder as well as computation
+of the encoder’s gradients w.r.t. the loss. As outlined in Sec. 4, we computed the consistency loss
+on samples z′ obtained by randomly shuffling the slots in the current batch, effectively doubling the
+batch size. We found this to increase training time by a maximum of 28 % across runs.
+For two slots, it would be possible to sample up to b(b −1) novel combinations of the slots within
+the given batch, where b is the batch size. This number increases combinatorially to
+b!
+(b−n)! for n
+slots, which could pose a severe computational overhead. While our experiments demonstrate that
+the loss works well with just b samples, App. C.3 also shows that it does not scale well to more than
+two slots, and drawing more samples might be a way to remedy this.
+On the other hand, there might be ways to draw samples more effectively. One approach could
+be to sample slot combinations in proportion to their value w.r.t. the consistency loss or to sample
+combinations according to their likelihood under a prior over latents. Using a likelihood could
+avoid sampling implausible combinations; however, such a scheme is challenging as it relies on
+the likelihood being valid for OOD combinations of slots. Another possibility would be to include
+heuristics to directly filter combinations based on a priori knowledge of the data-generation process,
+e.g., to filter objects with similar coordinates which would intersect.
+B.6
+USING MORE REALISTIC DATASETS
+Extending our experiments from the sprites dataset to more realistic data poses two main challenges.
+Firstly, in real-world datasets one generally does not have access to the ground-truth latents making
+our evaluation schemes inapplicable. Secondly, even if access to ground-truth latent information is
+available, our experiments require being able to sample latents densely from a slot-supported subset.
+26
+
+0.16
+0.2
+0.25
+0.4
+0.8
+slot-wise band width δ
+0.4
+0.6
+0.8
+1.0
+Reconstruction R2 OOD
+0.16
+0.2
+0.25
+0.4
+0.8
+slot-wise band width δ
+0.2
+0.4
+0.6
+0.8
+Identiﬁability Score OOD
+without Lcons
+with Lcons
+Figure 7: OOD Reconstruction quality and slot identifiability as a function of training region
+size. The width δ ∈(0, 1) of the slot-wise band around the diagonal (see Eq. 55) is 0 if ZS is a
+line and 1 if ZS = Z; experiments in Sec. 6 used δ = 0.25. In the absence of the consistency
+loss (Def. 6), a large δ is required for models to achieve high OOD performance for reconstruction
+and slot identifiability. In contrast, models trained with the consistency loss yield consistently high
+performance across all δ. Results are averaged over at least four random seeds.
+Specifically, our experiments rely on sampling from a diagonal strip in the latent space with small
+width. If such a region were sub-sampled from an existing dataset, this would leave only a very small
+number of data points which are insufficient to train a model. To this end, our experiments require
+access to the ground-truth renderer for a dataset such that latents can be sampled densely. This is not
+available in most cases, however. An interesting avenue to address this would be to leverage recent
+rendering pipelines such as Kubric (Greff et al., 2022) to create more complex synthetic datasets.
+We leave this as an interesting direction for future work.
+C
+ADDITIONAL EXPERIMENTS AND FIGURES
+This section provides additional experimental results to the main experiments from Sec. 6.
+C.1
+IMPACT OF TRAINING REGION SIZE
+We ablate the impact of the size of slot-supported subset on OOD metrics in Fig. 7 by varying the
+width δ of the slot-wise band around the diagonal (see Eq. 55). All models use an additive decoder
+and differ in whether they optimize the consistency loss (Def. 6). We see that models which do not
+optimize the loss require an increasingly large δ in order to achieve high OOD reconstruction and
+identifiability scores, while models which do optimize the loss, achieve consistently high scores on
+OOD metrics across all values of δ.
+C.2
+VIOLATING SLOT-SUPPORTEDNESS
+We illustrate the effect of violating the assumption that ZS is a slot-supported subset of Z (recall
+Def. 1) in Fig. 8 on reconstruction loss for an additive autoencoder trained with consistency loss.
+To do this, we create a gap in the slot-supported subset ZS by removing all occurrences of objects
+with a hue-latent in the interval (0.5, 0.8). We can see in Fig. 8 that this leads to poor reconstruction
+performance in the region containing the gap which propagates to the OOD regions as well.
+C.3
+IMPACT OF MORE THAN 2 OBJECTS ON CONSISTENCY LOSS
+We also examine how the consistency loss scales as the number of objects in the training data is
+increased from two to three and four. We find that as the number of objects grows, optimization of
+the consistency loss becomes more challenging (Fig. 9, bottom left) which makes sense considering
+that the number of possible slot combinations grows combinatorially with the number of slots. This,
+27
+
+slot 2
+slot 1
+training distribution
+Slot-supported
+slot 1
+Support with gaps
+1.0
+0.8
+0.6
+0.4
+0.2
+0
+MSE
+Figure 8:
+Violating slot-supportedness prevents OOD generalization. We retrain the additive
+autoencoder from Sec. 6.1 on data arising from a latent subset ZS in which all occurrences of objects
+with a hue-latent in the interval (0.5, 0.8) have been removed. This leads to a cross-shaped gap in
+the latent subset ZS which can be visualized via a 2D projection of the latent space (see App. B.3
+for details) where the x- and y-axes correspond to the hue-latent of each object (right). Compared to
+a model trained without this gap (left), we can see that the model is unable to reconstruct ID samples
+in this gap (i.e., samples where either object has this hue), and this error propagates outward to OOD
+samples.
+2
+3
+4
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Reconstruction R2 ID
+2
+3
+4
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Reconstruction R2 OOD
+2
+3
+4
+Number of Slots
+0
+1
+2
+3
+4
+Lcons
+2
+3
+4
+Number of Slots
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Identiﬁability Score OOD
+without Lcons
+with Lcons
+Figure 9: Impact of number of objects on consistency loss. We measure how the consistency loss
+scale as the number of objects in the training data is increased from two to three and four. We mea-
+sure this for additive autoencoders which explicitly optimize the consistency loss (red) and models
+which do not optimize it (blue). Top and Bottom left: We can see that the ID reconstruction remains
+high as the number of objects grow, but the consistency loss increases steeply across models. Top
+right: Consequently, the OOD reconstruction quality decreases as the number of objects increases.
+Bottom right: This then prevents the encoder from slot-identifying the ground-truth latents OOD.
+However, training with the consistency loss still yields generally better results than training without
+it. All results are averaged over at least four random seeds. The consistency loss is normalized by
+the number of slots, and R2 scores are clipped to zero.
+in turn, leads to poor OOD reconstruction quality (Fig. 9, top right) which prevents the encoder from
+slot-identifying the ground-truth latents (Fig. 9, bottom right). As hypothesized in App. B.5, more
+principled schemes for sampling slot combinations could mitigate these scaling issues.
+28
+

@@ -1,0 +1,3268 @@
+Published as a conference paper at ICLR 2024
+MONTE CARLO GUIDED DENOISING DIFFUSION MODELS FOR
+BAYESIAN LINEAR INVERSE PROBLEMS
+Gabriel Cardoso*
+Ecole polytechnique
+IHU Liryc
+Yazid Janati*
+Ecole polytechnique
+Sylvain Le Corff
+Sorbonne Université
+Eric Moulines
+Ecole polytechnique
+ABSTRACT
+Ill-posed linear inverse problems arise frequently in various applications, from computational
+photography to medical imaging. A recent line of research exploits Bayesian inference with
+informative priors to handle the ill-posedness of such problems. Amongst such priors, score-
+based generative models (SGM) have recently been successfully applied to several different
+inverse problems. In this paper, we exploit the particular structure of the prior defined by
+the SGM to define a sequence of intermediate linear inverse problems. As the noise level
+decreases, the posterior distributions of these inverse problems get closer to the target posterior
+of the original inverse problem. To sample from these distributions, we propose the use of
+Sequential Monte Carlo (SMC) methods. The proposed algorithm, MCGdiff, is shown to
+be theoretically grounded and we provide numerical simulations showing that it outperforms
+competing baselines when dealing with ill-posed inverse problems in a Bayesian setting.
+1
+INTRODUCTION
+This paper is concerned with linear inverse problems y = Ax + σyε, where y ∈Rd
+y is a vector of indirect
+observations, x ∈Rdx is the vector of unknowns, A ∈Rdy×dx is the linear forward operator and ε ∈Rdy is
+an unknown noise vector. This general model is used throughout computational imaging, including various
+tomographic imaging applications such as common types of magnetic resonance imaging Vlaardingerbroek &
+Boer (2013), X-ray computed tomography Elbakri & Fessler (2002), radar imaging Cheney & Borden (2009),
+and basic image restoration tasks such as deblurring, super-resolution, and image inpainting González et al.
+(2009). The classical approach to solving linear inverse problems relies on prior knowledge about x, such as its
+smoothness, sparseness in a dictionary, or its geometric properties. These approaches attempt to estimate a bx by
+minimizing a regularized inverse problem, ˆx = argminx{∥y −Ax∥2 + Reg(x)}, where Reg is a regularization
+term that balances data fidelity and noise while enabling efficient computations. However, a common difficulty in
+the regularized inverse problem is the selection of an appropriate regularizer, which has a decisive influence on the
+quality of the reconstruction.
+Whereas regularized inverse problems continue to dominate the field, many alternative statistical formulations
+have been proposed; see Besag et al. (1991); Idier (2013); Marnissi et al. (2017) and the references therein - see
+Stuart (2010) for a mathematical perspective. A main advantage of statistical approaches is that they allow for
+uncertainty quantification in the reconstructed solution; see Dashti & Stuart (2017). The Bayes’ formulation
+of the regularized inverse problem is based on considering the indirect measurement Y , the state X and the
+noise ε as random variables, and to specify p(y|x) the likelihood (the conditional distribution of Y at X) and
+the prior p(x) (the distribution of the state). One can use Bayes’ theorem to obtain the posterior distribution
+p(x|y) ∝p(y|x)p(x), where "∝" means that the two sides are equal to each other up to a multiplicative constant
+that does not depend on x. Moreover, the use of an appropriate method for Bayesian inference allows the
+*Both authors contributed equally.
+Correspondence: {gabriel.victorino_cardoso,yazid.janati}@polytechnique.edu
+1
+
+Published as a conference paper at ICLR 2024
+quantification of the uncertainty in the reconstructed solution x. A variety of priors are available, including but not
+limited to Laplace Figueiredo et al. (2007), total variation (TV) Kaipio et al. (2000) and mixture-of-Gaussians
+Fergus et al. (2006). In the last decade, a variety of techniques have been proposed to design and train generative
+models capable of producing perceptually realistic samples from the original data, even in challenging high-
+dimensional data such as images or audio Kingma et al. (2019); Kobyzev et al. (2020); Gui et al. (2021). Denoising
+diffusion models have been shown to be particularly effective generative models in this context Sohl-Dickstein
+et al. (2015); Song et al. (2021c;a;b); Benton et al. (2022). These models convert noise into the original data
+domain through a series of denoising steps. A popular approach is to use a generic diffusion model that has
+been pre-trained, eliminating the need for re-training and making the process more efficient and versatile Trippe
+et al. (2023); Zhang et al. (2023). Although this was not the main motivation for developing these models, they
+can of course be used as prior distributions in Bayesian inverse problems. This simple observation has led to a
+new, fast-growing line of research on how linear inverse problems can benefit from the flexibility and expressive
+power of the recently introduced deep generative models; see Arjomand Bigdeli et al. (2017); Wei et al. (2022);
+Su et al. (2022); Kaltenbach et al. (2023); Shin & Choi (2023); Zhihang et al. (2023); Sahlström & Tarvainen
+(2023).
+CONTRIBUTIONS
+• We propose MCGdiff, a novel algorithm for sampling from the Bayesian posterior of Gaussian linear inverse
+problems with denoising diffusion model priors. MCGdiff specifically exploits the structure of both the linear
+inverse problem and the denoising diffusion generative model to design an efficient SMC sampler.
+• We establish under sensible assumptions that the empirical distribution of the samples produced by MCGdiff
+converges to the target posterior when the number of particles goes to infinity. To the best of our knowledge,
+MCGdiff is the first provably consistent algorithm for conditional sampling from the denoising diffusion
+posteriors.
+• To evaluate the performance of MCGdiff, we perform numerical simulations on several examples for which
+the target posterior distribution is known. Simulation results support our theoretical results, i.e. the empirical
+distribution of samples from MCGdiff converges to the target posterior distribution. This is not the case for
+the competing methods (using the same denoising diffusion generative priors) which are shown, when run with
+random initialization of the denoising diffusion, to generate a significant number of samples outside the support of
+the target posterior. We also illustrate samples from MCGdiff in imaging inverse problems.
+Background and notations.
+This section provides a concise overview of the diffusion model framework and
+notations used in this paper. We cover the elements that are important for understanding our approach, and we
+recommend that readers refer to the original papers for complete details and derivations Sohl-Dickstein et al.
+(2015); Ho et al. (2020); Song et al. (2021c;a). A denoising diffusion model is a generative model consisting of a
+forward and a backward process. The forward process involves sampling X0 ∼qdata from the data distribution,
+which is then converted to a sequence X1:n of recursively corrupted versions of X0. The backward process
+involves sampling Xn according to an easy-to-sample reference distribution on Rdx and generating X0 ∈Rdx by
+a sequence of denoising steps. Following Sohl-Dickstein et al. (2015); Song et al. (2021a), the forward process
+can be chosen as a Markov chain with joint distribution
+q0:n(x0:n) = qdata(x0) Qn
+t=1 qt(xt|xt−1),
+qt(xt|xt−1) = N(xt; (1 −βt)1/2xt−1, βt Idx) ,
+(1.1)
+where Idx is the identity matrix of size dx, {βt}t∈N ⊂(0, 1) is a non-increasing sequence and N(x; µ, Σ) is the
+p.d.f. of the Gaussian distribution with mean µ and covariance matrix Σ (assumed to be non-singular) evaluated at
+x. For all t > 0, set ¯αt = Qt
+ℓ=1(1 −βℓ) with the convention α0 = 1. We have for all 0 ≤s < t ≤n,
+qt|s(xt|xs) :=
+R Qt
+ℓ=s+1 qℓ(xℓ|xℓ−1)dxs+1:t−1 = N(xt; (¯αt/¯αs)1/2xs, (1 −¯αt/¯αs) Idx) .
+(1.2)
+For the standard choices of ¯αt, the sequence of distributions (qt)t∈N converges weakly to the standard normal
+distribution as t →∞, which we chose as the reference distribution. For the reverse process, Song et al. (2021a;b)
+introduce an inference distribution qσ
+1:n|0(x1:n|x0), depending on a sequence {σt}t∈N of hyperparameters satisfy-
+2
+
+Published as a conference paper at ICLR 2024
+ing σ2
+t ∈[0, 1 −¯αt−1] for all t ∈N∗, and defined as qσ
+1:n|0(x1:n|x0) = qσ
+n|0(xn|x0) Q2
+t=n qσ
+t−1|t,0(xt−1|xt, x0) ,
+where qσ
+n|0(xn|x0) = N
+Ä
+xn; ¯α1/2
+n x0, (1 −¯αn) Idx
+ä
+and qσ
+t−1|t,0(xt−1|xt, x0) = N  xt−1; µt(x0, xt), σ2
+t Idx
+ ,
+with µt(x0, xt) = ¯α1/2
+t−1x0 + (1 −¯αt−1 −σ2
+t )1/2(xt −¯α1/2
+t
+x0)(1 −¯αt)1/2 . For t ∈[1 : n −1], we define
+by backward induction the sequence qσ
+t|0(xt|x0) =
+R
+qσ
+t|t+1,0(xt|xt+1, x0)qσ
+t+1|0(xt+1|x0)dxt+1. It is shown in
+(Song et al., 2021a, Lemma 1) that for all t ∈[1 : n], the distributions of the forward and inference process condi-
+tioned on the initial state coincide, i.e. that qσ
+t|0(xt|x0) = qt|0(xt|x0). The backward process is derived from the
+inference distribution by replacing, for each t ∈[2 : n], x0 in the definition qσ
+t−1|t,0(xt−1|xt, x0) with a prediction
+where χθ
+0|t(xt) := ¯α−1/2
+t
+ xt −(1 −¯αt)1/2eθ(xt, t)
+where eθ(x, t) is typically a neural network parameterized
+by θ. More formally, the backward distribution is defined as pθ
+0:n(x0:n) = pn(xn) Qn−1
+t=0 pθ
+t (xt|xt+1) , where
+pn(xn) = N(xn; 0dx, Idx) and for all t ∈[1 : n −1],
+pθ
+t(xt|xt+1) := qσ
+t|t+1,0(xt|xt+1, χθ
+0|t+1(xt+1)) = N(xt, mθ
+t+1(xt+1), σ2
+t+1Idx) ,
+(1.3)
+where mt+1(xt+1) := µ(χθ
+0|t+1(xt+1), xt+1) and 0dx is the null vector of size dx. At step 0, we set p0(x0|x1) :=
+N(x0; χθ
+0|1(x1), σ2
+1Idx). The parameter θ is obtained (Song et al., 2021a, Theorem 1) by solving the following
+optimization problem:
+θ∗∈arg minθ
+Pn
+t=1(2dxσ2
+t αt)−1 R
+∥ϵ −eθ(√αtx0 + √1 −αtϵ, t)∥2
+2N(ϵ; 0dx, Idx)qdata(dx0)dϵ .
+(1.4)
+Thus, eθ∗(Xt, t) might be seen as the predictor of the noise added to X0 to obtain Xt (in the forward pass) and
+justifies the ”prediction” terminology. The time 0 marginal pθ∗
+0 (x0) =
+R
+pθ∗
+0:n(x0:n)dx1:n which we will refer to as
+the prior is used as an approximation of qdata and the time s marginal is pθ∗
+s (xs) =
+R
+pθ∗
+0:n(x0:n)dx1:s−1dxs+1:n.
+In the rest of the paper, we drop the dependence on the parameter θ∗. We define for all v ∈Rℓ, w ∈Rk, the
+concatenation operator v⌢w = [vT , wT ]T ∈Rℓ+k. For i ∈[1 : ℓ], we let v[i] the i-th coordinate of v.
+Related works.
+The subject of Bayesian problems is very vast, and it is impossible to discuss here all the
+results obtained in this very rich literature. One of such domains is image restoration problems, such as deblurring,
+denoising inpainting, which are challenging problems in computer vision that involves restoring a partially
+observed degraded image. Deep learning techniques are widely used for this task Arjomand Bigdeli et al. (2017);
+Yeh et al. (2018); Xiang et al. (2023); Wei et al. (2022) with many of them relying on auto-encoders, VAEs
+Ivanov et al. (2018); Peng et al. (2021); Zheng et al. (2019), GANs Yeh et al. (2018); Zeng et al. (2022), or
+autoregressive transformers Yu et al. (2018); Wan et al. (2021). In what follows, we focus on methods based on
+denoising diffusion that has recently emerged as a way to produce high-quality realistic samples from the original
+data distribution on par with the best GANs in terms of image and audio generation, without the intricacies of
+adversarial training; see Sohl-Dickstein et al. (2015); Song et al. (2021c; 2022). Diffusion-based approaches
+do not require specific training for degradation types, making them much more versatile and computationally
+efficient. In Song et al. (2022), noisy linear inverse problems are proposed to be solved by diffusing the degraded
+observation forward, leading to intermediate observations {ys}n
+s=0, and then running a modified backward process
+that promotes consistency with ys at each step s. The Denoising-Diffusion-Restoration model (DDRM) Kawar et al.
+also modifies the backward process so that the unobserved part of the state follows the backward process while the
+observed part is obtained as a noisy weighted sum between the noisy observation and the prediction of the state.
+As observed by Lugmayr et al. (2022), DDRM is very efficient, but the simple blending used occasionally causes
+inconsistency in the restoration process. DPS Chung et al. (2023) considers a backward process targeting the
+posterior. DPS approximates the score of the posterior using the Tweedie formula, which incorporates the learned
+score of the prior. The approximation error is quantified and shown to decrease when the noise level is large, i.e.,
+when the posterior is close to the prior distribution. As shown in Section 3 with a very simple example, neither
+DDRM nor DPS can be used to sample the target posterior and therefore do not solve the Bayesian recovery problem
+(even if we run DDRM and DPS several time with independent initializations). Indeed, we show that DDRM and DPS
+produce samples under the "prior" distribution (which is generally captured very well by the denoising diffusion
+model), but which are not consistent with the observations (many samples land in areas with very low likelihood).
+3
+
+Published as a conference paper at ICLR 2024
+In Trippe et al. (2023), the authors introduce SMCdiff, a Sequential Monte Carlo-based denoising diffusion
+model that aims at solving specifically the inpainting problem. SMCdiff produces a particle approximation of
+the conditional distribution of the non observed part of the state conditionally on a forward-diffused trajectory
+of the observation. The resulting particle approximation is shown to converge to the true posterior of the SGM
+under the assumption that the joint laws of the forward and backward processes coincide, which fails to be true in
+realistic setting. In comparison with SMCdiff, MCGdiff is a versatile approach that solves any Bayesian linear
+inverse problem while being consistent under mild assumptions. In parallel to our work, Wu et al. (2023) also
+developed a similar SMC based methodology but with a different proposal kernel.
+2
+THE MCGD I F F ALGORITHM
+In this section, we present our methodology for the inpainting problem equation 2.1, both with noise and without
+noise. The more general case is treated in Section 2.1. Let dy ∈[1 : dx −1]. In what follows we denote the dy
+top coordinates of a vector x ∈Rdx by x and the remaining coordinates by x, so that x = x⌢x. The inpainting
+problem is defined as
+Y = X + σyε ,
+ε ∼N(0, Idy) ,
+σ ≥0 ,
+(2.1)
+where X are the first dy coordinates of a random variable X ∼p0. The goal is then to recover the law of the
+complete state X given a realisation y of the incomplete observation Y and the model equation 2.1.
+Noiseless case.
+We begin by the case σy = 0. As the first dy coordinates are observed exactly, we aim at infering
+the remaining coordinates of X,which correspond to X. As such, given an observation y, we aim at sampling
+from the posterior ϕy
+0(x0) ∝p0(y⌢x0) with integral form
+ϕy
+0(x0) ∝
+R
+pn(xn)
+¶Qn−1
+s=1 ps(xs|xs+1)
+©
+p0(y⌢x0|x1)dx1:n .
+(2.2)
+To solve this problem, we propose to use SMC algorithms Doucet et al. (2001); Cappé et al. (2005); Chopin
+et al. (2020), where a set of N random samples, referred to as particles, is iteratively updated to approximate
+the posterior distribution. The updates involve, at iteration s, selecting promising particles from the pool
+of particles ξ1:N
+s+1 = (ξ1
+s+1, . . . , ξN
+s+1) based on a weight function eωs, and then apply a Markov transition py
+s
+to obtain the samples ξ1:N
+s
+. The transition py
+s(xs|xs+1) is designed to follow the backward process while
+guiding the dy top coordinates of the pool of particles ξ1:N
+s
+towards the measurement y. Note that under the
+backward dynamics equation 1.3, Xt and Xt are independent conditionally on Xt+1 with transition kernels
+respectively pt(xt|xt+1) := N(xt; mt+1(xt+1), σ2
+t+1Idy) and pt(xt|xt+1) := N(xt; mt+1(xt+1), σ2
+t+1Idx−dy)
+where mt+1(xt+1) ∈Rdy and mt+1(xt+1) ∈Rdx−dy are such that mt+1(xt+1) = mt+1(xt+1)
+⌢mt+1(xt+1)
+and the above kernels satisfy pt(xt|xt+1) = pt(xt|xt+1)pt(xt|xt+1). We consider the following proposal kernels
+for t ∈[1 : n −1],
+py
+t (xt|xt+1) ∝pt(xt|xt+1)qt|0(xt|y) ,
+where
+qt|0(xt|y) := N(xt; ¯α1/2
+t
+y, (1 −¯αt)Idy) .
+(2.3)
+For the final step, we define py
+0(x0|x1) = p0(x0|x1). Using standard Gaussian conjugation formulas, we
+obtain
+py
+t (xt|xt+1) = pt(xt|xt+1) · N
+Ä
+xt; Ktα1/2
+t
+y + (1 −Kt)mt+1(xt+1), (1 −¯αt)Kt · Idy
+ä
+,
+where Kt := σ2
+t+1
+(σ2
+t+1+1−αt). For this procedure to target the posterior ϕy
+0, the weight function eωs is chosen as
+follows; we set eωn−1(xn) :=
+R
+pn−1(xn−1|xn)qn−1|0(xn−1|y)dxn−1 = N
+Ä
+α1/2
+n−1y; mn(xn), σ2
+n + 1 −αn−1
+ä
+and for t ∈[1 : n −2],
+eωt(xt+1) :=
+R
+pt(xt|xt+1)qt|0(xt|y)dxt
+qt+1|0(xt+1|y)
+=
+N
+Ä
+α1/2
+t
+y; mt+1(xs+1), (σ2
+t+1 + 1 −αt)Idy
+ä
+N
+Ä
+α1/2
+t+1y; xt+1, (1 −αt+1)Idy
+ä
+.
+(2.4)
+4
+
+Published as a conference paper at ICLR 2024
+For the final step, we set eω0(x1) := p0(y|x1)q1|0(x1|y). The overall SMC algorithm targeting ϕy
+0 using the
+instrumental kernel equation 2.3 and weight function equation 2.4 is summarized in Algorithm 1. We now provide
+Algorithm 1: MCGdiff (σ = 0)
+Input: Number of particles N
+Output: ξ1:N
+0
+ξ1:N
+n
+i.i.d.
+∼N(0dx, Idx);
+// Operations involving index i are repeated for each i ∈[1 : N]
+for s ←n −1 : 0 do
+if s = n −1 then
+eωn−1(ξi
+n) = N ¯α1/2
+n y; mn(ξi
+n), 2 −¯αn
+;
+else
+eωs(ξi
+s+1) = N
+Ä
+¯α1/2
+s
+y; ms+1(ξi
+s+1), σ2
+s+1 + 1 −¯αs
+ä N
+Ä
+¯α1/2
+s+1y; ξi
+s+1, 1 −¯αs+1
+ä
+;
+Ii
+s+1 ∼Cat {eωs(ξj
+s+1)/ PN
+k=1 eωs(ξk
+s+1)}N
+j=1
+,
+zi
+s ∼N(0dy, Idy),
+zi
+s ∼N(0dx−dy, Idx−dy);
+ξi
+s = Ks ¯α1/2
+s
+y + (1 −Ks)ms+1(ξ
+Ii
+s+1
+s+1 ) + (1 −αs)1/2K1/2
+s
+zi
+s,
+ξi
+s = ms+1(ξ
+Ii
+s+1
+s+1 ) + σs+1zi
+s;
+Set ξi
+s = ξi
+s
+⌢ξi
+s;
+a justification to Algorithm 1. Let {gy
+s}n
+s=1 be a sequence of positive functions with gy
+n ≡1. Consider the
+sequence of distributions {ϕy
+s}n
+s=1 defined as follows; ϕy
+n(xn) ∝gy
+n(xn)pn(xn) and for t ∈[1 : n −1]
+ϕy
+t (xt) ∝
+R
+gy
+t+1(xt+1)−1gy
+t (xt)pt(xt|xt+1)ϕy
+t+1(dxt+1) .
+(2.5)
+By construction, the time t marginal equation 2.5 is ϕy
+t (xt) ∝pt(xt)gy
+t (xt) for all t ∈[1 : n]. Then, using ϕy
+1
+and equation 2.2, we have that ϕy
+0(x0) ∝
+R
+gy
+1(x1)−1p0(y|x1)p0(x0|x1)ϕy
+1(dx1).
+The recursion equation 2.5 suggests a way of obtaining a particle approximation of ϕy
+0; by sequentially approxi-
+mating each ϕy
+t we can effectively derive a particle approximation of the posterior.To construct the intermediate
+particle approximations we use the framework of auxiliary particle filters (APF) (Pitt & Shephard, 1999). We
+focus on the case gy
+t (xt) = qt|0(xt|y) which corresponds to Algorithm 1. The initial particle approximation ϕy
+n is
+obtained by drawing N i.i.d. samples ξ1:N
+n
+from pn and setting ϕN
+n = N −1 PN
+i=1 δξin where δξ is the Dirac mass
+at ξ. Assume that the empirical approximation of ϕy
+t+1 is ϕN
+t+1 = N −1 PN
+i=1 δξi
+t+1 , where ξ1:N
+t+1 are N random
+variables. Substituting ϕN
+t+1 into the recursion equation 2.5 and introducing the instrumental kernel equation 2.3,
+we obtain the mixture
+bϕN
+t (xt) = PN
+i=1 eωt(ξi
+t+1)py
+t (xt|ξi
+t+1) PN
+j=1 eωt(ξj
+t+1) .
+(2.6)
+Then, a particle approximation of equation 2.6 is obtained by sampling N conditionally i.i.d. ancestor indices
+I1:N
+t+1
+i.i.d.
+∼Cat({eωt(ξi
+t+1)/ PN
+j=1 eωt(ξj
+t+1)}N
+i=1), and then propagating each ancestor particle ξ
+Ii
+t+1
+t+1 according to
+the instrumental kernel equation 2.3. The final particle approximation is given by ϕN
+0 = N −1 PN
+i=1 δξi
+0, where
+ξi
+0 ∼p0(·|ξIi
+1
+1 ), Ii
+1 ∼Cat({eω0(ξk
+1) PN
+j=1 eω0(ξj
+1)}N
+k=1). The sequence of distributions {pt}n
+t=0 approximating
+the marginals of the forward process initialized at p0 defines a path that bridges between pn and the prior
+p0 such that the discrepancy between pt and pt+1 is small. SMC samplers based on this path are robust to
+multi-modality and offer an interesting alternative to the geometric and tempering paths traditionally used in
+the SMC literature, see Dai et al. (2022). Our proposals ϕy
+t (xt) ∝pt(xt)qt|0(xt|y) inherit the behavior of
+{pt}t∈N and bridge the initial distribution ϕy
+n and posterior ϕy
+0. Indeed, as y is a noiseless observation of
+X0 ∼p0, we may consider ¯α1/2
+t
+y + (1 −¯αt)1/2εt, with εt ∼N(0dy, Idy), as a noisy observation of Xt ∼pt
+and thus, ϕy
+t is the associated posterior. We illustrate this intuition by considering the following Gaussian mixture
+(GM) example. We assume that p0(x0) = PM
+i=1 wi · N(x0; µi, Idx) where M > 1 and {wi}M
+i=1 are drawn
+uniformly on the simplex. The marginals of the forward process are available in closed form and are given by
+5
+
+Published as a conference paper at ICLR 2024
+t = 450
+t = 100
+t = 80
+t = 70
+t = 50
+t = 20
+t = 15
+t = 5
+Figure 1: Display of samples from ϕy
+t (xt) ∝pt(xt)qt|0(xt|y) for the GM prior. Samples from ϕy
+t (yellow), those
+from the prior (purple) and those from the posterior ϕy
+0 (light blue) with n = 500.
+pt(xt) = PM
+i=1 wi · N(xt; ¯α1/2
+t
+µi, Idx), which shows that the discrepancy between pt and pt+1 is small as long
+as ¯α1/2
+t
+−¯α1/2
+t+1 is close to 0. The posteriors {ϕy
+t }t∈[0:n] are also available in closed form and displayed in Figure 1,
+which illustrates that our choice of potentials ensures that the discrepancy between consecutive posteriors is small.
+The idea of using the forward diffused observation to guide the observed part of the state, as we do here through
+qt(xt|y), has been exploited in prior works but in a different way. For instance, in Song et al. (2021c; 2022) the
+observed part of the state is directly replaced by the forward noisy observation and, as it has been noted Trippe
+et al. (2023), this introduces an irreducible bias. Instead, MCGdiff weights the backward process by the density
+of the forward one conditioned on y, resulting in a natural and consistent algorithm.
+We now establish the convergence of MCGdiff with a general sequence of potentials {gy
+s}n
+s=1. We consider the
+following assumption on the sequence of potentials {gy
+t }n
+t=1.
+(A1)
+sup
+x∈Rdx
+p0(y|x)/gy
+1(x) < ∞and sup
+x∈Rdx
+Z
+gy
+t (xt)pt(xt|x)dxt
+gy
+t+1(x) < ∞for all t ∈[1 : n −1].
+The following exponential deviation inequality is standard and is a direct application of (Douc et al., 2014, Theorem
+10.17). In particular, it implies a O(1/
+√
+N) bound on the mean squared error ∥ϕN
+0 (h) −ϕy
+0(h)∥2.
+Proposition 2.1. Assume (A1). There exist constants c1,n, c2,n ∈(0, ∞) such that, for all N ∈N, ε > 0
+and bounded function h : Rdx 7→R, P ϕN
+0 (h) −ϕy
+0(h)
+ ≥ε ≤c1,n exp(−c2,nNε2|h|2
+∞) where |h|∞:=
+supx∈Rdx |h(x)|.
+We also furnish our estimator with an explicit non-asymptotic bound on its bias. Define ΦN
+0 = EϕN
+0 ] where
+ϕN
+0
+= N −1 PN
+i=1 δξi
+0 is the particle approximation produced by Algorithm 1 and the expectation is with
+respect to the law of (ξ1:N
+0:n , I1:N
+1:n ). Define for all t ∈[1 : n], ϕ⋆
+t (xt) ∝pt(xt)
+R
+δy(dx0)p0|t(x0|xt)dx0 , where
+p0|t(x0|xt) :=
+R ¶Qt−1
+s=0 ps(xs|xs+1)
+©
+dx1:t−1.
+Proposition 2.2. It holds that
+KL(ϕy
+0 ∥ΦN
+0 ) ≤Cy
+0:n(N −1)−1 + Dy
+0:nN −2 ,
+(2.7)
+where Dy
+0:n > 0, Cy
+0:n := Pn
+t=1
+R Zt/Z0
+gy
+t (zt)
+¶R
+δy(dx0)p0|t(x0|zt)dx0
+©
+ϕ⋆
+t (dzt) and Zt :=
+R
+gy
+t (xt)pt(dxt) for
+all t ∈[1 : n] and Z0 :=
+R
+δy(dx0)p0(x0)dx0. If furthermore (A1) holds then both Cy
+0:n and Dy
+0:n are finite.
+The proof of Proposition 2.2 is postponed to Appendix B.1. (A1) is an assumption on the equivalent of the weights
+{eωt}n
+t=0 with a general sequence of potentials {gy
+t }n
+t=1 and is not restrictive as it can be satisfied by setting for
+example gy
+s(xs) = qs|0(xs|y) + δ where δ > 0. The resulting algorithm is then only a slight modification of the
+one described above, see Appendix B.1 for more details. It is also worth noting that Proposition 2.2 combined
+with Pinsker’s inequality implies that the bias of MCGdiff goes to 0 with the number of particle samples N
+for fixed n. We have chosen to present a bound in Kullback–Leibler (KL) divergence, inspired by Andrieu
+et al. (2018); Huggins & Roy (2019), as it allows an explicit dependence on the modeling choice {gy
+s}n
+s=1, see
+Lemma B.2. Finally, unlike the theoretical guarantees established for SMCdiff in Trippe et al. (2023), proving
+6
+
+Published as a conference paper at ICLR 2024
+the asymptotic exactness of our methodology w.r.t. to the generative model posterior does not require having
+ps+1(xs+1)ps(xs|xs+1) = ps(xs)qs+1(xs+1|xs) for all s ∈[0 : n −1], which does not hold in practice.
+Noisy case.
+We consider the case σy > 0. The posterior density is given by ϕy
+0(x0) ∝gy
+0(x0)p0(x0), where
+gy
+0(x0) := N(y; x0, σ2
+yIdy). In what follows, assume that there exists τ ∈[1 : n] such that σ2 = (1 −¯ατ)¯ατ.
+We denote ˜yτ = ¯α1/2
+τ
+y. We can then write that
+gy
+0(x0) = ¯α1/2
+τ
+· N(˜yτ; ¯α1/2
+τ
+x0, (1 −¯ατ) · Idy) = ¯α1/2
+τ
+· qτ|0(˜yτ|x0) ,
+(2.8)
+which hints that the likelihood function gy
+0 is closely related to the forward process equation 1.1. We may then
+write the posterior ϕy
+0(x0) as ϕy
+0(x0) ∝qτ|0(˜yτ|x0)p0(x0) ∝
+R
+δ˜yτ (dxτ)qτ|0(xτ|x0)p0(x0)dxτ. Next, assume
+that the forward process equation 1.1 is the reverse of the backward one equation 1.3, i.e. that
+pt(xt)qt+1(xt+1|xt) = pt+1(xt+1)pt(xt|xt+1) ,
+∀t ∈[0 : n −1] .
+(2.9)
+This is similar to the assumption made in SMCdiff Trippe et al. (2023). Then, it is easily seen that it implies
+p0(x0)qτ|0(xτ|x0) = pτ(xτ)p0|τ(x0|xτ) and thus
+ϕy
+0(x0) =
+Z
+p0|τ(x0|xτ)δ˜yτ (dxτ)pτ(xτ)dxτ
+Z
+δ˜yτ (dzτ)pτ(zτ)dzτ =
+Z
+p0|τ(x0|˜y
+⌢
+τ xτ)ϕ˜yτ
+τ (dxτ) , (2.10)
+where ϕ˜yτ
+τ (xτ) ∝pτ(˜y⌢
+τ xτ). equation 2.10 highlights that solving the inverse problem equation 2.1 with σy > 0
+is equivalent to solving an inverse problem on the intermediate state Xτ ∼pτ with noiseless observation ˜yτ
+of the dy top coordinates and then propagating the resulting posterior back to time 0 with the backward kernel
+p0|τ. The assumption equation 2.9 does not always holds in realistic settings.Therefore, while equation 2.10
+also holds only approximately in practice, we can still use it as inspiration for designing potentials when the
+assumption is not valid. Consider then {gy
+t }n
+t=τ and sequence of probability measures {ϕy
+t }n
+t=τ defined for all
+t ∈[τ : n] as ϕy
+t (xt) ∝gy
+t (xt)pt(xt), where gy
+t (xt) := N(xt; ¯α1/2
+t
+y, (1 −(1 −κ)¯αt/¯ατ)Idy), κ ≥0. In the
+case of κ = 0, we have gy
+t (xt) = qt|τ(xt|˜yτ) for t ∈[τ + 1 : n] and ϕy
+τ = ϕ˜yτ
+τ . The recursion equation 2.5
+holds for t ∈[τ : n] and assuming κ > 0, we find that ϕy
+0(x0) ∝gy
+0(x0)
+R
+gy
+τ(xτ)−1p0|τ(x0|xτ)ϕy
+τ(dxτ) , which
+resembles the recursion equation 2.10. In practice we take κ to be small in order to mimick the Dirac delta mass
+at xτ in equation 2.10. Having a particle approximation ϕN
+τ = N −1 PN
+i=1 δξiτ of ϕy
+τ by adapting Algorithm 1,
+we estimate ϕy
+0 with ϕN
+0 = PN
+i=1 ωi
+0δξi
+0 where ξi
+0 ∼p0|τ(·|ξi
+τ) and ωi
+0 ∝gy
+0(ξi
+0)/gy
+τ(ξIi
+τ
+τ ). In the next section we
+extend this methodology to general linear Gaussian observation models. Finally, equation 2.10 allows us to extend
+SMCdiff to handle noisy inverse problems in a principled manner which is detailed in Appendix A.
+2.1
+EXTENSION TO GENERAL LINEAR INVERSE PROBLEMS
+Consider Y = AX + σyε where A ∈Rdy×dx, ε ∼N(0dy, Idy) and σy ≥0 and the singular value decomposition
+(SVD) A = USVT , where V ∈Rdx×dy, U ∈Rdy×dy are two orthonormal matrices, and S ∈Rdy×dy is diagonal.
+For simplicity, it is assumed that the singular values satisfy s1 > · · · > sdy > 0. Set b = dx −dy. Let V ∈Rdx×b
+be an orthonormal matrix of which the columns complete those of V into an orthonormal basis of Rdx, i.e.
+VT V = Ib and VT V = 0b,dy. We define V = [V, V] ∈Rdx×dx. In what follows, for a given x ∈Rdx we
+write x ∈Rdy for its top dy coordinates and x ∈Rb for the remaining coordinates. Setting X := VT X and
+Y := S−1UT Y and multiplying the measurement equation by S−1UT yields
+Y = X + σyS−1˜ε ,
+eε ∼N(0, Idy) .
+In this section, we focus on solving this linear inverse problem in the orthonormal basis defined by V using the
+methodology developed in the previous sections. This prompts us to define the diffusion based generative model
+in this basis. As V is an orthonormal matrix, the law of X0 = VT X0 is p0(x0) := p0(Vx0). By definition of p0
+7
+
+Published as a conference paper at ICLR 2024
+and the fact that ∥Vx∥2 = ∥x∥2 for all x ∈Rdx we have that
+p0(x0) =
+R
+p0(Vx0|x1)
+¶Qn−1
+s=1 ps(dxs|xs+1)
+©
+pn(dxn) =
+R
+λ0(x0|x1)
+¶Qn−1
+s=1 λs(dxs|xs+1)
+©
+pn(dxn)
+where for all s ∈[1 : n], λs−1(xs−1|xs) := N(xs−1; ms(xs), σ2
+sIdx), where ms(xs) := VT ms(Vxs). The tran-
+sition kernels {λs}n−1
+s=0 define a diffusion based model in the basis V. We write ms(xs) for the first dy coordinates
+of ms(xs) and ms(xs) the last b coordinates and denote by ps the time s marginal of the backward process.
+Noiseless. In this case the target posterior is ϕy
+0(x0) ∝p0(y⌢x0). The extension of algorithm 1 is straight
+forward; it is enough to replace y with y (=S−1UT y) and the backward kernels {pt}n−1
+t=0 with {λt}n−1
+t=0 .
+Noisy. The posterior density is then ϕy
+0(x0) ∝gy
+0 (x0)p0(x0), where gy
+0 (x0) = Qdy
+i=1 N(y[i]; x0[i], (σy/si)2).
+As in Section 2, assume that there exists {τi}dy
+i=1 ⊂[1 : n] such that ¯ατiσ2
+y = (1 −¯ατi)s2
+i and define for all
+i ∈[1 : dy], ˜yi := ¯α1/2
+τi y[i]. Then we can write the potential gy
+0 in a similar fashion to equation 2.8 as the product
+of forward processes from time 0 to each time step τi, i.e. gy
+0 (x0) = Qdy
+i=1 ¯α1/2
+τi N(˜yi; ¯α1/2
+τi x0[i], (1−¯ατi)). Writ-
+ing the potential this way allows us to generalize equation 2.10 as follows. Denote for ℓ∈[1 : dx], x\ℓ∈Rdx−1
+the vector x with its ℓ-th coordinate removed. Define
+ϕ˜y
+τ1:n(dxτ1:n) ∝
+¶Qdy−1
+i=1 λτi|τi+1(xτi|xτi+1)δ˜yi(dxτi[i])dx\i
+τi
+©
+pτdy (xτdy )δ˜ydy (dxτdy [dy])dx\dy
+τdy ,
+which corresponds to the posterior of a noiseless inverse problem on the joint states Xτ1:n ∼pτ1:n with noiseless
+observations ˜yτi of Xτi[i] for all i ∈[1 : dy].
+Proposition 2.3. Assume that ps+1(xs+1)λs(xs|xs+1) = ps(xs)qs+1(xs+1|xs) for all s ∈[0 : n −1]. Then it
+holds that ϕy
+0(x0) ∝
+R
+λ0|τ1(x0|xτ1)ϕ˜y
+τ1:n(dxτ1:n).
+The proof of Proposition 2.3 is given in Appendix B.2. We have shown that sampling from ϕy
+0 is equiv-
+alent to sampling from ϕ˜y
+τ1:n then propagating the final state Xτ1 to time 0 according to λ0|τ1.
+There-
+fore, as in equation 2.8, we define {gy
+t }n
+t=τ1 and {ϕy
+t }n
+t=τ1 for all t ∈[τ1 : n] by ϕy
+t (xt) ∝gy
+t (xt)pt(xt)
+and gy
+t (xt) := Qτ(t)
+i=1 N
+Ä
+xt; ¯α1/2
+t
+yi, 1 −(1 −κ)¯αt/¯ατi
+ä
+, κ > 0.
+We obtain a particle approximation of
+ϕy
+τ1 using a particle filter with proposal kernel and weight function λy
+t (xt|xt+1) ∝gy
+t (xt)pt(xt|xt+1),
+eωt(xt+1) =
+R
+gy
+t (xt)pt(dxt|xt+1)gy
+t+1(xt+1), which are both available in closed form.
+3
+NUMERICS
+A prerequisite for quantitative evaluation in ill-posed inverse problems in a Bayesian setting is to have access
+to samples of the posterior distribution. This generally requires having at least an unnormalized proxy of the
+posterior density, so that one can run MCMC samplers such as the No U-turn sampler (NUTS) Hoffman &
+Gelman (2011). Therefore, this section focus on mixture models of two types of basis distribution, the Gaussian
+and the Funnel distributions. We then present a brief illustration of MCGdiff on image data. However, in this
+setting, the actual posterior distribution is unknown and the main goal is to explore the potentially multimodal
+posterior distribution, which makes a comparison with a "real image" meaningless. Therefore, metrics such as
+Fréchet Inception Distance (FID) and LPIPS score, which require comparison to a ground truth, are not useful for
+evaluating Bayesian reconstruction methods in such settings.1
+Mixture Models.
+We refer to the Funnel mixture prior as FM prior (see Appendix B.3). For GM prior, we
+consider a mixture of 25 components with known means and variances. For FM prior, we consider a mixture of 20
+components consisting of rotated and translated funnel distributions. For a given pair (dx, dy), we sample a prior
+distribution by randomly sampling the weights of the mixture and for the FM case the translation and rotation
+of each component. We then randomly sample measurement models (y, A, σy) ∈Rdy × Rdy×dx × [0, 1]. For
+each pair of prior distribution and measurement model, we generate 104 samples from MCGdiff, DPS, DDRM,
+RNVP, and from the posterior either analytically (GM) or using NUTS (FM). We calculate for each algorithm the
+sliced Wasserstein (SW) distance between the resulting samples and the posterior samples. Table 1 shows the CLT
+1The code for the experiments is available at https://github.com/gabrielvc/mcg_diff.
+8
+
+Published as a conference paper at ICLR 2024
+x2
+MCGdiff
+DDRM
+DPS
+RNVP
+MCGdiff
+DDRM
+DPS
+RNVP
+PCA2
+x1
+PCA1
+Figure 2: The first and last four columns correspond respectively to GM with (dx, dy) = (800, 1) and FM with
+(dx, dy) = (10, 1). The blue and red dots represent respectively samples from the exact posterior and those
+generated by each of the algorithms used (names on top).
+d
+dy
+MCGdiff
+DDRM
+DPS
+RNVP
+80
+1
+1.39 ± 0.45
+5.64 ± 1.10
+4.98 ± 1.14
+6.86 ± 0.88
+80
+2
+0.67 ± 0.24
+7.07 ± 1.35
+5.10 ± 1.23
+7.79 ± 1.50
+80
+4
+0.28 ± 0.14
+7.81 ± 1.48
+4.28 ± 1.26
+7.95 ± 1.61
+800
+1
+2.40 ± 1.00
+7.44 ± 1.15
+6.49 ± 1.16
+7.74 ± 1.34
+800
+2
+1.31 ± 0.60
+8.95 ± 1.12
+6.88 ± 1.01
+8.75 ± 1.02
+800
+4
+0.47 ± 0.19
+8.39 ± 1.48
+5.51 ± 1.18
+7.81 ± 1.63
+d
+dy
+MCGdiff
+DDRM
+DPS
+RNVP
+6
+1
+1.95 ± 0.43
+4.20 ± 0.78
+5.43 ± 1.05
+6.16 ± 0.65
+6
+3
+0.73 ± 0.33
+2.20 ± 0.67
+3.47 ± 0.78
+4.70 ± 0.90
+6
+5
+0.41 ± 0.12
+0.91 ± 0.43
+2.07 ± 0.63
+3.52 ± 0.93
+10
+1
+2.45 ± 0.42
+3.82 ± 0.64
+4.30 ± 0.91
+6.04 ± 0.38
+10
+3
+1.07 ± 0.26
+4.94 ± 0.87
+5.38 ± 0.84
+5.91 ± 0.64
+10
+5
+0.71 ± 0.12
+2.32 ± 0.74
+3.74 ± 0.77
+5.11 ± 0.69
+Table 1: Sliced Wasserstein for the GM (left) and FM (right) case.
+95% confidence intervals obtained over 20 seeds. Figure 2 illustrates the samples for the different algorithms for
+a given seed. We see that MCGdiff outperforms all the other algorithms in each setting tested. The complete
+details of the numerical experiments are available in Appendix B.3 as well as additional visualisations.
+Image datasets.
+Figure 3 shows samples of MCGdiff in different datasets (Celeb, Churches, Bedroom and
+Flowers) for different inverse problems, namely Inpaiting (Inp), super resolution (SR), Gaussian 2D deblur
+(G2Deb) and Colorization (Col). Visual comparison with competing algorithms and different datasets are shown
+in Appendix B.3 as well as numerical details concerning Figure 3.
+4
+CONCLUSION
+In this paper, we present MCGdiff a novel method for solving Bayesian linear Gaussian inverse problems
+with SGM priors.We show that MCGdiff is theoretically grounded and provided numerical experiments that
+reflect the adequacy of MCGdiff in a Bayesian framework, as opposed to recent works. This difference is of
+the uttermost importance when the relevance of the generated samples is hard to verify, as in safety critical
+applications. MCGdiff is a first step towards robust approaches for addressing the challenges of Bayesian linear
+inverse problems with SGM priors.
+Y
+MCGdiff
+MCGdiff
+MCGdiff
+MCGdiff
+Y
+Inp
+σy = 0
+Celeb
+SR
+σy = 0.05
+Bedroom
+Col
+σy = 0
+Flowers
+G2Deb
+σy = 0.1
+Church
+Figure 3: Illustration of the samples of MCGdiff for different datasets and different inverse problems.
+9
+
+Published as a conference paper at ICLR 2024
+REFERENCES
+Christophe Andrieu, Anthony Lee, and Matti Vihola. Uniform ergodicity of the iterated conditional SMC and
+geometric ergodicity of particle Gibbs samplers. Bernoulli, 24(2):842 – 872, 2018. doi: 10.3150/15-BEJ785.
+URL https://doi.org/10.3150/15-BEJ785.
+Siavash Arjomand Bigdeli, Matthias Zwicker, Paolo Favaro, and Meiguang Jin. Deep mean-shift priors for image
+restoration. Advances in Neural Information Processing Systems, 30, 2017.
+Joe Benton, Yuyang Shi, Valentin De Bortoli, George Deligiannidis, and Arnaud Doucet. From denoising
+diffusions to denoising markov models. arXiv preprint arXiv:2211.03595, 2022.
+Julian Besag, Jeremy York, and Annie Mollié. Bayesian image restoration, with two applications in spatial
+statistics. Annals of the institute of statistical mathematics, 43:1–20, 1991.
+Olivier Cappé, Eric Moulines, and Tobias Ryden. Inference in Hidden Markov Models (Springer Series in
+Statistics). Springer-Verlag, Berlin, Heidelberg, 2005. ISBN 0387402640.
+Margaret Cheney and Brett Borden. Fundamentals of radar imaging. SIAM, 2009.
+Nicolas Chopin, Omiros Papaspiliopoulos, et al. An introduction to sequential Monte Carlo, volume 4. Springer,
+2020.
+Hyungjin Chung, Jeongsol Kim, Michael Thompson Mccann, Marc Louis Klasky, and Jong Chul Ye. Diffusion
+posterior sampling for general noisy inverse problems. In The Eleventh International Conference on Learning
+Representations, 2023. URL https://openreview.net/forum?id=OnD9zGAGT0k.
+Chenguang Dai, Jeremy Heng, Pierre E Jacob, and Nick Whiteley. An invitation to sequential monte carlo
+samplers. Journal of the American Statistical Association, 117(539):1587–1600, 2022.
+Masoumeh Dashti and Andrew M Stuart. The bayesian approach to inverse problems. In Handbook of uncertainty
+quantification, pp. 311–428. Springer, 2017.
+Laurent Dinh, Jascha Sohl-Dickstein, and Samy Bengio. Density estimation using real NVP. In 5th International
+Conference on Learning Representations, ICLR 2017, Toulon, France, April 24-26, 2017, Conference Track
+Proceedings. OpenReview.net, 2017. URL https://openreview.net/forum?id=HkpbnH9lx.
+Randal Douc, Eric Moulines, and David Stoffer. Nonlinear time series: Theory, methods and applications with R
+examples. CRC press, 2014.
+Arnaud Doucet, Nando De Freitas, Neil James Gordon, et al. Sequential Monte Carlo methods in practice,
+volume 1. Springer, 2001.
+Idris A Elbakri and Jeffrey A Fessler. Statistical image reconstruction for polyenergetic x-ray computed tomogra-
+phy. IEEE transactions on medical imaging, 21(2):89–99, 2002.
+Rob Fergus, Barun Singh, Aaron Hertzmann, Sam T Roweis, and William T Freeman. Removing camera shake
+from a single photograph. In Acm Siggraph 2006 Papers, pp. 787–794. 2006.
+Mário AT Figueiredo, José M Bioucas-Dias, and Robert D Nowak. Majorization–minimization algorithms for
+wavelet-based image restoration. IEEE Transactions on Image processing, 16(12):2980–2991, 2007.
+Rafael Corsino González, Richard E. Woods, and Barry R. Masters. Digital image processing, third edition.
+Journal of Biomedical Optics, 14:029901, 2009.
+Jie Gui, Zhenan Sun, Yonggang Wen, Dacheng Tao, and Jieping Ye. A review on generative adversarial networks:
+Algorithms, theory, and applications. IEEE transactions on knowledge and data engineering, 2021.
+10
+
+Published as a conference paper at ICLR 2024
+Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. Advances in Neural
+Information Processing Systems, 33:6840–6851, 2020.
+Matthew Hoffman and Andrew Gelman. The no-u-turn sampler: Adaptively setting path lengths in hamiltonian
+monte carlo. Journal of Machine Learning Research, 15, 11 2011.
+Jonathan H. Huggins and Daniel M. Roy. Sequential Monte Carlo as approximate sampling: bounds, adaptive
+resampling via ∞-ESS, and an application to particle Gibbs. Bernoulli, 25(1):584 – 622, 2019. doi: 10.3150/
+17-BEJ999. URL https://doi.org/10.3150/17-BEJ999.
+Jérôme Idier. Bayesian approach to inverse problems. John Wiley & Sons, 2013.
+Oleg Ivanov, Michael Figurnov, and Dmitry Vetrov. Variational autoencoder with arbitrary conditioning. arXiv
+preprint arXiv:1806.02382, 2018.
+Jari P Kaipio, Ville Kolehmainen, Erkki Somersalo, and Marko Vauhkonen. Statistical inversion and monte carlo
+sampling methods in electrical impedance tomography. Inverse problems, 16(5):1487, 2000.
+Sebastian Kaltenbach, Paris Perdikaris, and Phaedon-Stelios Koutsourelakis. Semi-supervised invertible neural
+operators for bayesian inverse problems. Computational Mechanics, pp. 1–20, 2023.
+Bahjat Kawar, Michael Elad, Stefano Ermon, and Jiaming Song. Denoising diffusion restoration models. In
+Advances in Neural Information Processing Systems.
+Diederik P. Kingma and Jimmy Ba. Adam: A method for stochastic optimization. In Yoshua Bengio and Yann
+LeCun (eds.), 3rd International Conference on Learning Representations, ICLR 2015, San Diego, CA, USA,
+May 7-9, 2015, Conference Track Proceedings, 2015. URL http://arxiv.org/abs/1412.6980.
+Diederik P Kingma, Max Welling, et al. An introduction to variational autoencoders. Foundations and Trends® in
+Machine Learning, 12(4):307–392, 2019.
+Ivan Kobyzev, Simon JD Prince, and Marcus A Brubaker. Normalizing flows: An introduction and review of
+current methods. IEEE transactions on pattern analysis and machine intelligence, 43(11):3964–3979, 2020.
+Andreas Lugmayr, Martin Danelljan, Andres Romero, Fisher Yu, Radu Timofte, and Luc Van Gool. Repaint:
+Inpainting using denoising diffusion probabilistic models. In Proceedings of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition, pp. 11461–11471, 2022.
+Yosra Marnissi, Yuling Zheng, Emilie Chouzenoux, and Jean-Christophe Pesquet. A variational bayesian approach
+for image restoration—application to image deblurring with poisson–gaussian noise. IEEE Transactions on
+Computational Imaging, 3(4):722–737, 2017.
+Jialun Peng, Dong Liu, Songcen Xu, and Houqiang Li. Generating diverse structure for image inpainting with
+hierarchical vq-vae. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition,
+pp. 10775–10784, 2021.
+Michael K Pitt and Neil Shephard. Filtering via simulation: Auxiliary particle filters. Journal of the American
+statistical association, 94(446):590–599, 1999.
+Teemu Sahlström and Tanja Tarvainen. Utilizing variational autoencoders in the bayesian inverse problem of
+photoacoustic tomography. SIAM Journal on Imaging Sciences, 16(1):89–110, 2023.
+Hyomin Shin and Minseok Choi. Physics-informed variational inference for uncertainty quantification of stochastic
+differential equations. Journal of Computational Physics, pp. 112183, 2023.
+Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep unsupervised learning using
+nonequilibrium thermodynamics. In International Conference on Machine Learning, pp. 2256–2265. PMLR,
+2015.
+11
+
+Published as a conference paper at ICLR 2024
+Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. In International
+Conference on Learning Representations, 2021a.
+URL https://openreview.net/forum?id=
+St1giarCHLP.
+Yang Song, Conor Durkan, Iain Murray, and Stefano Ermon. Maximum likelihood training of score-based
+diffusion models. Advances in Neural Information Processing Systems, 34:1415–1428, 2021b.
+Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole. Score-
+based generative modeling through stochastic differential equations. In International Conference on Learning
+Representations, 2021c. URL https://openreview.net/forum?id=PxTIG12RRHS.
+Yang Song, Liyue Shen, Lei Xing, and Stefano Ermon. Solving inverse problems in medical imaging with
+score-based generative models.
+In International Conference on Learning Representations, 2022.
+URL
+https://openreview.net/forum?id=vaRCHVj0uGI.
+Andrew M Stuart. Inverse problems: a bayesian perspective. Acta numerica, 19:451–559, 2010.
+Jingwen Su, Boyan Xu, and Hujun Yin. A survey of deep learning approaches to image restoration. Neurocomput-
+ing, 487:46–65, 2022.
+Brian L. Trippe, Jason Yim, Doug Tischer, David Baker, Tamara Broderick, Regina Barzilay, and Tommi S.
+Jaakkola. Diffusion probabilistic modeling of protein backbones in 3d for the motif-scaffolding problem. In
+The Eleventh International Conference on Learning Representations, 2023. URL https://openreview.
+net/forum?id=6TxBxqNME1Y.
+Marinus T Vlaardingerbroek and Jacques A Boer. Magnetic resonance imaging: theory and practice. Springer
+Science & Business Media, 2013.
+Ziyu Wan, Jingbo Zhang, Dongdong Chen, and Jing Liao. High-fidelity pluralistic image completion with
+transformers. In Proceedings of the IEEE/CVF International Conference on Computer Vision, pp. 4692–4701,
+2021.
+Xinyi Wei, Hans van Gorp, Lizeth Gonzalez-Carabarin, Daniel Freedman, Yonina C Eldar, and Ruud JG van Sloun.
+Deep unfolding with normalizing flow priors for inverse problems. IEEE Transactions on Signal Processing,
+70:2962–2971, 2022.
+Luhuan Wu, Brian L. Trippe, Christian A. Naesseth, David M. Blei, and John P. Cunningham. Practical and
+asymptotically exact conditional sampling in diffusion models, 2023.
+Hanyu Xiang, Qin Zou, Muhammad Ali Nawaz, Xianfeng Huang, Fan Zhang, and Hongkai Yu. Deep learning for
+image inpainting: A survey. Pattern Recognition, 134:109046, 2023.
+Raymond A Yeh, Teck Yian Lim, Chen Chen, Alexander G Schwing, Mark Hasegawa-Johnson, and Minh N Do.
+Image restoration with deep generative models. In 2018 IEEE International Conference on Acoustics, Speech
+and Signal Processing (ICASSP), pp. 6772–6776. IEEE, 2018.
+Jiahui Yu, Zhe Lin, Jimei Yang, Xiaohui Shen, Xin Lu, and Thomas S Huang. Generative image inpainting with
+contextual attention. In Proceedings of the IEEE conference on computer vision and pattern recognition, pp.
+5505–5514, 2018.
+Yanhong Zeng, Jianlong Fu, Hongyang Chao, and Baining Guo. Aggregated contextual transformations for
+high-resolution image inpainting. IEEE Transactions on Visualization and Computer Graphics, 2022.
+Guanhua Zhang, Jiabao Ji, Yang Zhang, Mo Yu, Tommi Jaakkola, and Shiyu Chang. Towards coherent image
+inpainting using denoising diffusion implicit models. arXiv preprint arXiv:2304.03322, 2023.
+12
+
+Published as a conference paper at ICLR 2024
+Chuanxia Zheng, Tat-Jen Cham, and Jianfei Cai. Pluralistic image completion. In Proceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition, pp. 1438–1447, 2019.
+Xu Zhihang, Xia Yingzhi, and Liao Qifeng. A domain-decomposed vae method for bayesian inverse problems.
+arXiv preprint arXiv:2301.05708, 2023.
+13
+
+Published as a conference paper at ICLR 2024
+A
+SMCD I F F EXTENSION
+The identity equation 2.10 allows us to extend SMCdiff Trippe et al. (2023) to handle noisy inverse problems as
+we now show. We have that
+ϕ˜yτ
+τ (xτ) =
+R
+pτ(˜y⌢
+τ xτ|xτ+1)
+¶Qn−1
+s=τ+1 ps(dxs|xs+1)
+©
+pn(dxn)
+R
+pτ(˜y⌢
+τ zτ)dzτ
+=
+Z
+b˜yτ
+τ:n(xτ:n|xτ+1:n)f ˜yτ
+τ+1:n(dxτ+1:n)dxτ+1:n ,
+where
+bτ:n(xτ:n|xτ+1:n) =
+pτ(˜y⌢
+τ xτ|xτ+1)
+¶Qn−1
+s=τ+1 ps(xs|xs+1)ps(xs|xs+1)
+©
+pn(xn)
+L˜yτ
+τ:n(xτ+1:n)
+,
+f ˜yτ
+τ+1:n(xτ+1:n) =
+L˜yτ
+τ:n(xτ+1:n)
+R
+pτ(˜y⌢
+τ zτ)dzτ
+,
+and
+L˜yτ
+τ:n(xτ+1:n) =
+Z
+pτ(˜y
+⌢
+τ zτ|xτ+1
+⌢zτ+1)
+( n−1
+Y
+s=τ+1
+ps(dzs|xs+1
+⌢zs+1)ps(xs|xs+1
+⌢zs+1)
+)
+pn(dzn) .
+Next, equation 2.9 implies that
+Z
+ps+1(xs+1
+⌢zs+1)ps(dzs|xs+1
+⌢zs+1)ps(xs|xs+1
+⌢zs+1)dzs:s+1 =
+Z
+ps(xs
+⌢zs)qs+1(xs+1|xs)qs+1(zs+1|zs)dzs:s+1 ,
+and applied repeatedly, we find that
+L˜yτ (xτ+1:n) =
+Z
+pτ(˜y
+⌢
+τ xτ)dxτ ·
+Z
+δ˜yτ (dxτ)
+n
+Y
+s=τ+1
+qs(xs|xs−1) .
+and thus, f ˜yτ
+τ:n(xτ+1:n) =
+R
+δ˜yτ (dxτ) Qn
+s=τ+1 qs(xs|xs−1). In order to approximate ϕ˜yτ
+τ
+we first diffuse the
+noised observation up to time n, resulting in xτ+1:n, and then estimate b˜yτ
+τ+1:n(·|xτ+1:n) using a particle filter with
+ps(xs|xs+1) as transition kernel at step s ∈[τ + 1 : n] and gs : zs 7→ps−1(xs−1|xs
+⌢zs) as potential, similarly
+to SMCdiff.
+B
+PROOFS
+B.1
+PROOF OF PROPOSITION 2.2
+PRELIMINARY DEFINITIONS.
+We preface the proof with notations and definitions of a few quantities that will be used throughout.
+For a probability measure µ and f a bounded measurable function, we write µ(f) :=
+R
+f(x)µ(dx) the expectation
+of f under µ and if K(dx|z) is a transition kernel we write K(f)(z) :=
+R
+f(x)K(dx|z).
+Define the smoothing distribution
+ϕy
+0:n(dx0:n) ∝δy(dx0)p0:n(x0:n)dx0dx1:n ,
+(B.1)
+14
+
+Published as a conference paper at ICLR 2024
+which admits the posterior ϕy
+0 as time 0 marginal. Its particle estimate known as the poor man smoother is given
+by
+ϕN
+0:n(dx0:n) = N −1
+X
+k0:n∈[1:N]n+1
+δy⌢ξk0
+0 (dx0)
+n
+Y
+s=1
+1ks = Iks−1
+s
+	δξks
+s (dxs) .
+(B.2)
+We also let ΦN
+0:n be the probability measure defined for any B ∈B(Rdx)⊗n+1 by
+ΦN
+0:n(B) = EϕN
+0:n(B) ,
+where the expectation is with respect to the probability measure
+P N
+0:n
+ d(x1:N
+0:n , a1:N
+1:n ) =
+N
+Y
+i=1
+py
+n(dxi
+n)
+n
+Y
+ℓ=2
+
+
+
+N
+Y
+j=1
+N
+X
+k=1
+ωk
+ℓ−1δk(daj
+ℓ)py
+ℓ−1(dxj
+ℓ−1|x
+aj
+ℓ
+ℓ)
+
+
+
+×
+N
+Y
+j=1
+N
+X
+k=1
+ωk
+0δk(daj
+1)py
+0(dxj
+0|x
+aj
+1
+1 )δy(dxj
+0) ,
+(B.3)
+where ωi
+t := eωt(ξi
+t+1)/ PN
+j=1 eωt(ξj
+t+1) and which corresponds to the joint law of all the random variables
+generated by Algorithm 1. It then follows by definition that for any C ∈B(Rdx),
+Z
+ΦN
+0:n(dz0:n)1C(z0) = E
+ïZ
+ϕN
+0:n(dz0:n)1C(z0)
+ò
+= EϕN
+0 (C) = ΦN
+0 (C) .
+Define also the law of the conditional particle cloud
+PN d(x1:N
+0:n , a1:N
+1:n )
+z0:n
+ = δzn(dxN
+n )
+N−1
+Y
+i=1
+py
+n(dxi
+n)
+×
+n
+Y
+ℓ=2
+δzℓ−1(dxN
+ℓ−1)δN(daN
+ℓ−1)
+N−1
+Y
+j=1
+N
+X
+k=1
+ωk
+ℓ−1δk(daj
+ℓ)py
+ℓ−1(dxj
+ℓ−1|x
+aj
+ℓ
+ℓ)
+× δz0(dxN
+0 )δN(daN
+1 )
+N−1
+Y
+j=1
+N
+X
+k=1
+ωk
+0δk(daj
+1)py
+0(dxj
+0|x
+aj
+1
+1 )δy(dxj
+0) .
+(B.4)
+In what follows Ez0:n refers to expectation with respect to PN(·|z0:n). Finally, for s ∈[0 : n−1] we let ΩN
+s denote
+the sum of the filtering weights at step s, i.e. ΩN
+s = PN
+i=1 eωs(ξi
+s+1). We also write Z0 =
+R
+p0(x0)δy(dx0)dx0
+and for all ℓ∈[1 : n], Zℓ=
+R
+qℓ|0(xℓ|y)pℓ(dxℓ).
+The proof of Proposition 2.2 relies on two Lemmata stated below and proved in Appendix B.1; in Lemma B.1 we
+provide an expression for the Radon-Nikodym derivative dϕy
+0:n/dΦy
+0:n and in Lemma B.2 we explicit its leading
+term.
+Lemma B.1. ϕy
+0:n and ΦN
+0:n are equivalent and we have that
+ΦN
+0:n(dz0:n) = Ez0:n
+ñ
+N nZ0/Zn
+Qn−1
+s=0 ΩN
+s
+ô
+ϕy
+0:n(dz0:n) .
+(B.5)
+15
+
+Published as a conference paper at ICLR 2024
+Lemma B.2. It holds that
+Zn
+Z0
+Ez0:n
+"n−1
+Y
+s=0
+N −1ΩN
+s
+#
+=
+ÅN −1
+N
+ãn
++ (N −1)n−1
+N n
+n
+X
+s=1
+Zs/Z0
+qs|0(zs|y)
+Z
+p0|s(x0|zs)δy(dx0)dx0 + Dy
+0:n
+N 2 .
+(B.6)
+where Dy
+0:n is a positive constant.
+Before proceeding with the proof of Proposition 2.2, let us note that having z 7→eωℓ(z) bounded on Rdx for all
+ℓ∈[0 : n −1] is sufficient to guarantee that Cy
+0:n and Dy
+0:n are finite since in this case it follows immediately that
+Ez0:n
+îQn−1
+s=0 N −1ΩN
+s
+ó
+is bounded and so is the right hand side of equation B.6. This can be achieved with a slight
+modification of equation 2.5 and equation ??. Indeed, consider instead the following recursion for s ∈[0 : n]
+where δ > 0,
+ϕy
+n(xn) ∝ qn|0(xn|y) + δpn(xn) ,
+ϕy
+s(xs) ∝
+Z
+ϕy
+s+1(xs+1)ps(dxs|xs+1)
+qs(xs|y) + δ
+qs+1(xs+1|y) + δ dxs+1 .
+Then we have that
+ϕy
+0(x0) ∝
+Z
+ϕy
+1(x1)p0(x0|x1)
+p0(y|x1)
+q1|0(x1|y) + δ dx1 .
+We can then use Algorithm 1 to produce a particle approximation of ϕy
+0 using the following transition and weight
+function,
+py,δ
+s (xs|xs+1) =
+γs(y|xs+1)
+γs(y|xs+1) + δ py
+s(xs|xs+1) +
+δ
+γs(y|xs+1) + δ ps(xs|xs+1) ,
+eωs(xs+1) =  γs(y|xs+1) + δ qs+1|0(xs+1|y) + δ ,
+where γs(y|xs+1) =
+R
+qs|0(xs|y)ps(xs|xs+1)dxs is available in closed form and py
+s is defined in equation 2.3.
+eωs is thus clearly bounded for all s ∈[0 : n −1] and it is still possible to sample from py,δ
+s
+since it is simply a
+mixture between the transition equation 2.3 and the “prior” transition.
+Proof of Proposition 2.2. Consider the forward Markov kernel
+−→
+B1:n(z0, dz1:n) =
+p1:n(dz1:n)p0(z0|z1)
+R
+p1:n(d˜z1:n)p0(˜z0|˜z1) ,
+(B.7)
+which satisfies
+ϕy
+0:n(dz0:n) = ϕy
+0(dz0)−→
+B1:n(z0, dz1:n) .
+By Lemma B.1 we have for any C ∈B(Rdx) that
+ΦN
+0 (C) =
+Z
+ΦN
+0:n(dz0:n)1C(z0)
+=
+Z
+1C(z0)Ez0:n
+ñ
+N nZ0/Zn
+Qn−1
+s=0 ΩN
+s
+ô
+ϕy
+0:n(dz0:n)
+=
+Z
+1C(z0)
+Z −→
+B1:n(z0, dz1:n)Ez0:n
+ñ
+N nZ0/Zn
+Qn−1
+s=0 ΩN
+s
+ô
+ϕy
+0(dz0) ,
+16
+
+Published as a conference paper at ICLR 2024
+which shows that the Radon-Nikodym derivative dΦN
+0 /dϕy
+0 is,
+dΦN
+0
+dϕy
+0
+(z0) =
+Z −→
+B1:n(z0, dz1:n)Ez0:n
+ñ
+N nZ0/Zn
+Qn−1
+s=0 ΩN
+s
+ô
+.
+Applying Jensen’s inequality twice yields
+dΦN
+0
+dϕy
+0
+(z0) ≥
+N nZ0/Zn
+R −→
+B1:n(z0, dz1:n)Ez0:n
+îQn−1
+s=0 ΩN
+s
+ó ,
+and it then follows that
+KL(ϕy
+0 ∥ΦN
+0 ) ≤
+Z
+log
+ 
+Zn
+Z0
+Z −→
+B1:n(z0, dz1:n)Ez0:n
+"n−1
+Y
+s=0
+N −1ΩN
+s
+#!
+ϕy
+0(dz0) .
+Finally, using Lemma B.2 and the fact that log(1 + x) < x for x > 0 we get
+KL(ϕy
+0 ∥ΦN
+0 ) ≤
+Cy
+0:n
+N −1 + Dy
+0:n
+N 2
+where
+Cy
+0:n :=
+n
+X
+s=1
+Z
+Zs/Z0
+qs|0(zs|y)
+Ä
+p0|s(x0|zs)δy(dx0)dx0
+ä
+ϕy
+s(dzs) ,
+and ϕy
+s(zs) ∝ps(zs)
+R
+p0|s(z0|zs)δy(dz0)dz0.
+PROOF OF LEMMA B.1 AND LEMMA B.2
+Proof of Lemma B.1. We have that
+ΦN
+0:n(dz0:n)
+= N −1
+Z
+P N
+0:n(dx1:N
+0:n , da1:N
+1:n )
+X
+k0:n∈[1:N]n+1
+δy⌢xk0
+0 (dz0)
+n
+Y
+s=1
+1ks = aks−1
+s
+	δxks
+s (dzs)
+= N −1
+Z X
+k0:n
+X
+a1:N
+1:n
+δy⌢xk0
+0 (dz0)
+n
+Y
+s=1
+1ks = aks−1
+s
+	δxks
+s (dzs)
+×
+N
+Y
+j=1
+py
+n(dxj
+n)
+( n
+Y
+ℓ=2
+N
+Y
+i=1
+ωai
+ℓ
+ℓ−1py
+ℓ−1(dxi
+ℓ−1|xai
+ℓ
+ℓ)
+) N
+Y
+r=1
+ωar
+1
+0 py
+ℓ−1(dxr
+0|xar
+1
+1 )δy(xr
+0)
+= N −1
+Z X
+k0:n
+X
+a1:N
+1:n
+py
+n(dxkn
+n )δxkn
+n (dzn)
+Y
+j̸=kn
+py
+n(dxj
+n)
+n
+Y
+ℓ=2
+ß
+Y
+i̸=kℓ−1
+ωai
+ℓ
+ℓ−1py
+ℓ−1(dxi
+ℓ−1|xai
+ℓ
+ℓ)
+× 1akℓ−1
+ℓ
+= kℓ} ˜ωℓ−1(x
+a
+kℓ−1
+ℓ
+ℓ
+)
+ΩN
+ℓ−1
+py
+ℓ−1(dxkℓ−1
+ℓ
+|x
+a
+kℓ−1
+ℓ
+ℓ
+)δx
+kℓ−1
+ℓ−1 (dzℓ−1)
+™
+×
+ß Y
+r̸=k0
+ωar
+1
+0 py
+0(dxr
+0|xar
+1
+1 )δy(dxr
+0)
+™
+1ak0
+1 = k1
+	 ˜ω0(x
+ak0
+1
+1
+)
+ΩN
+0
+py
+0(dxk0
+0 |x
+ak0
+1
+0
+)δy⌢xk0
+0 (dz0) .
+17
+
+Published as a conference paper at ICLR 2024
+Then, using that for all s ∈[2 : n]
+eωs−1(xks
+s )py
+s−1(dxks−1
+s−1 |xks
+s ) =
+qs−1|0(xks−1
+s−1 |y)
+qs|0(xks
+s |y)
+ps(dxks−1
+s−1 |xks
+s ) ,
+we recursively get that
+py
+n(dxkn
+n )δxkn
+n (dzn)
+n
+Y
+s=2
+1aks−1
+s
+= ks} ˜ωs−1(xa
+ks−1
+s
+s
+)
+ΩN
+s−1
+py
+s−1(dxks−1
+s−1 |xa
+ks−1
+s
+s
+)δx
+ks−1
+s−1 (dzs−1)
+× 1ak0
+1 = k1
+	 ˜ω0(x
+ak0
+1
+1
+)
+ΩN
+0
+py
+0(dxk0
+0 |x
+ak0
+1
+1
+)δy⌢xk0
+0 (dz0)
+=
+qn|0(zn|y)pn(dzn)
+Zn
+δzn(dxkn
+n )
+n
+Y
+s=2
+1aks−1
+s
+= ks}
+qs−1|0(zs−1|y)
+ΩN
+s−1qs|0(zs|y)ps−1(dzs−1|zs)δzs−1(dxks−1
+s−1 )
+× 1ak0
+1 = k1
+	
+p0(y|z1)
+ΩN
+0 q1|0(z1|y)p0(dz0|z1)δy(dz0)δz0(dxk0
+0 )
+= Z0
+Zn
+ϕy
+0:n(dz0:n)δzn(dxkn
+n )
+n
+Y
+s=1
+1aks−1
+s
+= ks}
+1
+ΩN
+s−1
+δzs−1(dxks−1
+s−1 ) .
+Thus, we obtain
+ΦN
+0:n(dz0:n) = N −1
+Z X
+k0:n
+X
+a1:N
+1:n
+ϕy
+0:n(dz0:n) Z0/Zn
+Qn−1
+s=0 ΩN
+s
+δzn(dxkn
+n )
+Y
+j̸=kn
+py
+n(dxj
+n)
+×
+n
+Y
+ℓ=2
+1akℓ−1
+ℓ
+= kℓ
+	δzℓ−1(dxkℓ−1
+ℓ−1 )
+Y
+i̸=kℓ−1
+ωai
+ℓ
+ℓ−1py
+ℓ−1(dxi
+ℓ−1|xai
+ℓ
+ℓ)
+× 1ak0
+1 = k1
+	δz0(dxk0
+0 )
+Y
+i̸=k0
+ωai
+1
+0 p0(xi
+0|xai
+1
+1 )δy(dxi
+0)
+= N −1 X
+k0:n
+ϕy
+0:n(dz0:n)Ek0:n
+z0:n
+ñ
+Z0/Zn
+Qn−1
+s=0 ΩN
+s
+ô
+,
+where for all k0:n ∈[1 : N]n+1 Ek0:n
+z0:n denotes the expectation under the Markov kernel
+PN
+k0:n
+ d(x1:N
+0:n , a1:N
+1:n )
+z0:n
+ = δzn(dxkn
+n )
+Y
+i̸=kn
+py
+n(dxi
+n)
+×
+n
+Y
+ℓ=2
+δzℓ−1(dxkℓ−1
+ℓ−1 )δkℓ(dakℓ−1
+ℓ
+)
+Y
+j̸=kℓ−1
+N
+X
+k=1
+ωk
+ℓ−1δk(daj
+ℓ)py
+ℓ−1(dxj
+ℓ−1|x
+aj
+ℓ
+ℓ)
+× δz0(dxk0
+0 )δk1(dak0
+1 )
+Y
+j̸=k0
+N
+X
+k=1
+ωk
+0δk(daj
+1)py
+0(dxj
+0|x
+aj
+1
+1 )δy(dx0) .
+Note however that for all (k0:n, ℓ0:n) ∈([1 : N]n+1)2,
+Ek0:n
+z0:n
+ñ
+1
+Qn−1
+s=0 ΩN
+s
+ô
+= Eℓ0:n
+z0:n
+ñ
+1
+Qn−1
+s=0 ΩN
+s
+ô
+18
+
+Published as a conference paper at ICLR 2024
+and thus it follows that
+ΦN
+0:n(dz0:n) = Ez0:n
+ñ
+N nZ0/Zn
+Qn−1
+s=0 ΩN
+s
+ô
+ϕy
+0:n(dz0:n) .
+(B.8)
+Denote by {Fs}n
+s=0 the filtration generated by a conditional particle cloud sampled from the kernel PN equa-
+tion B.4, i.e. for all ℓ∈[0 : n −1]
+Fs = σ ξ1:N
+s:n , I1:N
+s+1:n
+ .
+and Fn = σ ξ1:N
+n
+. Define for all bounded f and ℓ∈[0 : n −1]
+γN
+ℓ:n(f) =
+( n−1
+Y
+s=ℓ+1
+N −1ΩN
+s
+)
+N −1
+N
+X
+k=1
+eωℓ(ξk
+ℓ+1)f(ξk
+ℓ+1) ,
+(B.9)
+with the convention γN
+ℓ:n(f) = 1 if ℓ≥n. Define also the transition Kernel
+Qy
+ℓ−1|ℓ+1 : Rdx × B(Rdx) ∋(xℓ+1, A) 7→
+Z
+1A(xℓ)eωℓ−1(xℓ)py
+ℓ(dxℓ|xℓ+1) .
+(B.10)
+Using eqs. (2.3) and (2.4), it is easily seen that for all ℓ∈[0 : n −1],
+eωℓ(xℓ+1)Qy
+ℓ−1|ℓ+1(f)(xℓ+1) =
+1
+qℓ+1|0(xℓ+1|y)
+Z
+qℓ|0(xs|y)eωℓ−1(xℓ)f(xℓ)pℓ(dxℓ|xℓ+1) .
+(B.11)
+Define 1 : x ∈Rdx 7→1. We may thus write that γN
+ℓ:n(f) = N −1γN
+ℓ+1:n(1) PN
+k=1 eωℓ(ξk
+ℓ+1)f(ξk
+ℓ+1).
+Lemma B.3. For all ℓ∈[0 : n −1] it holds that
+Ez0:n
+γN
+ℓ−1:n(f) = N −1
+N
+Ez0:n
+î
+γN
+ℓ:n
+Ä
+Qy
+ℓ−1|ℓ+1(f)
+äó
++ 1
+N Ez0:n
+γN
+ℓ:n(1) eωℓ−1(zℓ)f(zℓ) .
+Proof. By the tower property and the fact that γN
+ℓ:n(f) is Fℓ+1-measurable, we have that
+Ez0:n
+γN
+ℓ−1:n(f) = Ez0:n
+"
+N −1γN
+ℓ+1:n(1)ΩN
+ℓEz0:n
+"
+N −1
+N
+X
+k=1
+eωℓ−1(ξk
+ℓ)f(ξk
+ℓ)
+Fℓ+1
+##
+.
+Note that for all ℓ∈[0 : n −1], (ξ1
+ℓ, . . . , ξN−1
+ℓ
+) are identically distributed conditionally on Fℓ+1 and
+Ez0:n
+ï
+eωℓ−1(ξj
+ℓ)f(ξj
+ℓ)
+Fℓ+1
+ò
+=
+1
+ΩN
+ℓ
+N
+X
+k=1
+eωℓ(ξk
+ℓ+1)
+Z
+eωℓ−1(xℓ)f(xℓ)py
+ℓ(dxℓ|ξk
+ℓ+1) ,
+leading to
+Ez0:n
+"
+N −1
+N
+X
+k=1
+eωℓ−1(ξk
+ℓ)f(ξk
+ℓ)
+Fℓ+1
+#
+= N −1
+NΩN
+ℓ
+N
+X
+k=1
+eωℓ(ξk
+ℓ+1)
+Z
+eωℓ−1(xℓ)f(xℓ)py
+ℓ(dxℓ|ξk
+ℓ+1) + 1
+N eωℓ−1(zℓ)f(zℓ) ,
+and the desired recursion follows.
+19
+
+Published as a conference paper at ICLR 2024
+Proof of Lemma B.2. We proceed by induction and show for all ℓ∈[0 : n −2]
+Ez0:n
+γN
+ℓ:n(f)]
+=
+ÅN −1
+N
+ãn−ℓR
+pℓ+1(dxℓ+1)qℓ+1|0(xℓ+1|y)eωℓ(xℓ+1)f(xℓ+1)
+Zn
++ (N −1)n−ℓ−1
+N n−ℓ
+ï
+(Zℓ+1/Zn)f(zℓ+1)eωℓ(zℓ+1)
++
+n
+X
+s=ℓ+2
+Zs/Zn
+qs|0(zs|y)
+Z
+eωℓ(xℓ+1)qℓ+1|0(xℓ+1|y)f(xℓ+1)pℓ+1|s(dxℓ+1|zs)
+ò
++ Dy
+ℓ:n
+N 2 .
+(B.12)
+where f is a bounded function and Dy
+ℓ:n is a a positive constant. The desired result in Lemma B.2 then follows by
+taking ℓ= 0 and f = 1.
+Assume that equation B.12 holds at step ℓ. To show that it holds at step ℓ−1 we use Lemma B.3 and we compute
+Ez0:n
+î
+γN
+ℓ:n
+Ä
+Qy
+ℓ−1|ℓ+1(f)
+äó
+and Ez0:n
+γN
+ℓ:n(1) eωℓ−1(zℓ)f(zℓ).
+Using the following identities which follow from equation B.11
+Z
+qℓ+1|0(xℓ+1|y)eωℓ(xℓ+1)Qy
+ℓ−1|ℓ+1(f)(xℓ+1)pℓ+1(dxℓ+1)
+=
+Z
+qℓ|0(xℓ|y)eωℓ−1(xℓ)f(xℓ)pℓ(dxℓ) ,
+and
+Z
+eωℓ(xℓ+1)qℓ+1|0(xℓ+1|y)Qy
+ℓ−1|ℓ+1(f)(xℓ+1)pℓ+1|s(dxℓ+1|xs)
+=
+Z
+eωℓ−1(xℓ)qℓ|0(xℓ|y)f(xℓ)pℓ|s(dxℓ|xs) ,
+we get by equation B.12 that
+N −1
+N
+Ez0:n
+î
+γN
+ℓ:n
+Ä
+Qy
+ℓ−1|ℓ+1(f)
+äó
+=
+ÅN −1
+N
+ãn−ℓ+1 R
+qℓ|0(xℓ|y)eωℓ−1(xℓ)f(xℓ)pℓ(dxℓ)
+Zn
++ (N −1)n−ℓ
+N n−ℓ+1
+ï
+Zℓ+1/Zn
+qℓ+1|0(zℓ+1|y)
+Z
+qℓ|0(xℓ|y)eωℓ−1(xℓ)f(xℓ)pℓ(dxℓ|zℓ+1)
++
+n
+X
+s=ℓ+2
+Zs/Zn
+qs|0(zs|y)
+Z
+eωℓ−1(xℓ)qℓ|0(xℓ|y)f(xℓ)pℓ|s(dxℓ|zs)
+ò
++ Dy
+ℓ:n
+N 2
+=
+ÅN −1
+N
+ãn−ℓ+1 R
+qℓ|0(xℓ|y)eωℓ−1(xℓ)f(xℓ)pℓ(dxℓ)
+Zn
++ (N −1)n−ℓ
+N n−ℓ+1
+n
+X
+s=ℓ+1
+Zs/Zn
+qs|0(zs|y)
+Z
+eωℓ−1(xℓ)qℓ|0(xs|y)f(xℓ)pℓ|s(dxℓ|zs) + Dy
+ℓ:n
+N 2 .
+(B.13)
+20
+
+Published as a conference paper at ICLR 2024
+The induction step is finished by using again equation B.12 and noting that
+1
+N Ez0:n
+γN
+ℓ:n(1) eωℓ−1(zℓ)f(zℓ) = (N −1)n−ℓ
+N n−ℓ+1
+ Zℓ/Zn
+eωℓ−1(zℓ)f(zℓ) +
+eDy
+ℓ:n
+N 2 .
+and then setting Dy
+ℓ−1:n = Dy
+ℓ:n + eDy
+ℓ:n.
+It remains to compute the initial value at ℓ= n −2. Note that
+Ez0:n
+γN
+n−1:n(f) = N −1
+N
+Z
+py
+n(dxn)eωn−1(xn)f(xn) + 1
+N eωn−1(zn)f(zn)
+(B.14)
+and thus by Lemma B.3 and similarly to the previous computations
+Ez0:n
+γN
+n−2:n(f)
+=
+ÅN −1
+N
+ã2 Z
+py
+n(dxn)eωn−1(xn)Qy
+n−2|n(f)(xn) + N −1
+N 2
+ï
+eωn−1(zn)Qy
+n−2|n(f)(zn)
++ eωn−2(zn−1)f(zn−1)
+Z
+py
+n(dxn)eωn−1|n(xn)
+ò
++
+Dy
+n−2fa:n
+N 2
+=
+ÅN −1
+N
+ã2 R
+qn−1|0(xn−1|y)eωn−2(xn−1)pn−1(dxn−1)
+Zn
++ N −1
+N 2
+ï Zn−1/Zn
+eωn−2(zn−1)f(zn−1)
++
+1
+qn|0(xn|y)
+Z
+qn−1|0(xn−1|y)eωn−2(xn−1)f(xn−1)pn−1(dxn−1|zn)
+ò
++ Dy
+n−2:n
+N 2
+.
+B.2
+PROOF OF PROPOSITION 2.3 AND LEMMA B.4
+In this section and only in this section we make the following assumption
+(A2) For all s ∈[0 : n −1], ps(xs)qs+1(xs+1|xs) = ps+1(xs+1)λs(xs|xs+1) .
+We also consider σδ = 0. In what follows we let τdy+1 = n and we write τ1:dy = {τ1, . . . , τdy} and τ1:dy = [1 :
+n] \ τ1:t. Define the measure
+Γy
+0:n(dx0:n) = pn(dxn)
+Y
+s∈τ1:dy
+λs(dxs|xs+1)
+dy
+Y
+i=1
+λτi(xτi|xτi+1)dx\i
+τiδy[i](dxτi[i]) .
+(B.15)
+Under (A2) it has the following alternative forward expression,
+Γy
+0:n(dx0:n) = p0(dx0)
+Y
+s∈τ1:dy
+qs+1(dxs+1|xs)
+dy
+Y
+i=1
+qτi(xτi|xτi−1)dx\i
+τiδy[i](dxτi[i]) .
+(B.16)
+Since the forward kernels decompose over the dimensions of the states, i.e.
+qs+1(xs+1|xs) =
+dx
+Y
+ℓ=1
+qℓ
+s+1(xs+1[ℓ]|xs[ℓ])
+21
+
+Published as a conference paper at ICLR 2024
+where qℓ
+s+1(xs+1[ℓ]|xs[ℓ]) = N(xs+1[ℓ]; (αs+1/αs)1/2xs[ℓ], 1 −(αs+1/αs)), we can write
+Γy
+0:n(x0:n) = p0(x0)
+dx
+Y
+ℓ=1
+Γy
+1:n|0,ℓ
+ x1[ℓ], . . . , xn[ℓ]
+x0[ℓ] ,
+(B.17)
+where for ℓ∈[1 : dy]
+Γy
+1:n|0,ℓ
+ x1[ℓ], . . . , xn[ℓ]|x0[ℓ] = qℓ
+τℓ(y[ℓ]|xτℓ−1[ℓ])
+Y
+s̸=τℓ
+qℓ
+s(dxs[ℓ]|xs−1[ℓ]) ,
+(B.18)
+and for ℓ∈[dy + 1 : dx],
+Γy
+1:n|0,ℓ(x1[ℓ], . . . , xn[ℓ]|x0[ℓ]) =
+n−1
+Y
+s=0
+qℓ
+s+1(xs+1[ℓ]|xs[ℓ]) .
+(B.19)
+With these quantities in hand we can now prove Proposition 2.3.
+Proof of Proposition 2.3. Note that for ℓ∈[1 : dy],
+N(y[ℓ]; ατℓx0[ℓ], 1 −ατℓ) = qℓ
+τℓ|0(y[ℓ]|x0[ℓ]) =
+Z
+qℓ
+τℓ(y[ℓ]|xτℓ−1[ℓ])
+Y
+s̸=τℓ
+qℓ
+s(dxs[ℓ]|xs−1[ℓ])
+=
+Z
+Γy
+1:n|0,ℓ
+ d(x1[ℓ], . . . , xn[ℓ])|x0[ℓ]
+and thus by equation ?? we have that
+p0(x0)gy
+0(x0) ∝p0(x0)
+dy
+Y
+ℓ=1
+N(y[ℓ]; ατℓx0[ℓ], 1 −ατℓ)
+= p0(x0)
+dy
+Y
+ℓ=1
+Z
+Γy
+1:n|0,ℓ
+ d(x1[ℓ], . . . , xn[ℓ])|x0[ℓ]
+= p0(x0)
+dx
+Y
+ℓ=1
+Z
+Γy
+1:n|0,ℓ
+ d(x1[ℓ], . . . , xn[ℓ])|x0[ℓ] .
+By equation B.16 it follows that
+ϕy
+0(x0) =
+1
+R
+Γy
+0:n(˜x0:n)d˜x0:n
+Z
+Γy
+0:n(x0:n)dx1:n ,
+and hence by equation B.16 and equation B.15 we get
+ϕy
+0(x0) ∝
+Z
+pτdy (xτdy )δy[dy](dxτdy [dy])dx\dy
+τdy
+
+
+
+dy−1
+Y
+i=1
+λτi|τi+1(xτi|xτi+1)δy[i](dxτi[i])dx\i
+τi
+
+
+λ0|τ1(x0|xτ1) .
+This completes the proof.
+Let γy
+0,s denote the joint time 0 and s marginal of the measure equation B.15, i.e.
+γy
+0,s(x0, xs) =
+Z
+Γy
+0:n(x0:n)dx1:s−1dxs+1:n
+(B.20)
+22
+
+Published as a conference paper at ICLR 2024
+We now prove the following result.
+Lemma B.4. Assume (A2) and let τ0 := 0, τdy+1 := n. For all k ∈[1 : dy],
+(i) If s ∈[τk + 1 : τk+1],
+γy
+0,s(x0, xs) =
+Z
+γy
+0,s+1(x0, xs+1)qσ
+s|s+1,0(xs|xs+1, x0)gy
+s (xs)
+dy
+Y
+ℓ=k+1
+qσ,ℓ
+s|s+1,0(xs[ℓ]|xs+1[ℓ], x0[ℓ])dxs+1 .
+(ii) If s = τk,
+γy
+0,s(x0, xs) =
+Z
+γy
+0,s+1(x0, xs+1)qσ
+s|s+1,0(xs|xs+1, x0)
+×
+k−1
+Y
+i=1
+gy
+s,i(xs[i])
+dy
+Y
+ℓ=k+1
+qσ,ℓ
+s|s+1,0(xs[ℓ]|xs+1[ℓ], x0[ℓ])dxs+1 .
+Proof of Lemma B.4. Let k ∈[1 : dy] and assume that s ∈[τk + 1 : τk+1 −2]. By (A2), equation B.16,
+equation B.18 and equation B.19 we have that
+γy
+0,s(x0, xs) = p0(x0)qs|0(xs|x0)
+k
+Y
+i=1
+qi
+τi|0(y[i]|x0[i])qi
+s|τi(xs[i]|y[i])
+×
+dy
+Y
+ℓ=k+1
+qℓ
+s|0(xs[ℓ]|x0[ℓ])qℓ
+τℓ|s(y[ℓ]|xs[ℓ]) ,
+and thus, using the following identity valid for ℓ∈[k + 1 : dy]
+qℓ
+s|0(xs[ℓ]|x0[ℓ])qℓ
+τℓ|s(y[ℓ]|xs[ℓ])
+= qℓ
+s|0(xs[ℓ]|x0[ℓ])
+Z
+qℓ
+τℓ|s+1(y[ℓ]|xs+1[ℓ])qℓ
+s+1(xs+1[ℓ]|xs[ℓ])dxs+1[ℓ]
+=
+Z
+qσ,ℓ
+s|s+1,0(xs[ℓ]|xs+1[ℓ], x0[ℓ])qℓ
+τℓ|s+1(y[ℓ]|xs+1[ℓ])qℓ
+s+1|0(xs+1[ℓ]|x0[ℓ])dxs+1[ℓ] ,
+23
+
+Published as a conference paper at ICLR 2024
+and that qs|0(xs|x0)qs+1(xs+1|xs) = qσ
+s|s+1,0(xs|xs+1, x0)qs+1|0(xs+1|x0) we get that
+γy
+0,s(x0, xs)
+=
+Z
+p0(x0)qs|0(xs|x0)qs+1(dxs+1|xs)
+×
+k
+Y
+i=1
+qi
+τi|0(y[i]|x0[i])qi
+s|τi(xs[i]|y[i])qi
+s+1|τi(dxs+1[i]|y[i])
+×
+dy
+Y
+ℓ=k+1
+qσ,ℓ
+s|s+1,0(xs[ℓ]|xs+1[ℓ], x0[ℓ])qℓ
+τℓ|s+1(y[ℓ]|xs+1[ℓ])qℓ
+s+1|0(xs+1[ℓ]|x0[ℓ])dxs+1[ℓ]
+=
+Z
+γy
+0,s+1(x0, xs+1)qσ
+s|s+1,0(xs|xs+1, x0)gy
+s (xs)
+dy
+Y
+ℓ=k+1
+qσ,ℓ
+s|s+1,0(xs[ℓ]|xs+1[ℓ], x0[ℓ])dxs+1 .
+If s = τk+1 then
+γy
+0,s(x0, xs) = p0(x0)qs|0(xs|x0)
+k
+Y
+i=1
+qi
+τi|0(y[i]|x0[i])qi
+s|τi(xs[i]|y[i])
+× qk+1
+τk+1|0(y[k + 1]|x0[k + 1])
+dy
+Y
+ℓ=k+2
+qℓ
+s|0(xs[ℓ]|x0[ℓ])qℓ
+τℓ|s(y[ℓ]|xs[ℓ]) ,
+(B.21)
+and similarly to the previous case we get
+γ0,s(x0, xs)
+=
+Z
+γy
+0,s+1(x0, xs+1)qσ
+s|s+1,0(xs|xs+1, x0)gy
+s (xs)
+dy
+Y
+ℓ=k+2
+qσ,ℓ
+s|s+1,0(xs[ℓ]|xs+1[ℓ], x0[ℓ])dxs+1 .
+Finally, if s = τk+1 −1, then
+γy
+0,s(x0, xs) = p0(x0)qs|0(xs|x0)
+k
+Y
+i=1
+qi
+τi|0(y[i]|x0[i])qi
+s|τi(xs[i]|y[i])
+× qk+1
+s|0 (xs[k + 1]|x0[k + 1])qk+1
+τk+1|s(y[k + 1]|xs[k + 1])
+dy
+Y
+ℓ=k+2
+qℓ
+s|0(xs[ℓ]|x0[ℓ])qℓ
+τℓ|s(y[ℓ]|xs[ℓ]) ,
+and using
+qk+1
+s|0 (xs[k + 1]|x0[k + 1])qk+1
+τk+1|s(y[k + 1]|xs[k + 1])
+= qσ,k+1
+s|τk+1,0(xs[k + 1]|xτk+1[k + 1], x0[k + 1])qk+1
+τk+1|0(y[k + 1]|x0[k + 1])
+24
+
+Published as a conference paper at ICLR 2024
+we find that
+γ0,s(x0, xs)
+=
+Z
+γy
+0,τk+1(x0, xτk+1)qσ
+s|τk+1,0(xs|xτk+1, x0)gy
+s (xs)
+dy
+Y
+ℓ=k+1
+qσ,ℓ
+s|s+1,0(xs[ℓ]|xτk+1[ℓ], x0[ℓ])dxτk+1 .
+B.3
+ALGORITHMIC DETAILS AND NUMERICS
+B.3.1
+GMM
+For a given dimension dx, we consider qdata a mixture of 25 Gaussian random variables. The Gaussian random
+variables have mean µi,j := (8i, 8j, · · · , 8i, 8j) ∈Rdx for (i, j) ∈{−2, −1, 0, 1, 2}2 and unit variance. The
+mixture (unnormalized) weights ωi,j are independently drawn according to a χ2 distribution. The κ paramater of
+MCGdiff is κ2 = 10−4. We use 20 steps of DDIM for the numerical examples and for all algorithms.
+Score:
+Note that qs(xs) =
+R
+qs|0(xs|x0)qdata(x0)dx0. As qdata is a mixture of Gaussians, qs(xs) is also a
+mixture of Gaussians with means α1/2
+s
+µi,j and unitary variances. Therefore, using automatic differentiation
+libraries, we can calculate ∇log qs(xs). Setting e(xs, s) = −(1 −αs)1/2∇log qs(xs) leads to the optimum of
+equation 1.4.
+Forward process scaling:
+We chose the sequence of {βs}1000
+s=1 as a linearly decreasing sequence between
+β1 = 0.2 and β1000 = 10−4.
+Measurement model:
+For a pair of dimensions (dx, dy) the measurement model (y, A, σy) is drawn as fol-
+lows:
+• A: We first draw ˜A ∼N(0dy×dx, Idy×dx) and compute the SVD decomposition of ˜A = USVT .
+Then, we sample for (i, j) ∈{−2, −1, 0, 1, 2}2, si,j according to a uniform in [0, 1]. Finally, we set
+A = U Diag({si,j}(i,j)∈{−2,−1,0,1,2}2)VT .
+• σy: We draw σy uniformly in the interval [0, max(s1, · · · , sdy)].
+• y: We then draw x∗∼qdata and set y := Ax∗+ σyϵ where ϵ ∼N(0dy, Idy).
+Posterior:
+Once we have drawn both qdata and (y, A, σy), the posterior can be exactly calculated using Bayes
+formula and gives a mixture of Gaussians with mixture components ci,j and associated weights ˜ωi,j
+ci,j := N(Σ  AT y/σ2
+y + µi,j
+ , Σ) ,
+˜ωi := ωiN(y; Aµi,j, σ2 Idx +AAT ) ,
+where Σ :=  Idx +σ−2
+y AT A−1.
+Variational Inference:
+The RNVP entries in the numerical examination are obtained by Variational Inference
+using the RNVP architecture for the normalizing flow from Dinh et al. (2017). Given a normalizing flow fϕ
+with ϕ ∈Rj, j ∈N∗, the training procedure consists of optimizing the ELBO, i.e., solving the optimization
+problem
+ϕ∗= arg max
+ϕ∈Rj
+Nnf
+X
+k=1
+log |Jfϕ(ϵi)| + log π∗(fϕ(ϵi)) ,
+(B.22)
+where Nnf ∈N∗is the minibatch-size, Jfϕ the Jacobian of fϕ w.r.t ϕ, and ϵ1:Nnf ∼N(0, I)⊗Nnf . All the
+experiments were performed using a 10 layers RNVP. Equation (B.22) is solved using Adam algorithm Kingma &
+25
+
+Published as a conference paper at ICLR 2024
+dx = 1
+dx = 2
+dx = 4
+KL
+0
+50
+100
+150
+200
+101
+102
+103
+104
+0
+50
+100
+150
+200
+101
+102
+103
+104
+0
+50
+100
+150
+200
+101
+102
+103
+104
+dy = 8
+KL
+0
+50
+100
+150
+200
+102
+103
+104
+0
+50
+100
+150
+200
+102
+103
+104
+0
+50
+100
+150
+200
+102
+103
+104
+dy = 80
+KL
+0
+50
+100
+150
+200
+103
+104
+0
+50
+100
+150
+200
+103
+104
+0
+50
+100
+150
+200
+103
+104
+dy = 800
+Iteration
+Figure 4: Evolution of KL with the number of iterations for all pairs of (dx, dy) tested in the GMM case.
+Ba (2015) with a learning rate of 10−3 and 200 iterations with Nnf = 10. The losses for each pair (dx, dy) is
+shown in fig. 4, where one can see that the majority of the losses have converged.
+Choosing DDIM timesteps for a given measurement model:
+Given a number of DDIM samples R, we choose
+the timesteps 1 = t1 < · · · < tR = 1000 ∈[1 : 1000] as to try to satisfy the two following constraints:
+• For all i ∈[1 : dy] there exists a tj such that σyα1/2
+tj
+≈(1 −αtj)1/2si,
+• For all i ∈[1 : R −1], α1/2
+ti
+−α1/2
+ti+1 ≈δ for some δ > 0.
+26
+
+Published as a conference paper at ICLR 2024
+MCGdiff
+DDRM
+DPS
+RNVP
+x2
+x2
+x2
+x1
+Figure 5: First two dimensions for the GMM case with dx = 8. The rows represent dy = 1, 2, 4 respectively. The
+blue dots represent samples from the exact posterior, while the red dots correspond to samples generated by each
+of the algorithms used (the names of the algorithms are given at the top of each column).
+The
+first
+constraint
+comes
+naturally
+from
+the
+definition
+of
+τi.
+Since
+the
+poten-
+tials
+have
+mean
+α1/2
+ti y,
+the
+second
+condition
+constrains
+the
+intermediate
+laws
+remain
+“close”.
+An
+algorithm
+that
+approximately
+satisfies
+both
+constraints
+is
+given
+below.
+Algorithm 2: Timesteps choice
+Input: Number of DDIM steps R, σy, {si}dy
+i=1, {αi}1000
+i=1
+Output: {tj}R
+j=1
+Set Sτ = {}.
+for j ←[1 : dy] do
+Set ˜τj = arg minℓ∈[1:1000] |σyα1/2
+ℓ
+−(1 −αℓ)1/2)sj|.
+Add ˜τj to Sτ if ˜τj /∈Sτ.
+Set nm = R −#Sτ −1 and δ = (α1/2
+1
+−α1/2
+1000)/nm.
+Set t1 = 1, e = 1 and ie = 1. for ℓ←[2 : 1000] do
+if α1/2
+e
+−α1/2
+ℓ
+> δ or ℓ∈Sτ then
+Set e = ℓ, ie = ie + 1 and τie = ℓ.
+Set τR = 1000.
+Additional numerics:
+We now proceed to illustrate in Figures 5 to 7 the first 2 components for one of the
+measurement models for all the different combinations of (dx, dy) combinations used in table 1. We also show in
+fig. 8 the evolution of each observed coordinate in the noise case with dy = 4. We can see that it follows closely
+the forward path of the diffused observations indicated by the blue line.
+27
+
+Published as a conference paper at ICLR 2024
+MCGdiff
+DDRM
+DPS
+RNVP
+x2
+x2
+x2
+x1
+Figure 6: First two dimensions for the GMM case with dx = 80. The rows represent dy = 1, 2, 4 respectively.
+The blue dots represent samples from the exact posterior, while the red dots correspond to samples generated by
+each of the algorithms used (the names of the algorithms are given at the top of each column).
+MCGdiff
+DDRM
+DPS
+RNVP
+x2
+x2
+x2
+x1
+Figure 7: First two dimensions for the GMM case with dx = 800. The rows represent dy = 1, 2, 4 respectively.
+The blue dots represent samples from the exact posterior, while the red dots correspond to samples generated by
+each of the algorithms used (the names of the algorithms are given at the top of each column).
+28
+
+Published as a conference paper at ICLR 2024
+d
+dy
+MCGdiff
+DDRM
+DPS
+RNVP
+8
+1
+1.43 ± 0.55
+5.88 ± 1.16
+4.86 ± 1.01
+9.43 ± 0.99
+8
+2
+0.49 ± 0.24
+5.20 ± 1.32
+5.79 ± 1.96
+8.93 ± 1.29
+8
+4
+0.38 ± 0.25
+2.51 ± 1.29
+3.48 ± 1.52
+6.71 ± 1.54
+80
+1
+1.39 ± 0.45
+5.64 ± 1.10
+4.98 ± 1.14
+6.86 ± 0.88
+80
+2
+0.67 ± 0.24
+7.07 ± 1.35
+5.10 ± 1.23
+7.79 ± 1.50
+80
+4
+0.28 ± 0.14
+7.81 ± 1.48
+4.28 ± 1.26
+7.95 ± 1.61
+800
+1
+2.40 ± 1.00
+7.44 ± 1.15
+6.49 ± 1.16
+7.74 ± 1.34
+800
+2
+1.31 ± 0.60
+8.95 ± 1.12
+6.88 ± 1.01
+8.75 ± 1.02
+800
+4
+0.47 ± 0.19
+8.39 ± 1.48
+5.51 ± 1.18
+7.81 ± 1.63
+Table 2: Extended GMM sliced wasserstein table.
+xs[1]
+100
+101
+102
+103
+20
+10
+0
+10
+20
+100
+101
+102
+103
+20
+10
+0
+10
+20
+xs[2]
+xs[3]
+100
+101
+102
+103
+20
+10
+0
+10
+20
+100
+101
+102
+103
+20
+10
+0
+10
+20
+xs[4]
+s
+s
+Figure 8: Illustration of the particle cloud of the 4 first observed coordinate in the case (dy, dx) = (4, 800) with
+100 DDIM steps. The red points represent the particle cloud, while the purple points at the origin represent the
+posterior distribution. The blue curve corresponds to the curve s →α1/2
+s
+y[ℓ] and the blue dot on the curve to
+α1/2
+τℓy[ℓ].
+Table 2 is an extended version of table 1.
+29
+
+Published as a conference paper at ICLR 2024
+dy = 2
+dy = 6
+dy = 10
+x2
+x1
+Figure 9: Purple points are samples from the prior and yellow samples from the diffusion with 25 DDIM steps.
+d
+SW
+2
+0.79 ± 0.15
+6
+0.87 ± 0.07
+10
+0.96 ± 0.06
+Table 3: Sliced Wasserstein between learned diffusion and target prior.
+B.3.2
+FMM
+A funnel distribution is defined by the following density
+N(x1; 0, 1)
+d
+Y
+i=1
+N(xi; 0, exp(x1/2)) .
+To generate a Funnel mixture model of 20 components in dimension d, we start by firstly sampling (µi, Ri)20
+i=1
+uniformly in ([−20, 20]d × SO(Rd))×20. The mixture will consist of 20 Funnel random variables translated by
+µi and rotated by Ri, with unnormalized weights ωi,j that are independently drawn uniformly in [0, 1].
+Score
+The denoising diffusion network e(θ) in dimension d is defined as a 5 layers Resnet network where each
+Resnet block consists of the chaining of three blocks where each block has the following layers:
+• Linear (512, 1024),
+• 1d Batch Norm,
+• ReLU activation.
+The Resnet is preceeded by an input embedding from dimension d to 512 and in the end an output embedding
+layer projects the output of the resnet from 512 to d. The time t is embedded using positional embedding into
+dimension 512 and is added to the input at each Resnet block. The network is trained using the same loss as in Ho
+et al. (2020) for 104 iterations using a batch size of 512 samples. A learning rate of 10−3 is used for the Adam
+optimizer Kingma & Ba (2015). Figure 9 illustrate the outcome of the learned diffusion generative model and the
+target prior. In table 3 we show the CLT 95% intervals for the SW between the learned diffusion generative model
+and the target prior.
+Forward process scaling
+We chose the sequence of {βs}1000
+s=1 as a linearly decreasing sequence between
+β1 = 0.2 and β1000 = 10−4.
+30
+
+Published as a conference paper at ICLR 2024
+dx = 1
+dx = 3
+dx = 5
+KL
+0
+50
+100
+150
+200
+101
+102
+103
+104
+0
+50
+100
+150
+200
+101
+102
+103
+104
+0
+50
+100
+150
+200
+101
+102
+103
+104
+dy = 6
+KL
+0
+50
+100
+150
+200
+101
+102
+103
+104
+0
+50
+100
+150
+200
+102
+103
+104
+0
+50
+100
+150
+200
+102
+103
+104
+dy = 10
+Iteration
+Figure 10: Evolution of KL with the number of iterations for all pairs of (dx, dy) tested in the FMM case.
+Measurement model
+The measurement model was generated in the same way as for the GMM case.
+Posterior
+The posterior samples were generated by running the No U-turn sampler (Hoffman & Gelman (2011))
+with a chain of length 104 and taking the last sample of the chain. This was done in parallel to generate 104
+samples. The mass matrix and learning rate were set by first running Stan’s warmup and taking the last values of
+the warmup phase.
+Variational inference:
+Variational inference in FMM shares the same details as the GMM case. The analogous
+of fig. 4 is displayed at fig. 10.
+Additional plots:
+We now proceed to illustrate in Figures 11 to 13 the first 2 components for one of the
+measurement models for all the different combinations of (dx, dy) combinations used in table 1.
+31
+
+Published as a conference paper at ICLR 2024
+MCGdiff
+DDRM
+DPS
+RNVP
+PCA2
+PCA2
+PCA2
+PCA1
+Figure 11: First two dimensions for the FMM case with dx = 10. The rows represent dy = 1, 3, 5 respectively.
+The blue dots represent samples from the exact posterior, while the red dots correspond to samples generated by
+each of the algorithms used (the names of the algorithms are given at the top of each column).
+MCGdiff
+DDRM
+DPS
+RNVP
+PCA2
+PCA2
+PCA2
+PCA1
+Figure 12: First two dimensions for the FMM case with dx = 6. The rows represent dy = 1, 3, 5 respectively.
+The blue dots represent samples from the exact posterior, while the red dots correspond to samples generated by
+each of the algorithms used (the names of the algorithms are given at the top of each column).
+32
+
+Published as a conference paper at ICLR 2024
+MCGdiff
+DDRM
+DPS
+RNVP
+PCA2
+PCA1
+Figure 13: First two dimensions for the FMM case with dx = 2 and dy = 1. The blue dots represent samples
+from the exact posterior, while the red dots correspond to samples generated by each of the algorithms used (the
+names of the algorithms are given at the top of each column).
+33
+
+Published as a conference paper at ICLR 2024
+B.3.3
+IMAGE DATASETS
+We now present samples from MCGdiff in different image dataset and different kinds of inverse problems.
+Super Resolution
+We start by super resolution. We set σy = 0.05 for all the datasets and ζcoeff = 0.1 for DPS .
+We use 100 steps of DDIM with η = 1. The results are shown in Figure 14. We use a downsampling ratio of 4 for
+the CIFAR-10 dataset, 8 for both Flowers and Cats datasets and 16 for the others. The dimension of the datasets
+are recalled in table 4. We display in fig. 14 samples from MCGdiff, DPSand DDRMover several different image
+datasets (table 4). For each algorithm, we generate 1000 samples and we show the pair of samples that are the
+furthest apart in L2 norm from each other in the pool of samples. For MCGdiff we ran several parallel particle
+filters with N = 64 to generate 1000 samples.
+CIFAR-10
+Flowers
+Cats
+Bedroom
+Church
+CelebaHQ
+(W, H, C)
+(32, 32, 3)
+(64, 64, 3)
+(128, 128, 3)
+(256, 256, 3)
+(256, 256, 3)
+(256, 256, 3)
+Table 4: The datasets used for the inverse problems over image datasets.
+Gaussian 2D debluring
+We consider a Gaussian 2D square kernel with sizes (w/6, h/6) and standard deviation
+w/30 where (w, h) are the width and height of the image. We set σy = 0.1 for all the datasets and ζcoeff = 0.1 for
+DPS . We use 100 steps of DDIM with η = 1. We display in fig. 15 samples from MCGdiff, DPSand DDRMover
+several different image datasets (table 4). For each algorithm, we generate 1000 samples and we show the pair of
+samples that are the furthest appart in L2 norm from each other in the pool of samples. For MCGdiff we ran
+several parallel particle filters with N = 64 to generate 1000 samples.
+Inpainting on CelebA
+We consider the inpainting problem on the CelebA dataset with several different masks
+in fig. 16. We show in fig. 17 the evolution of the particle cloud with s.
+1000
+900
+800
+700
+600
+500
+400
+300
+200
+100
+50
+4
+Figure 17: Evolution of the particle cloud for one of the masks. The numbers on top and bottom indicate the step
+s of the approximation.
+34
+
+Published as a conference paper at ICLR 2024
+CIFAR-10
+Flowers
+Cats
+Bedroom
+Church
+CelebaHQ
+sample
+observation
+DPS
+DPS
+DDRM
+DDRM
+MCGdiff
+MCGdiff
+Figure 14: Ratio 4 for CIFAR, 8 for flowers and Cats and 16 for CELEB
+35
+
+Published as a conference paper at ICLR 2024
+CIFAR 10
+Flowers
+Cats
+Bedroom
+Church
+CelebaHQ
+sample
+observation
+DPS
+DPS
+DDRM
+DDRM
+MCGdiff
+MCGdiff
+Figure 15
+36
+
+Published as a conference paper at ICLR 2024
+Original
+MCGdiff
+MCGdiff
+MCGdiff
+MCGdiff
+DPS
+DDRM
+SMCdiff
+Figure 16: Inpainting with different masks on the CelebA test set.
+37
+

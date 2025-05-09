@@ -1,0 +1,2098 @@
+Published as a conference paper at ICLR 2021
+INFLUENCE ESTIMATION FOR GENERATIVE ADVER-
+SARIAL NETWORKS
+Naoyuki Terashita
+Hiroki Ohashi
+Yuichi Nonaka
+Takashi Kanemaru
+Hitachi, Ltd.
+Tokyo, Japan
+ABSTRACT
+Identifying harmful instances, whose absence in a training dataset improves model
+performance, is important for building better machine learning models. Although
+previous studies have succeeded in estimating harmful instances under super-
+vised settings, they cannot be trivially extended to generative adversarial networks
+(GANs). This is because previous approaches require that (i) the absence of a
+training instance directly affects the loss value and that (ii) the change in the loss
+directly measures the harmfulness of the instance for the performance of a model.
+In GAN training, however, neither of the requirements is satisﬁed. This is because,
+(i) the generator’s loss is not directly affected by the training instances as they are
+not part of the generator’s training steps, and (ii) the values of GAN’s losses nor-
+mally do not capture the generative performance of a model. To this end, (i) we
+propose an inﬂuence estimation method that uses the Jacobian of the gradient of
+the generator’s loss with respect to the discriminator’s parameters (and vice versa)
+to trace how the absence of an instance in the discriminator’s training affects the
+generator’s parameters, and (ii) we propose a novel evaluation scheme, in which
+we assess harmfulness of each training instance on the basis of how GAN eval-
+uation metric (e.g., inception score) is expected to change due to the removal of
+the instance. We experimentally veriﬁed that our inﬂuence estimation method cor-
+rectly inferred the changes in GAN evaluation metrics. We also demonstrated that
+the removal of the identiﬁed harmful instances effectively improved the model’s
+generative performance with respect to various GAN evaluation metrics.
+1
+INTRODUCTION
+Generative adversarial networks (GANs) proposed by Goodfellow et al. (2014) are a powerful sub-
+class of generative model, which is successfully applied to a number of image generation tasks
+(Antoniou et al., 2017; Ledig et al., 2017; Wu et al., 2016). The expansion of the applications of
+GANs makes improvements in the generative performance of models increasingly crucial.
+An effective approach for improving machine learning models is to identify training instances that
+harm the model performance. Traditionally, statisticians manually screen a dataset for harmful in-
+stances, which misguide a model into producing biased predictions. Recent inﬂuence estimation
+methods (Khanna et al., 2019; Hara et al., 2019) automated the screening of datasets for deep learn-
+ing settings, in which the sizes of both datasets and data dimensions are too large for users to man-
+ually determine the harmful instances. Inﬂuence estimation measures the effect of removing an
+individual training instance on a model’s prediction without the computationally prohibitive cost of
+model retraining. The recent studies identiﬁed harmful instances by estimating how the loss value
+changes if each training instance is removed from the dataset.
+Although previous studies have succeeded in identifying the harmful instances in supervised set-
+tings, the extension of their approaches to GAN is non-trivial. Previous approaches require that (i)
+the existence or absence of a training instance directly affects a loss value, and that (ii) the decrease
+in the loss value represents the harmfulness of the removed training instance. In GAN training,
+however, neither of the requirements is satisﬁed. (i) As training instances are only fed into the dis-
+criminator, they only indirectly affect the generator’s loss, and (ii) the changes in the losses of GAN
+1
+
+Published as a conference paper at ICLR 2021
+do not necessarily capture how the removed instances harm the generative performance. This is
+because the ability of the loss to evaluate the generator is highly dependent on the performance of
+the discriminator.
+To this end, (i) we propose an inﬂuence estimation method that uses the Jacobian of the gradient
+of the discriminator’s loss with respect to the generator’s parameters (and vice versa), which traces
+how the absence of an instance in the discriminator’s training affects the generator’s parameters. In
+addition, (ii) we propose a novel evaluation scheme to judge if an instance is harmful or not on the
+basis of inﬂuence on GAN evaluation metric, that is, how a GAN evaluation metric (e.g., inception
+score (Salimans et al., 2016)) changes if a given training instance is removed from the dataset. We
+identify harmful instances by estimating the inﬂuence on GAN evaluation metric by leveraging our
+inﬂuence estimation method.
+We veriﬁed that the proposed inﬂuence estimation method correctly estimated the inﬂuence on GAN
+evaluation metrics across different settings of the dataset, model architecture, and GAN evaluation
+metrics. We also demonstrated that removing harmful instances, which were identiﬁed by the pro-
+posed method, effectively improved various GAN evaluation metrics.1
+Our contributions are summarized as follows:
+• We propose an inﬂuence estimation method that uses the Jacobian of the gradient of the dis-
+criminator’s loss with respect to the generator’s parameters (and vice versa), which traces
+how the absence of an instance in the discriminator’s training affects the generator’s pa-
+rameters.
+• We propose a novel evaluation scheme to judge if an instance is harmful or not on the basis
+of inﬂuence on GAN evaluation metrics rather than that on the loss value, and to leverage
+the proposed inﬂuence estimation method to identify harmful instances.
+• We experimentally veriﬁed that our inﬂuence estimation method correctly inferred the in-
+ﬂuence on GAN evaluation metrics. Further, we demonstrated that the removal of the
+harmful instances suggested by the proposed method effectively improved the generative
+performance with respect to various GAN evaluation metrics.
+2
+PRELIMINARIES
+Notation
+For column vectors a, b ∈Rp, we denote the inner product by ⟨a, b⟩= Pp
+i=1 aibi. For
+a function f(a), we denote its gradient with respect to a by ∇af(a). We denote the identity matrix
+of size p by Ip, the zero vector of length p by 0p, and the ones vector of length p by 1p.
+Generative Adversarial Networks (GAN)
+For simplicity, we consider an unconditional GAN
+that consists of the generator G : Rdz →Rdx and the discriminator D : Rdx →R, where dz and dx
+are the number of dimensions of latent variable z ∼p(z) and data point x ∼p(x), respectively. The
+parameters of generator θG ∈RdG and discriminator θD ∈RdD are learned though the adversarial
+training; G tries to sample realistic data while D tries to identify whether the data is real or generated.
+Formulation of GAN Objectives
+For the generality, we adopt the formulation of Gidel et al.
+(2019) in which G and D try to minimize LG and LD, respectively, to obtain the following Nash
+equilibrium (θ∗
+G, θ∗
+D):
+θ∗
+G ∈arg min
+θG LG (θG, θ∗
+D) and θ∗
+D ∈arg min
+θD LD (θ∗
+G, θD) .
+(1)
+For the latter part of this paper, we use a coupled parameter vector θ := (θG, θD)⊤∈Rdθ=dG+dD
+when we refer to the whole parameters of GAN.
+In this paper, we assume that LG and LD have the following forms2:
+LG (θ) := Ez∼p(z) [fG (z; θ)] ,
+LD (θ) := Ez∼p(z)
+h
+f [z]
+D (z; θ)
+i
++ Ex∼p(x)
+h
+f [x]
+D (x; θ)
+i
+. (2)
+1Code is at https://github.com/hitachi-rd-cv/influence-estimation-for-gans
+2This covers the common settings of GAN objectives: the non-zero-sum game proposed by Goodfellow
+et al. (2014), Wasserstein distance (Arjovsky et al., 2017), and the least squares loss (Mao et al., 2017).
+2
+
+Published as a conference paper at ICLR 2021
+We can recover the original minimax objective by taking fG (z; θ) = log (1 −DθD (GθG (z))),
+f [z]
+D = −fG, and f [x]
+D (x; θ) = −log DθD (x).
+Adversarial SGD (ASGD)
+To make our derivation easier to understand, we newly formulate the
+parameter update of a GAN trained by stochastic gradient descent, which we call adversarial SGD
+(ASGD). For simplicity, this paper considers simultaneous training, in which the generator and the
+discriminator are simultaneously updated at a single step. We denote the dataset by Dx := {xn ∼
+p(x)}N
+n=1, which consists of N data points. Let St ⊂{1, . . . , N} be a set of sample indices at
+the t-th step. We assume that the mini-batch of the t-th step consists of instances {xi}i∈St and a
+set of latent variables Zt = {z[t]
+l
+∼p(z)}|St|
+l=1, which are sampled independently at each step t.
+We denote the mean of LG and LD across the mini-batch by L G(Z; θ) :=
+1
+|Z|
+P
+z∈Z fG (z; θ)
+and L D(S, Z; θ) :=
+1
+|Z|
+P
+z∈Z f [z]
+D (z; θ) + P
+i∈S f [x]
+D (xi; θ)
+
+, respectively. The t-th step of
+ASGD updates the coupled parameters by θ[t+1] = θ[t] −Btg
+ St, Zt; θ[t]
+, where
+Bt :=
+ 
+η[t]
+G IdG
+O
+O
+η[t]
+D IdD
+!
+∈Rdθ×dθ, g (S, Z; θ) :=
+
+∇θGL G (Z; θ)
+∇θDL D (S, Z; θ)
+
+∈Rdθ.
+(3)
+η[t]
+G ∈R+ and η[t]
+D ∈R+ are the learning rates of the t-th step for θG and θD, respectively.
+3
+PROPOSED METHOD
+This section explains the two main contributions of our paper: the inﬂuence estimation method for
+GANs that predicts how the removal of a training instance changes the output of the generator and
+the discriminator (Section 3.1), and two important parts of our instance evaluation scheme, that are,
+the deﬁnition of inﬂuence on GAN evaluation metric and its estimation algorithm (Section 3.2).
+3.1
+INFLUENCE ESTIMATION FOR GAN
+We refer to inﬂuence estimation as the estimation of changes in a model’s output under a training
+instance’s absence. As the model’s output changes through the changes in the model’s parameters,
+we start with the deﬁnition of ASGD-Inﬂuence, which represents the changes in parameters, and
+then formulate its estimator.
+ASGD-Inﬂuence
+ASGD-Inﬂuence is deﬁned on the basis of the following counterfactual ASGD.
+Let θ[t]
+−j denote the parameters at t-th step trained without using j-th training instance. Counter-
+factual ASGD starts optimization from θ[1]
+−j = θ[1] and updates the parameters of the t-th step by
+θ[t+1]
+−j
+= θ[t]
+−j−Btg
+
+St \ {j}, Zt; θ[t]
+−j
+
+. We deﬁne ASGD-Inﬂuence ∆θ−j as the parameter differ-
+ence between counterfactual ASGD and ASGD at the ﬁnal step t = T, namely ∆θ−j := θ[T ]
+−j −θ[T ].
+Estimator of ASGD-Inﬂuence
+Our estimator uses an approximation of the mean of the gradi-
+ent. Let
+ ∇θGL G(Z; θ), ∇θDL D(S, Z; θ)
+⊤be the joint gradient vector of the mini-batch. We
+introduce the Jacobian of the joint gradient vector of the t-th mini-batch with respect to θ:
+Jt :=
+ 
+J[t]
+GG
+J[t]
+GD
+J[t]
+DG
+J[t]
+DD
+!
+=
+
+∇2
+θGL G
+ Zt; θ[t]
+∇θD∇θGL G
+ Zt; θ[t]
+∇θG∇θDL D
+ St, Zt; θ[t]
+∇2
+θDL D
+ St, Zt; θ[t]
+
+.
+(4)
+When we assume both LG(θ) and LG(θ) are second-order differentiable with respect to θ, the
+ﬁrst-order Taylor approximation gives g
+
+St, Zt; θ[t]
+−j
+
+−g
+ St, Zt; θ[t]
+≈Jt
+
+θ[t]
+−j −θ[t]
+. With
+this approximation, we have
+θ[t+1]
+−j
+−θ[t+1] =
+
+θ[t]
+−j −θ[t]
+−Bt
+
+g
+
+St, Zt; θ[t]
+−j
+
+−g
+
+St, Zt; θ[t]
+≈(Idθ −BtJt)
+
+θ[t]
+−j −θ[t]
+, ∀j ̸∈St.
+(5)
+3
+
+Published as a conference paper at ICLR 2021
+For simplicity,
+we ﬁrst focus on 1-epoch ASGD in which each instance appears only
+once.
+Let π (j) be the step where the j-th instance is used.
+Considering the absence of
+∇θDf [x]
+D (xj; θ[π(j)]) in the π(j)-th step of counterfactual ASGD, we have θ[π(j)+1]
+−j
+−θ[π(j)+1] =
+η[π(j)]
+D
+|Sπ(j)|
+
+0dG, ∇θDf [x]
+D (xj; θ[π(j)])
+⊤
+. By denoting Zt := Idθ −BtJt and recursively applying
+the approximation (5), we obtain
+∆θ−j ≈η[π(j)]
+D
+|Sπ(j)|ZT −1ZT −2 · · · Zπ(j)+1
+
+0dG
+∇θDf [x]
+D
+ xj; θ[π(j)]
+
+.
+(6)
+For the practical situation of K-epoch ASGD, in which the j-th instance is sampled K times at
+t = π1 (j) , . . . , πK (j), the estimator of the ASGD-Inﬂuence is given by
+∆ˆθ−j :=
+K
+X
+k=1
+
+
+T −πk(j)−1
+Y
+s=1
+ZT −s
+
+η[πk(j)]
+D
+|Sπk(j)|
+
+0dG
+∇θDf [x]
+D
+ xj; θ[πk(j)]
+
+.
+(7)
+Linear Inﬂuence
+To estimate the inﬂuence on outputs, we introduce linear inﬂuence L[T ]
+−j(u) :=
+⟨u, ∆θ−j⟩of a given query vector u ∈Rdθ. If we take u = ∇θfG
+ z; θ[T ]
+, the linear inﬂuence
+approximates the inﬂuence on the generator’s loss L[T ]
+−j(u) ≈fG
+
+z; θ[T ]
+−j
+
+−fG
+ z; θ[T ]
+.
+Let
+
+u[t]⊤
+G
+∈RdG, u[t]⊤
+D
+∈RdD
+
+:= u⊤ZT −1ZT −2 · · · Zt+1. The linear inﬂuence of the j-th in-
+stance is approximated by the proposed estimator:
+L[T ]
+−j (u) ≈
+D
+u, ∆ˆθ−j
+E
+=
+K
+X
+k=1
+η[πk(j)]
+D
+|Sπk(j)|
+D
+u[πk(j)]
+D
+, ∇θDf [x]
+D
+
+xj; θ[πk(j)]E
+.
+(8)
+The estimation algorithm consists of two phases; training phase performs K-epoch ASGD
+by storing information A[t] ←(St, η[t]
+G , η[t]
+D , θ[t], Zt) and inference phase calculates (8) using
+A[1], . . . , A[T −1]. See Appendix A for the detailed algorithm.
+3.2
+INFLUENCE ON GAN EVALUATION METRIC
+This section explains our proposal of a new evaluation approach for data screening for GANs. Firstly
+we propose to evaluate harmfulness of an instance on the basis of inﬂuence on GAN evaluation
+metrics. Secondly we propose to leverage the inﬂuence-estimation algorithm explained in Section
+3.1 to identify harmful instances with respect to the GAN evaluation metrics.
+Inﬂuence on GAN Evaluation Metric
+Let V (D) be a GAN evaluation metric that maps a set
+of data points D := {˜xm ∈Rdx}M
+m=1 into a scalar value that gives the performance measure of
+G. Let generated dataset DG(Z; θG) := {G(z; θG)| z ∈Z}. Using a set of latent variables
+Z := {˜zm ∼p(z)}M
+n=1 that is sampled independently from the training, we deﬁne the inﬂuence on
+GAN evaluation metric by
+∆V [T ]
+−j := V
+
+DG
+
+Z; θ[T ]
+G,−j
+
+−V
+
+DG
+
+Z; θ[T ]
+G
+
+,
+(9)
+where θ[T ]
+G,−j and θ[T ]
+G are the generator parameters of counterfactual ASGD and the ASGD of the
+T-th step, respectively.
+Estimation Algorithm
+In order to build the estimation algorithm of the inﬂuence on GAN evalu-
+ation metric, we focus on an important property of some common evaluation metrics for which the
+gradient with respect to the element of their input ∇˜xmV (D) is computable. For example, Monte
+Carlo estimation of inception score has a form of exp( 1
+|D|
+P
+˜xm∈D KL(pc(y|˜xm)∥pc(y)) where pc
+is a distribution of class label y drawn by a pretrained classiﬁer. When the classiﬁer is trained using
+back-propagation, ∇˜xmV (D) is computable.
+4
+
+Published as a conference paper at ICLR 2021
+Here, we assume V (D) is ﬁrst-order differentiable with respect to ˜xm. From the chain rule, we have
+a gradient of the GAN evaluation metrics with respect to θ:
+∇θV (DG(Z; θ[T ]
+G )) =
+ PM
+n=1 ∇θG∇˜xnV
+
+DG
+
+Z; θ[T ]
+G
+
+0dD
+!
+.
+(10)
+Our estimation algorithm performs the inference phase of linear inﬂuence taking u
+=
+∇θV (DG(Z; θ[T ]
+G )) in order to obtain the approximation L[T ]
+−j(∇θV (DG(Z; θ[T ]
+G ))) ≈∆V [T ]
+−j .
+4
+RELATED STUDIES
+SGD-Inﬂuence
+Hara et al. (2019) proposed a novel deﬁnition of the inﬂuence called SGD-
+Inﬂuence and its estimator, which greatly inspired us to propose the inﬂuence estimation method
+for GANs. Suppose a machine learning model with parameters φ ∈Rdφ is trained to minimize
+the mean of the loss 1
+N
+PN
+n=1 L (χn; φ) across the training instances χ1, . . . , χN. Let the mean of
+the loss of the mini-batch L (S; φ) :=
+1
+|S|
+P
+i∈S L (χi; φ). They introduced two SGD steps with
+learning rate ηt ∈R+: SGD given by φ[t+1] = φ[t] −ηt∇φL
+ St; φ[t]
+, and counterfactual SGD
+given by φ[t+1]
+−j
+= φ[t]
+−j −ηt∇φL
+
+St \ {j} ; φ[t]
+−j
+
+. Their estimator of SGD-Inﬂuence φ[T ]
+−j −φ[T ]
+is based on the following approximation:
+φ[t+1]
+−j
+−φ[t+1] ≈
+
+Idφ −ηt∇2
+φL
+
+St; φ[t] 
+φ[t]
+−j −φ[t]
+, ∀j ̸∈St.
+(11)
+Hara et al. (2019) also identiﬁed harmful instances for classiﬁcation based on linear inﬂuence of the
+cross-entropy loss estimated using a validation dataset. Removing the estimated harmful instances
+with their approach demonstrated improvements in the classiﬁcation accuracy.
+Our approach differs from Hara et al. (2019)’s work in two ways. Firstly, our approach uses the
+Jacobian of the joint gradient vector Jt instead of the Hessian of the mean loss ∇2
+φL
+ St; φ[t]
+. As
+long as LG ̸= LD, Jt is asymmetric and inherently different from the Hessian. Moreover, a source
+of the asymmetry J[t]
+GD plays an important role in transferring the effect of removal of a training
+instance from the discriminator to the generator. Let θ[t]
+G,−j −θ[t]
+G ∈RdG and θ[t]
+D,−j −θ[t]
+D ∈RdD
+be ASGD-Inﬂuence on θG and θD of the t-th step, respectively. The upper blocks of (5) can be
+rewritten as
+θ[t+1]
+G,−j −θ[t+1]
+G
+≈
+
+IdD −η[t]
+G J[t]
+GG
+ 
+θ[t]
+G,−j −θ[t]
+G
+
++ η[t]
+G J[t]
+GD
+
+θ[t]
+D,−j −θ[t]
+D
+
+.
+(12)
+Note that J[t]
+GD transfers the t-th step of ASGD-Inﬂuence on θD to the next step of ASGD-Inﬂuence
+on θG. The Hessian of Hara et al. (2019), which uses a single combination of the parameters and the
+loss function, cannot handle this transfer between the two models. Secondly, we use the inﬂuence
+on GAN evaluation metrics for identifying harmful instances rather than that on the loss value. This
+alleviates the problem of the GAN’s loss not representing the generative performance.
+Inﬂuence Function
+Koh & Liang (2017) proposed inﬂuence estimation method that incorporated
+the idea of inﬂuence function (Cook & Weisberg, 1980) in robust statistics. They showed that
+inﬂuences on parameters and predictions can be estimated with the inﬂuence function assuming
+the satisfaction of the optimality condition and strong convexity of the loss function. They also
+identiﬁed harmful instances on the basis of the inﬂuence on the loss value, assuming consistency of
+the loss value with the task performance.
+Our inﬂuence estimation method is designed to eliminate these assumptions because normally GAN
+training does not satisfy the assumptions regarding the optimality condition, the convexity in the
+loss function, and the consistency of the loss value with the performance.
+5
+EXPERIMENTS
+We evaluated the effectiveness of the proposed method in two aspects: the accuracy of inﬂuence es-
+timation on GAN evaluation metrics (Section 5.1), and the improvement in generative performance
+by removing estimated harmful instances (Section 5.2)
+5
+
+Published as a conference paper at ICLR 2021
+GAN Evaluation Metrics
+In both experiments, we used three GAN evaluation metrics: aver-
+age log-likelihood (ALL), inception score (IS), and Fr´echet inception distance (FID) (Heusel et al.,
+2017). ALL is the de-facto standard for evaluating generative models (Tolstikhin et al., 2017). Let
+Z′ := {z′
+n ∼p(z)}N ′
+n=1 and D′
+x := {x′
+n ∼p(x)}N ′
+n=1, which is sampled separately from p(z) and
+the training dataset Dx, respectively. ALL measures the likelihood of the true data under the distri-
+bution that is estimated from generated data using kernel density estimation. We calculated ALL of
+D′
+x under the distribution estimated from generated dataset DG(Z′; θ[T ]
+G ). Recall Z′ is the set of la-
+tent variables sampled independently from the training (Section 3.2). FID measures Fr´echet distance
+between two sets of feature vectors of real images D′
+x and those of generated images DG(Z′; θ[T ]
+G ).
+The feature vectors are calculated on the basis of a pre-trained classiﬁer. Larger values of ALL and
+IS and a smaller value of FID indicate the better generative performance. See Appendix C.1 for the
+detailed setting of each GAN evaluation metric.
+5.1
+EXPERIMENT 1: ESTIMATION ACCURACY
+We ran the inﬂuence estimation method on GANs to estimate inﬂuence on various GAN evaluation
+metrics, and then compared the estimated inﬂuence with true inﬂuence. The detailed setup can be
+found in Appendix C.2.
+Setup
+ALL is known to be effective for low-dimensional data distributions (Borji, 2019) and both
+FID and IS are effective for image distributions. We thus prepared two different setups: fully-
+connected GAN (FCGAN) trained with 2D multivariate normal distribution (2D-Normal) for ALL,
+and DCGAN (Radford et al., 2016) trained with MNIST (LeCun et al., 1998) for IS and FID. IS and
+FID require classiﬁers to obtain class label distribution and feature vectors, respectively. We thus
+trained CNN classiﬁer of MNIST3 using D′
+x. We set N = 10k and N ′ = |D′
+x| = |Z′| = 10k.
+The experiment was conducted as follows. Firstly, we ran the K-epoch of the training phase of
+linear inﬂuence with the training dataset Dx. We determined K = 50 since we observed the con-
+vergence of GAN evaluation metrics at K = 50. For IS and FID, we trained the classiﬁer using D′
+x
+and corresponding labels. We then randomly selected 200 target instances from Dx. We obtained
+estimated inﬂuence on GAN evaluation metrics of each target instance by performing the inference
+phase of linear inﬂuence with u = ∇θV (DG(Z′; θ[T ]
+G )). The true inﬂuence of each target instance
+was computed by running the counterfactual ASGD.
+We used the same evaluation measures as the previous work (Hara et al., 2019): Kendall’s Tau and
+the Jaccard index. Kendall’s Tau measures the ordinal correlation between the estimated and true
+inﬂuence on GAN evaluation metrics. It has a value of 1 when the orders of the two sets of values
+are identical. For the Jaccard index, we selected 10 instances with the largest positive and largest
+negative inﬂuence values to construct a set of 20 critical instances. The Jaccard index is equal to 1
+when a set of estimated critical instances is identical to that of true critical instances.
+To investigate the relationship between a number of tracing back steps and the estimation accuracy,
+we also evaluated the inﬂuence on GAN evaluation metrics of k-epoch ASGD. In k-epoch training,
+both inference phase of linear inﬂuence and the counterfactual ASGD traced back only k ≤K
+epochs from the latest epoch K. We varied k = 1, 5, 10, 20, 50 and ran the experiment ten times for
+each k by changing the random seeds of the experiments.
+Results
+Figure 1 shows the average Kendal’s Tau and the Jaccard index of the repeated experi-
+ments. Hereinafter, we use p < .05 to judge the statistical signiﬁcance of the results. For all k,
+Kendall’s Tau and the Jaccard index of estimated inﬂuence on ALL were statistically signiﬁcantly
+better than the result in which the order of estimated inﬂuence values were random (random case).
+Even in the more difﬁcult setups of IS and FID, which handled the high-dimensional dataset and
+complex architecture, the results were statistically signiﬁcantly better than that of the random case
+except for Jaccard index of IS with k = 50. We also observed the estimation accuracy dropped as
+k increased. This reﬂects the nature of our estimator that recursively performs linear approximation
+3Although the original IS and FID use Inception Net (Szegedy et al., 2016) trained with ImageNet, we
+instead adopted a domain-speciﬁc classiﬁer as encouraged by several studies (Zhou et al., 2018; Liu et al.,
+2018) to alleviate the domain mismatch with ImageNet.
+6
+
+Published as a conference paper at ICLR 2021
+Influence on ALL
+Influence on IS
+Influence on FID
+Random
+0
+10
+20
+30
+40
+50
+# of tracing back epochs k
+0.2
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Kendal's Tau
+0
+10
+20
+30
+40
+50
+# of tracing back epochs k
+0.2
+0.4
+0.6
+0.8
+Jaccard index
+Figure 1: Average Kendall’s Tau (±std) (left) and the Jaccard index (±std) (right) calculated from
+true and estimated inﬂuence on ALL, IS, and FID.
+as many times as the number of steps. We thus conclude that when the required number of tracing
+back steps is small enough, our inﬂuence estimation method is effective and the estimated inﬂuence
+on GAN evaluation metric is useful for identifying harmful instances.
+5.2
+EXPERIMENT 2: DATA CLEANSING
+We investigated if removing identiﬁed harmful instances actually improved the generative perfor-
+mance to evaluate the effectiveness of our proposed method for data cleansing. We deﬁne data
+cleansing as an attempt to improve GAN evaluation metrics by removing a set of training instances.
+See appendix C.3 for the detailed settings.
+Setup
+We studied the data cleansing for the two setups explained in the previous section: 2D-
+Normal with FCGAN and MNIST with DCGAN. We mostly followed the settings of Section 5.1
+but set training dataset size N = 50k for both setups.
+We identiﬁed harmful instances in 2D-Normal training dataset using estimated inﬂuence on ALL,
+and those in MNIST using estimated inﬂuence on IS and FID. We considered a training instance
+was harmful when it had negative (positive) inﬂuence on FID (ALL or IS).
+For both setups, we also selected instances using baseline approaches: anomaly detection method,
+inﬂuence on the discriminator loss, and random values. For anomaly detection, we adopted isolation
+forest (Liu et al., 2008). Isolation forest ﬁtted the model using the data points of Dx for 2D-Normal
+and feature vectors of the classiﬁer of Dx for MNIST. We adopted the selection based on the in-
+ﬂuence on the discriminator loss to verify our assumption that the inﬂuence on the loss does not
+represent the harmfulness of the instances. Inﬂuence on the discriminator loss was calculated on
+the expected loss of LD (θ) with DG(Z′; θ[T ]
+G ) and D′
+x. We considered instances with negative
+inﬂuence were harmful.
+We conducted the experiments as follows. After the training phase of K epoch, we determined
+nh < N harmful instances with the proposed approach and baselines. Then, we ran counterfactual
+ASGD with the determined harmful instances excluded. For the reliable estimation accuracy of
+inﬂuence and reasonable costs of the computation and storage, the inference phase traced back only
+1-epoch from the last epoch, and counterfactual ASGD only re-ran the latest epoch. We tested with
+various nh.
+We refer to the generator of the ﬁnal model as the cleansed generator and denote its parameters by
+θ⋆
+G. We evaluated the cleansed generator with test GAN evaluation metrics V (DG(Ztest); θ⋆
+G)), in
+which a set of test latent variables Ztest was obtained by sampling Ntest times from p(z) indepen-
+dently from Z′ and Z1, . . . , ZT . Test ALL and FID used a test dataset Dtest := {x[n]
+test ∼p(x)}Ntest
+n=1
+that consists of instances newly sampled from 2D-Normal and instances in the original test dataset
+of MNIST, respectively. We set Ntest = 10k and ran the experiment 15 times with different random
+seeds.
+7
+
+Published as a conference paper at ICLR 2021
+Influence on ALL (Ours)
+Influence on IS (Ours)
+Influence on FID (Ours)
+Isolation Forest
+Influence on Disc. Loss
+Random
+No Removal
+103
+104
+# of instances removed nh
+-2.88
+-2.88
+-2.87
+-2.87
+-2.87
+-2.87
+Average Log Likelihood
+(a)
+103
+104
+# of instances removed nh
+5.65
+5.70
+5.75
+5.80
+5.85
+5.90
+5.95
+Inception Score
+(b)
+103
+104
+# of instances removed nh
+1.50
+1.60
+1.70
+1.80
+1.90
+2.00
+2.10
+2.20
+Fréchet Inception Distance
+(c)
+Figure 2: Average test ALL (a), IS (b), and FID (c) after the data cleansing. Larger values in (a)
+and (b), a smaller value in (c) indicate the better generative performance. Error bars and plots of too
+large or small values are omitted for better visibility. See Appendix C.3 for full results.
+Quantitative Results
+Figure 2 shows the average test GAN evaluation metrics of the repeated ex-
+periments for each selection approach. For the data cleansing on 2D-Normal, the proposed approach
+with inﬂuence on ALL showed statistically signiﬁcant improvement from the original model and it
+outperformed the baselines (Figure 2a). For the MNIST setup, our approach with inﬂuence on FID
+and IS statistically signiﬁcantly improved FID (Figure 2c) and IS (Figure 2b), respectively. They
+also outperformed the baselines. In addition, the results indicate that data cleansing based on the
+inﬂuence on a speciﬁc GAN evaluation metric is also effective for another metric that is not used
+for the selection; removing harmful instances based on the inﬂuence on FID (IS) statistically signiﬁ-
+cantly improved IS (FID). However, we make no claim that the proposed method can improve all the
+other evaluation metrics, such as Kullback-Leibler divergence. This is because all the current GAN
+evaluation metrics have their own weaknesses (e.g., IS fails to detect whether a model is trapped
+into one bad mode (Zhou et al., 2018)), and the proposed method based on those GAN evaluation
+metrics cannot inherently avoid their weaknesses. These improvements thus can be observed only in
+a subclass of GAN evaluation metrics. Further evaluation of data cleansing with our method should
+incorporate the future improvements of the GAN evaluation metrics.
+While the improvements were smaller than the proposed approach, we also observed that data
+cleansing based on the inﬂuence on the discriminator loss improved all the GAN evaluation metrics.
+This counter-intuitive result indicates that the discriminator loss weakly measures the performance
+of the generator that is trained along with the discriminator.
+Qualitative Results
+We examined the characteristics of instances that were evaluated to be harm-
+ful by our method. Overall, we observed that our method tends to judge instances as harmful when
+they belong to regions from which the generators sample too frequently compared to the true dis-
+tribution. Figure 3 shows the estimated harmfulness of the training instances of 2D-Normal and
+the distribution of the generated samples. The proposed approach with inﬂuence on ALL evaluated
+the instances around lower-left and upper-right regions to be harmful (Figure 3a). These regions
+correspond to the regions where the generated distribution has higher density than that of the true
+distribution (Figure 3b “No removal” and “True”). Similar characteristics were seen in harmful
+8
+
+Published as a conference paper at ICLR 2021
+(a) Harmful instances
+(b) Generated distribution
+Figure 3: Harmfulness of 2D-Normal instances suggested using inﬂuence on ALL (a) and changes
+in the generator’s distribution (b). (b) includes plots of the true distribution (True) and generator’s
+distributions before (No removal) and after (Cleansed) the data cleansing with nh = 5.0k.
+(a) Harmful
+(b) No removal
+(c) Cleansed
+Figure 4: Top 36 harmful MNIST instances predicted on the basis of inﬂuence on FID (a), and the
+test generated samples before (b) and after (c) the data cleansing with nh = 25.0k. (a) and (b) use
+the same series of test latent variables in Ztest.
+MNIST instances suggested by our approach with inﬂuence on FID. A large number of samples
+from class 1 were regarded as harmful as shown in Figure 4a, when the generator sampled images
+of the digit 1 too frequently (Figure 4b).
+We also investigated how the data cleansing by our approach visually changed the generated sam-
+ples. As seen from the distributions in Figure 3b, the probability density in the upper-right region
+decreased after the data cleansing (from “No removal” to “Cleansed”). As a result, the generator
+distribution moved closer to the true distribution. The same effect was observed in a visually more
+interesting form in the data cleansing for MNIST. The generated samples originating from some
+latent variables changed from the image of digit 1 to that of other digits after the data cleansing
+based on the estimated inﬂuence on FID (highlighted samples in Figure 4c). We suppose this effect
+improved the diversity in the generated samples, resulting in better FID and IS.
+6
+CONCLUSION
+We proposed an inﬂuence estimation method for GAN that uses the Jacobian of the gradient of
+the discriminator’s loss with respect to the generator’s parameters (and vice versa), which traces
+how the absence of an instance in the discriminator’s training affects the generator’s parameters.
+We also proposed a novel evaluation scheme to judge if an instance is harmful or not on the basis
+of the inﬂuence on GAN evaluation metrics rather than that on the loss value, and to leverage the
+proposed inﬂuence estimation method to identify harmful instances. We experimentally veriﬁed that
+estimated and true inﬂuence on GAN evaluation metrics had a statistically signiﬁcant correlation.
+We also demonstrated removing identiﬁed harmful instances effectively improved the generative
+performance with respect to various GAN evaluation metrics.
+9
+
+Published as a conference paper at ICLR 2021
+REFERENCES
+Antreas Antoniou, Amos Storkey, and Harrison Edwards. Data augmentation generative adversarial
+networks. arXiv preprint arXiv:1711.04340, 2017.
+Martin Arjovsky, Soumith Chintala, and L´eon Bottou. Wasserstein generative adversarial networks.
+In Proceedings of the 34th International Conference on Machine Learning-Volume 70, pp. 214–
+223, 2017.
+Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E Hinton. Layer normalization. arXiv preprint
+arXiv:1607.06450, 2016.
+Ashish Bora, Eric Price, and Alexandros G. Dimakis. AmbientGAN: Generative models from lossy
+measurements. In International Conference on Learning Representations, 2018.
+Ali Borji. Pros and cons of gan evaluation measures. Computer Vision and Image Understanding,
+179:41–65, 2019.
+Markus M Breunig, Hans-Peter Kriegel, Raymond T Ng, and J¨org Sander. Lof: identifying density-
+based local outliers. In Proceedings of the 2000 ACM SIGMOD international conference on
+Management of data, pp. 93–104, 2000.
+R Dennis Cook and Sanford Weisberg. Characterizations of an empirical inﬂuence function for
+detecting inﬂuential cases in regression. Technometrics, 22(4):495–508, 1980.
+Gauthier Gidel, Hugo Berard, Ga¨etan Vignoud, Pascal Vincent, and Simon Lacoste-Julien. A varia-
+tional inequality perspective on generative adversarial networks. In International Conference on
+Learning Representations, 2019.
+Ian Goodfellow, Jean Pouget-Abadie, Mehdi Mirza, Bing Xu, David Warde-Farley, Sherjil Ozair,
+Aaron Courville, and Yoshua Bengio. Generative adversarial nets. Advances in neural information
+processing systems, 27:2672–2680, 2014.
+Satoshi Hara, Atsushi Nitanda, and Takanori Maehara. Data cleansing for models trained with sgd.
+In H. Wallach, H. Larochelle, A. Beygelzimer, F. d'Alch´e-Buc, E. Fox, and R. Garnett (eds.),
+Advances in Neural Information Processing Systems, volume 32. Curran Associates, Inc., 2019.
+Martin Heusel, Hubert Ramsauer, Thomas Unterthiner, Bernhard Nessler, and Sepp Hochreiter.
+Gans trained by a two time-scale update rule converge to a local nash equilibrium. In Advances
+in neural information processing systems, pp. 6626–6637, 2017.
+Peter J Huber. Robust statistics, volume 523. John Wiley & Sons, 2004.
+Takuhiro Kaneko and Tatsuya Harada. Noise robust generative adversarial networks. In Proceedings
+of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pp. 8404–8414, 2020.
+Tero Karras, Samuli Laine, Miika Aittala, Janne Hellsten, Jaakko Lehtinen, and Timo Aila. Analyz-
+ing and improving the image quality of stylegan. In Proceedings of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition, pp. 8110–8119, 2020.
+Rajiv Khanna, Been Kim, Joydeep Ghosh, and Sanmi Koyejo. Interpreting black box predictions
+using ﬁsher kernels. In The 22nd International Conference on Artiﬁcial Intelligence and Statistics,
+pp. 3382–3390. PMLR, 2019.
+Diederik P. Kingma and Jimmy Ba. Adam: A method for stochastic optimization. In Yoshua Bengio
+and Yann LeCun (eds.), 3rd International Conference on Learning Representations, ICLR 2015,
+San Diego, CA, USA, May 7-9, 2015, Conference Track Proceedings, 2015.
+Pang Wei Koh and Percy Liang. Understanding black-box predictions via inﬂuence functions. In
+International Conference on Machine Learning, pp. 1885–1894. PMLR, 2017.
+Yann LeCun, L´eon Bottou, Yoshua Bengio, and Patrick Haffner. Gradient-based learning applied to
+document recognition. Proceedings of the IEEE, 86(11):2278–2324, 1998.
+10
+
+Published as a conference paper at ICLR 2021
+Christian Ledig, Lucas Theis, Ferenc Huszar, Jose Caballero, Andrew Cunningham, Alejandro
+Acosta, Andrew Aitken, Alykhan Tejani, Johannes Totz, Zehan Wang, and Wenzhe Shi. Photo-
+realistic single image super-resolution using a generative adversarial network. In Proceedings of
+the IEEE Conference on Computer Vision and Pattern Recognition (CVPR), July 2017.
+Fei Tony Liu, Kai Ming Ting, and Zhi-Hua Zhou. Isolation forest. In 2008 Eighth IEEE Interna-
+tional Conference on Data Mining, pp. 413–422. IEEE, 2008.
+Shaohui Liu, Yi Wei, Jiwen Lu, and Jie Zhou. An improved evaluation framework for generative
+adversarial networks. arXiv preprint arXiv:1803.07474, 2018.
+Xudong Mao, Qing Li, Haoran Xie, Raymond YK Lau, Zhen Wang, and Stephen Paul Smolley.
+Least squares generative adversarial networks. In Proceedings of the IEEE international confer-
+ence on computer vision, pp. 2794–2802, 2017.
+Alec Radford, Luke Metz, and Soumith Chintala. Unsupervised representation learning with deep
+convolutional generative adversarial networks. In Yoshua Bengio and Yann LeCun (eds.), 4th
+International Conference on Learning Representations, ICLR 2016, San Juan, Puerto Rico, May
+2-4, 2016, Conference Track Proceedings, 2016.
+Tim Salimans, Ian Goodfellow, Wojciech Zaremba, Vicki Cheung, Alec Radford, Xi Chen, and
+Xi Chen. Improved techniques for training gans. In D. D. Lee, M. Sugiyama, U. V. Luxburg,
+I. Guyon, and R. Garnett (eds.), Advances in Neural Information Processing Systems 29, pp.
+2234–2242. Curran Associates, Inc., 2016.
+Bernhard Sch¨olkopf, John C Platt, John Shawe-Taylor, Alex J Smola, and Robert C Williamson.
+Estimating the support of a high-dimensional distribution. Neural computation, 13(7):1443–1471,
+2001.
+C. Szegedy, V. Vanhoucke, S. Ioffe, J. Shlens, and Z. Wojna. Rethinking the inception architecture
+for computer vision. In 2016 IEEE Conference on Computer Vision and Pattern Recognition
+(CVPR), pp. 2818–2826, 2016.
+Ilya O Tolstikhin, Sylvain Gelly, Olivier Bousquet, Carl-Johann Simon-Gabriel, and Bernhard
+Sch¨olkopf. Adagan: Boosting generative models. In Advances in Neural Information Processing
+Systems, pp. 5424–5433, 2017.
+Jiajun Wu, Chengkai Zhang, Tianfan Xue, Bill Freeman, and Josh Tenenbaum. Learning a prob-
+abilistic latent space of object shapes via 3d generative-adversarial modeling.
+In D. D. Lee,
+M. Sugiyama, U. V. Luxburg, I. Guyon, and R. Garnett (eds.), Advances in Neural Information
+Processing Systems 29, pp. 82–90. Curran Associates, Inc., 2016.
+Zhiming Zhou, Han Cai, Shu Rong, Yuxuan Song, Kan Ren, Weinan Zhang, Jun Wang, and Yong
+Yu. Activation maximization generative adversarial nets. In International Conference on Learning
+Representations, 2018.
+11
+
+Published as a conference paper at ICLR 2021
+Algorithm 1 Training Phase
+Initialize the parameter θ[1]
+Initialize the sequence as null: A ←∅
+for t = 1, 2, . . . , T −1 do
+// sample latent variables
+Zt = {z[t]
+l
+∼p(z)}|St|
+l=1
+// store information
+A[t] ←
+
+St, η[t]
+G , η[t]
+D , θ[t], Zt
+
+// update parameters
+θ[t+1] = θ[t] −Btg
+ St, Zt; θ[t]
+end for
+Algorithm 2 Inference Phase
+Require: u =
+ uG ∈RdG, uD ∈RdD⊤
+Initialize the inﬂuence: L[T ]
+−j (u) ←0
+for t = T −1, T −2, . . . , 1 do
+// load information
+
+St, η[t]
+G , η[t]
+D , θ[t], Zt
+
+←A[t]
+// update the linear inﬂuence of jth instance
+if j ∈St then
+L[T ]
+−j (u) += η[t]
+D
+|St|
+D
+uD, ∇θDf [x]
+D (xj; θ[t])
+E
+end if
+// update u
+u −= u⊤BtJt
+end for
+A
+ALGORITHM FOR LINEAR INFLUENCE
+The proposed estimation algorithm for linear inﬂuence, which is explained in Section 3.1, is divided
+into the training phase (Algorithm 1) and inference phase (Algorithm 2).
+The training phase executes ASGD training while storing the mini-batch indices St, the learning
+rate η[t]
+G , η[t]
+D , the parameters θ[t] and the sampled latent variable Zt into the information A[t] at each
+step.
+In the inference phase, L[T ]
+−j (u) is estimated by the recursive calculation. First, we set L[T ]
+−j (u)
+to 0 and set the query vector u. The information A[t], which is obtained in the training phase, is
+read in the order of t = T −1, T −2, . . . , 1. When j ∈St, L[T ]
+−j(u) is updated using (8). Let
+ut =
+
+u[t]
+G , u[t]
+D
+⊤
+. Each step updates u based on ut+1 = u⊤
+t Zt = u⊤
+t (Idθ −BtJt). A naive
+calculation of u⊤
+t Jt requires O
+ d2
+θ
+
+memory to store the matrix Jt, which can be prohibitive for
+very large models. We can avoid this difﬁculty by directly computing u⊤
+t Jt without the explicit
+computation of Jt. Because u⊤
+t Jt = ∇θ
+
+ut, (∇θGL G, ∇θDL D)⊤
+, we need only to compute
+the derivative of the inner product of ut and the joint gradient vector.
+Our algorithm also covers the alternating gradient descent, in which the two models alternatively
+update their parameters at each step. By taking η[t]
+G and η[t]
+D such that they alternatively take 0 at
+each step, we can have ASGD and the estimator of ASGD-Inﬂuence for the alternating gradient
+descent. The implementation of linear inﬂuence for the alternating gradient descent is available in
+our repository4.
+B
+OTHER RELATED WORKS
+Anomaly Detection
+A typical approach for identifying harmful instances is outlier detection. Out-
+lier detection is used to remove abnormal instances from the training set before training the model
+to ensure that the model is not affected by the abnormal instances. For tabular data, there are several
+popular methods, such as One-class support vector machine (Sch¨olkopf et al., 2001), local outlier
+factor (Breunig et al., 2000), and isolation forest (Liu et al., 2008). Although these methods can ﬁnd
+abnormal instances, they are not necessarily harmful for the resulting models, as we showed in the
+experiment.
+Training GAN from Noisy Images
+One typical type of data that harm generative performance is
+noisy images. AmbientGAN (Bora et al., 2018) and noise-robust GAN (Kaneko & Harada, 2020)
+4https://github.com/hitachi-rd-cv/influence-estimation-for-gans
+12
+
+Published as a conference paper at ICLR 2021
+Table 1: Model architecture of CNN classiﬁer of MNIST in Section 5.1 and 5.2.
+Stage
+Operation
+Stride
+Filter Shape
+Bias
+Norm.
+Activation
+Output
+0
+Input
+-
+-
+-
+-
+-
+[28, 28, 1]
+1
+Conv2D
+1
+[5, 5]
+✓
+-
+Sigmoid
+[25, 25, 8]
+2
+Conv2D
+1
+[5, 5]
+✓
+-
+Sigmoid
+[12, 12, 8]
+3
+MaxPooling
+2
+[2, 2]
+-
+-
+Sigmoid
+[392]
+4
+Linear
+1
+-
+✓
+-
+Sigmoid
+[128]
+5
+Linear
+1
+-
+✓
+-
+Sigmoid
+[10]
+are learning algorithms that make it possible to train a clean image generator from noisy images. The
+difference between these studies and ours is that these studies assume that the noise (e.g., Gaussian
+noise on pixels) given independently from the data distribution of the clean images is the only
+problem. However, some instances can affect the performance even if the instances are drawn only
+from the data distribution, which is the case robust statistics (Huber, 2004) typically focuses on. Our
+experiment 5.2 indicates that the model performance depends not only on noisy images but also on
+a non-negligible number of harmful instances in the original dataset.
+C
+DETAILED EXPERIMENTAL SETTINGS AND RESULTS
+C.1
+GAN EVALUATION METRICS
+We adopted Gaussian kernel with the band-width 1 for kernel density estimation used in ALL. The
+architecture of CNN classiﬁer of MNIST used for IS and FID can be found in Table 1. We selected
+the output of the 4th layer for the feature vectors for FID.
+C.2
+EXPERIMENT 1: ESTIMATION ACCURACY
+Setup
+In the experiment of Section 5.1, we adopted the hyper parameters shown in Table 2. We
+trained fullly-connected GAN (FCGAN) for 2D multivariate normal distribution, in which the both
+G and D has 1 hidden layer of hG and hD units, respectively (Table 3). 2D-Normal is given by
+N(µ, Σ), in which the mean vector µ = 12 and the covariance matrix Σ = ((1, 0.8) , (0.8, 1))⊤.
+DCGAN consists of transposed convolution (or deconvolution) layers and convolution layers (Ta-
+ble 4). The channels of the both layers in G and D were determined by hG and hD, respectively.
+We used Layer Normalization (Ba et al., 2016) for the layers shown in Table 4 for the stability of
+the training. We also introduced the L2-norm regularization with the rate γ ∈R+ for all the ker-
+nels of both FCGAN and DCGAN. We used the non-zero-sum game objective of the original paper
+(Goodfellow et al., 2014) in which G tries to minimize −DθD (GθG (z)) for both models.
+C.3
+EXPERIMENT 2: DATA CLEANSING
+Setup
+We adopted the same architecture as the Section 5.1 (Table 3) for FCGAN and slightly
+different architecture (Table 4) in which hG and hD are larger (Table 5) for DCGAN. Other hy-
+per parameters followed Table 5. We also provide visual explanations of the data settings in the
+experiments with inﬂuence on ALL, IS, and FID in Figure 5, 6, and 7, respectively.
+Results
+Table 6-8 show the detailed results of Figure 2. And they clarify with which nh and
+selection approach the test GAN evaluation metrics were statistically signiﬁcantly improved.
+13
+
+Published as a conference paper at ICLR 2021
+Table 2: Hyper parameters in Section 5.1.
+K
+η[t]
+G
+η[t]
+D
+N
+N ′
+St
+γ
+hG
+hD
+2D-Normal
+50
+10−3
+10−3
+10k
+10k
+100
+10−3
+32
+64
+MNIST
+50
+10−3
+10−3
+10k
+10k
+100
+10−3
+8
+8
+Table 3: Model Architecture of FCGAN in Section 5.1 and 5.2.
+Net.
+Stage
+Operation
+Bias
+Activation
+Output
+-
+0
+Input
+-
+-
+[10]
+G
+1
+Linear
+✓
+ReLU
+[hG]
+G
+2
+Linear
+✓
+Tanh
+[2]
+D
+3
+Linear
+✓
+ReLU
+[hD]
+D
+4
+Linear
+✓
+Sigmoid
+[1]
+Table 4: Model Architecture of DCGAN in Section 5.1 and 5.2.
+Net.
+Stage
+Operation
+Stride
+Filter Shape
+Bias
+Norm.
+Activation
+Output
+-
+0
+Input
+-
+-
+-
+-
+-
+[32]
+G
+1
+Deconv2D
+1
+[2, 2]
+✓
+✓
+Sigmoid
+[2, 2, hG]
+G
+2
+Deconv2D
+1
+[3, 3]
+✓
+✓
+Sigmoid
+[4, 4, hG]
+G
+3
+Deconv2D
+2
+[3, 3]
+✓
+✓
+Sigmoid
+[9, 9, hG]
+G
+4
+Deconv2D
+1
+[2, 2]
+✓
+✓
+Sigmoid
+[10, 10, hG]
+G
+5
+Deconv2D
+1
+[3, 3]
+✓
+✓
+Sigmoid
+[12, 12, hG]
+G
+6
+Deconv2D
+2
+[3, 3]
+✓
+✓
+Sigmoid
+[25, 25, hG]
+G
+7
+Deconv2D
+1
+[4, 4]
+✓
+✓
+Sigmoid
+[28, 28, hG]
+G
+8
+Conv2D
+1
+[1, 1]
+✓
+-
+Tanh
+[28, 28, 1]
+D
+9
+Conv2D
+1
+[4, 4]
+✓
+✓
+Sigmoid
+[25, 25, hD]
+D
+10
+Conv2D
+2
+[3, 3]
+✓
+✓
+Sigmoid
+[12, 12, hD]
+D
+11
+Conv2D
+1
+[3, 3]
+✓
+✓
+Sigmoid
+[10, 10, hD]
+D
+12
+Conv2D
+1
+[2, 2]
+✓
+✓
+Sigmoid
+[9, 9, hD]
+D
+13
+Conv2D
+2
+[3, 3]
+✓
+✓
+Sigmoid
+[4, 4, hD]
+D
+14
+Conv2D
+1
+[3, 3]
+✓
+✓
+Sigmoid
+[2, 2, hD]
+D
+15
+Conv2D
+1
+[2, 2]
+✓
+✓
+Sigmoid
+[1, 1, hD]
+D
+16
+Linear
+-
+-
+✓
+-
+Sigmoid
+[1]
+Table 5: Hyper parameters in Section 5.2.
+K
+η[t]
+G
+η[t]
+D
+N
+N ′
+Ntest
+St
+γ
+hG
+hD
+2D-Normal
+70
+10−3
+10−3
+50k
+10k
+10k
+100
+10−3
+32
+64
+MNIST
+20
+10−3
+10−3
+50k
+10k
+10k
+100
+10−3
+32
+32
+14
+
+Published as a conference paper at ICLR 2021
+Dataset 
+for training
+𝒟𝒙
+Remove top  𝑛ℎ
+harmful instances
+Counterfactual ASGD 
+training
+ASGD
+training
+𝜽𝐺
+𝑇
+𝜽𝐺
+⋆
+Cleansed training dataset
+Dataset
+for influence 
+estimation
+𝒟𝒙′
+Dataset
+for test 
+𝒟𝑡𝑒𝑠𝑡
+Evaluate test ALL  of 
+the original  generator
+(No removal)
+𝑉𝒟𝐺𝒵𝑡𝑒𝑠𝑡;𝜽𝐺
+𝑇
+;𝒟𝑡𝑒𝑠𝑡
+Evaluate test ALL  of 
+the cleansed generator
+(Cleansed)
+𝑉𝒟𝐺𝒵𝑡𝑒𝑠𝑡;𝜽𝐺
+⋆; 𝒟𝑡𝑒𝑠𝑡
+Influence on ALL
+Influence Estimation
+𝐿−𝑗
+𝑇
+∇𝜽𝑉𝒟𝐺𝒵′;𝜽𝐺
+𝑇
+; 𝒟𝒙′
+True data 
+distribution
+𝑝𝒙= 𝒩𝝁, 𝚺
+Figure 5: The data setting of data cleansing with the inﬂuence on ALL (2D-Normal) in Section 5.2.
+15
+
+Published as a conference paper at ICLR 2021
+Dataset 
+for training
+𝒟𝒙
+Remove top  𝑛ℎ
+harmful instances
+Counterfactual ASGD 
+training
+ASGD
+training
+𝜽𝐺
+𝑇
+𝜽𝐺
+⋆
+Cleansed training dataset
+Evaluate test IS  of 
+the original  generator
+(No removal)
+𝑉𝒟𝐺𝒵𝑡𝑒𝑠𝑡;𝜽𝐺
+𝑇
+Evaluate test IS  of 
+the cleansed generator
+(Cleansed)
+𝑉𝒟𝐺𝒵𝑡𝑒𝑠𝑡;𝜽𝐺
+⋆
+Influence on IS
+Influence Estimation
+𝐿−𝑗
+𝑇
+∇𝜽𝑉𝒟𝐺𝒵′;𝜽𝐺
+𝑇
+Original
+training 
+dataset of 60k
+Figure 6: The data setting of data cleansing with the inﬂuence on IS (MNIST) in Section 5.2.
+16
+
+Published as a conference paper at ICLR 2021
+Dataset 
+for training
+𝒟𝒙
+Remove top  𝑛ℎ
+harmful instances
+Counterfactual ASGD 
+training
+ASGD
+training
+𝜽𝐺
+𝑇
+Cleansed training dataset
+Dataset
+for influence 
+estimation
+𝒟𝒙′
+(𝒟𝒙∩𝒟𝒙′ = 𝜙)
+Dataset
+for test 
+𝒟𝑡𝑒𝑠𝑡
+Evaluate test FID  of 
+the original  generator
+(No removal)
+𝑉𝒟𝐺𝒵𝑡𝑒𝑠𝑡;𝜽𝐺
+𝑇
+;𝒟𝑡𝑒𝑠𝑡
+Evaluate test FID  of 
+the cleansed generator
+(Cleansed)
+𝑉𝒟𝐺𝒵𝑡𝑒𝑠𝑡;𝜽𝐺
+⋆; 𝒟𝑡𝑒𝑠𝑡
+Influence on FID
+Influence Estimation
+𝐿−𝑗
+𝑇
+∇𝜽𝑉𝒟𝐺𝒵′;𝜽𝐺
+𝑇
+; 𝒟𝒙′
+Original
+training 
+dataset of 60k
+Original
+test
+dataset of 10k
+𝜽𝐺
+⋆
+Figure 7: The data setting of data cleansing with the inﬂuence on FID (MNIST) in Section 5.2.
+17
+
+Published as a conference paper at ICLR 2021
+Table 6: Improvements of test average log-likelihood [10−2] (±std) after the data cleansing (2D-
+Normal). The metric value is highlighted when the improvement is statistically signiﬁcant with the
+signiﬁcant level 0.05
+nh
+0.5k
+1.0k
+2.5k
+5.0k
+7.5k
+10.0k
+12.5k
+15.0k
+17.5k
+20.0k
+Inﬂuence
+on
+ALL
++0.09
+(0.06)
++0.16
+(0.12)
++0.31
+(0.27)
++0.44
+(0.50)
++0.40
+(0.73)
++0.22
+(0.99)
+-0.10
+(1.28)
+-0.53
+(1.60)
+-1.07
+(1.95)
+-1.67
+(2.33)
+Inﬂuence
+on
+Disc. loss
++0.02
+(0.03)
++0.04
+(0.05)
++0.11
+(0.10)
++0.19
+(0.19)
++0.26
+(0.28)
++0.32
+(0.39)
++0.35
+(0.51)
++0.35
+(0.64)
++0.30
+(0.79)
++0.22
+(0.95)
+Isolation
+Forest
++0.03
+(0.05)
++0.05
+(0.11)
++0.09
+(0.27)
++0.12
+(0.54)
++0.12
+(0.79)
++0.09
+(1.05)
++0.02
+(1.31)
+-0.09
+(1.58)
+-0.25
+(1.86)
+-0.46
+(2.16)
+Random
++0.01
+(0.04)
++0.02
+(0.08)
++0.04
+(0.19)
++0.07
+(0.39)
++0.08
+(0.61)
++0.06
+(0.83)
++0.02
+(1.07)
+-0.05
+(1.34)
+-0.16
+(1.61)
+-0.31
+(1.91)
+Table 7: Improvements of test inception score (±std) after the data cleansing (MNIST). The metric
+value is highlighted when the improvement is statistically signiﬁcant with the signiﬁcant level 0.05
+nh
+0.5k
+1.0k
+2.5k
+5.0k
+10.0k
+15.0k
+20.0k
+25.0k
+35.0k
+45.0k
+Inﬂuence
+on
+FID
++0.03
+(0.07)
++0.04
+(0.09)
++0.04
+(0.17)
++0.03
+(0.25)
++0.04
+(0.24)
++0.09
+(0.13)
++0.10
+(0.12)
++0.10
+(0.13)
++0.04
+(0.17)
+-0.18
+(0.28)
+Inﬂuence
+on
+IS
++0.04
+(0.05)
++0.04
+(0.08)
++0.05
+(0.14)
++0.04
+(0.23)
++0.08
+(0.15)
++0.11
+(0.13)
++0.12
+(0.14)
++0.14
+(0.14)
++0.09
+(0.25)
+-0.07
+(0.24)
+Inﬂuence
+on
+Disc. Loss
++0.01
+(0.03)
++0.01
+(0.05)
++0.02
+(0.03)
++0.04
+(0.04)
++0.04
+(0.05)
++0.04
+(0.06)
++0.04
+(0.06)
++0.01
+(0.06)
++0.00
+(0.07)
+-0.15
+(0.11)
+Isolation
+Forest
++0.00
+(0.02)
++0.01
+(0.02)
++0.01
+(0.04)
++0.00
+(0.05)
+-0.01
+(0.06)
+-0.05
+(0.08)
+-0.13
+(0.13)
+-0.23
+(0.18)
+-0.67
+(0.33)
+-1.70
+(0.75)
+Random
++0.01
+(0.02)
++0.00
+(0.01)
++0.00
+(0.02)
+-0.01
+(0.04)
++0.00
+(0.04)
++0.00
+(0.05)
+-0.01
+(0.09)
++0.00
+(0.06)
+-0.02
+(0.07)
++0.00
+(0.10)
+18
+
+Published as a conference paper at ICLR 2021
+Table 8: Improvements of test FID (±std) after the data cleansing (MNIST). The metric value is
+highlighted when the improvement is statistically signiﬁcant with the signiﬁcant level 0.05
+nh
+0.5k
+1.0k
+2.5k
+5.0k
+10.0k
+15.0k
+20.0k
+25.0k
+35.0k
+45.0k
+Inﬂuence
+on
+FID
+-0.10
+(0.13)
+-0.13
+(0.18)
+-0.18
+(0.28)
+-0.19
+(0.46)
+-0.25
+(0.45)
+-0.36
+(0.35)
+-0.38
+(0.36)
+-0.38
+(0.37)
+-0.23
+(0.46)
++0.23
+(0.60)
+Inﬂuence
+on
+IS
+-0.07
+(0.10)
+-0.10
+(0.14)
+-0.14
+(0.22)
+-0.14
+(0.37)
+-0.26
+(0.28)
+-0.32
+(0.29)
+-0.34
+(0.30)
+-0.36
+(0.30)
+-0.22
+(0.45)
++0.17
+(0.49)
+Inﬂuence
+on
+Disc. Loss
+-0.03
+(0.06)
+-0.04
+(0.08)
+-0.07
+(0.07)
+-0.13
+(0.10)
+-0.18
+(0.12)
+-0.20
+(0.13)
+-0.19
+(0.14)
+-0.15
+(0.14)
+-0.06
+(0.12)
++0.34
+(0.19)
+Isolation
+Forest
++0.01
+(0.03)
++0.02
+(0.03)
++0.05
+(0.06)
++0.10
+(0.08)
++0.24
+(0.15)
++0.42
+(0.22)
++0.73
+(0.37)
++1.09
+(0.54)
++2.56
+(0.85)
++6.99
+(3.57)
+Random
+-0.01
+(0.04)
+-0.01
+(0.02)
+-0.00
+(0.04)
++0.01
+(0.06)
++0.00
+(0.07)
++0.01
+(0.08)
++0.02
+(0.16)
+-0.01
+(0.09)
++0.00
+(0.13)
+-0.13
+(0.18)
+D
+DETAILED DISCUSSION ON EXPERIMENT 2
+This section ﬁrst discusses three aspects of the results in Section 5.2: Section D.1 explains the com-
+mon characteristics of harmful instances suggested by our approach, Section D.2 discusses qual-
+itative aspects of the data cleansing using generated samples, and Section D.3 discusses how the
+characteristics of harmful instances and effect of the data cleansing are consistent among the train-
+ings with different random seeds. Finally, we explain the limitation of our method and present the
+future direction in Section D.4.
+D.1
+CHARACTERISTICS OF HARMFUL INSTANCE
+In this section, we examine the characteristics of instances that are evaluated to be harmful or helpful
+by our method. We regard a sample is helpful if its inﬂuence on a metric is opposite of harmful
+instances.
+Table 9 shows the estimated harmfulness of the training instances of 2D-Normal and the distribution
+of the generated samples. The proposed approach with inﬂuence on ALL evaluated the instances
+around lower-left and upper-right regions to be harmful (Table 9 (a, i)). These regions correspond to
+the regions where the generated distribution has higher density than that of the true distribution; The
+generator before the cleansing (Table 9 (a, ii, No removal)) sampled too frequently from lower-left
+and upper-right regions compared to the true distribution (Table 9 (a, ii, True)). This characteris-
+tics was not observed in the plots of baseline approaches. The approach based on inﬂuence on the
+discriminator loss seems to ignore the difference in the density around the lower-left region (Ta-
+ble 9 (b, i)) and isolation forest did not take the generator’s distribution into account (Table 9 (c, i)).
+Similar characteristics were seen in harmful MNIST instances suggested by our approach with in-
+ﬂuence on IS and FID. When the generator over-sampled a speciﬁc digit (e.g., the digit 1 in Ta-
+ble 10 (a, iii)), our approach tended to judge the images of the digit to be harmful (e.g., a large
+number of 1 in Table 10 (b-c, i)). Similarly, our method judged instances of a speciﬁc digit as help-
+ful (e.g., the digit 6 in Table 10 (b-c, ii)) when the generator failed to sample the digit (e.g., the
+absence of 6 in Table 10 (a, iii)). On the contrary, harmful instances suggested on the basis of in-
+ﬂuence on the discriminator loss did not show the tendency (Table 10 (d, i)). The baseline approach
+with isolation forest based on the classiﬁer feature-space seems to have judged the images that were
+difﬁcult to be classiﬁed as harmful, rather than the over-sampled digit (Table 10 (e, i)). It regarded
+that instances are helpful when they belong to a digit that seems to have been easy to be classiﬁed
+(Table 10 (e, ii)).
+19
+
+Published as a conference paper at ICLR 2021
+To summarize, our method tends to judge instances as harmful when they belong to regions from
+which the generators sample too frequently compared to the true distribution.
+D.2
+QUALITATIVE STUDY OF DATA CLEANSING
+We then investigate how the data cleansing using the suggested harmful instances visually change
+generated samples.
+As seen from Table 9 (a, ii), the probability density in the upper-right region decreased after the data
+cleansing (from “No removal” to “Cleansed”). As a result, the generator distribution got closer to the
+true distribution. Although the baselines indicated the same direction of changes in the distributions
+(Table 9 (b-c, ii)), these were not as signiﬁcant as ours.
+The same effect was observed in visually more interesting form in the data cleansing for MNIST. The
+generated samples originating from some latent variables changed from the image of digit 1 to that
+of other digits after the data cleansing based on the estimated inﬂuence on IS and FID (highlighted
+samples in Table 10 (b-c, iii)). This implies that a certain amount of density that are over-allocated
+for the digit 1 moved to the regions of other digits. We assume this effect improved the diversity in
+the generated samples, resulting in better FID and IS. This characteristics was not clearly observed
+in the baselines (highlighted samples in Table 10 (d-f, iii)).
+These observations suggest that our method helps the GAN’s training so that the generator re-assigns
+the densities that were over-allocated to certain regions to other regions.
+D.3
+CONSISTENCY OF QUALITATIVE CHARACTERISTICS AMONG DIFFERENT TRAININGS
+We show additional visual results to conﬁrm the consistency of the ﬁndings on the characteristics
+of harmful instances and generated samples after data cleansing, which we described in Section D.2
+and Section D.3, respectively.
+Table 11 shows the harmfulness of the training instances and the distribution of the generated sam-
+ples obtained using 5 different random seeds in 2D-Normal case. As seen from the table, regardless
+of which region a generator assigns high density to, our method consistently regards the training
+samples around the region as harmful. In addition, the distributions of the generated samples get
+closer to the true distribution by removing these harmful training instances in the data cleansing.
+Table 12 visualizes the MNIST examples of harmful instances, helpful instances, and generated
+images before and after the data cleansing. Different rows correspond to different random seeds.
+We found the consistency in visual characteristics was moderate in MNIST case. A few results
+demonstrated the common qualitative characteristics when the improvements in GAN evaluation
+metrics were large (Table 12 (a) and (d)). In the training with the 4th random seed (d), the suggestion
+of harmful instances showed some tendency; many instances of digit 7 were regarded as harmful
+whereas those of digit 4 were not at all (Table 12 (d, i)). The data cleansing based on this suggestion
+seems to have improved the diversity of the generated samples by reducing the samples of digit 7 and
+increasing those of digit 4 (highlighted samples in Table 12 (d, iv)). This indicates the consistent
+characteristics of the data cleansing discussed in the previous section to some extent; it helps the
+GAN’s training so that the generator re-assigns the densities that were over-allocated to certain data
+regions to other regions.
+D.4
+CURRENT LIMITATION AND FUTURE DIRECTION
+The limitation of our method is that it does not guarantee the harmful instances suggested on the
+basis of inﬂuence on one GAN evaluation metric are not necessarily harmful from the viewpoint of
+other metrics.
+For example, we have demonstrated that removing instances that predicted to have
+negative inﬂuence on FID improved both test FID and IS (Figure 2) and increased visual diversity
+in generated images (Table 10 and 12). However, it does not seem to have improved visual quality
+(e.g., sharpness, reality, etc.) of the individual generated-samples.
+Therefore, it is possible that
+these instances are harmful only for some particular aspects of generative performance, i.e. the
+diversity in this case, and they are not harmful for the other aspect, i.e. the visual quality in this
+case.
+20
+
+Published as a conference paper at ICLR 2021
+We would argue that this limitation is closely tied with the limitation of the current GAN evaluation
+metrics. For example, FID takes the diversity of generated samples into account, but they only partly
+take the visual quality into account; e.g., FID based on Inception Net was shown to focus on textures
+rather than shapes of the objects (Karras et al. (2020)). In this sense, we clarify that we never claim
+our method can improve the “true” generative performance from all the aspects, considering the
+situation that there is no “true” evaluation metric that measures all the aspects of the generative
+performance.
+The advantage of our method is that it does not have to care how the evaluation metrics are deﬁned
+as long as they are differentiable with respect to the generated samples. Furthermore, our evaluation
+method makes no assumption about what the harmful characteristics of instances are. This means
+that it is expected to be easily applied to another evaluation metric if better metric is developed
+in the future. One of our main contributions in such sense is that we experimentally veriﬁed that
+our method successfully improved the generative performance in terms of a targeted metric, using
+limited but currently widely accepted metrics.
+Our future work includes incorporating such future improvements in the GAN evaluation metric to
+obtain better insights on the relationship between training instances and generative performance. In
+addition, we would like to relax the current constraint on the optimizer. Our method is currently
+applicable only to SGD but we would like to ﬁnd a way to extend it to other optimizers such as
+Adam (Kingma & Ba (2015)) to deal with the latest GAN models.
+21
+
+Published as a conference paper at ICLR 2021
+Table 9: (i) harmfulness of 2D-Normal instances suggested by different approaches, (ii) changes in
+the generator’s distribution, and (iii) test ALL after the data cleansing. (ii) includes plots of the true
+distribution (True) and generator’s distributions before (No removal) and after (Cleansed) the data
+cleansing with nh = 5.0k. The distributions of generated samples, that refer to DG(Ztest; θ[T ]
+G ) (No
+removal) and DG(Ztest; θ⋆
+G) (Cleansed), are estimated with kernel density estimation.
+(i) Harmful instances
+(ii) Generated distribution
+(iii) ALL
+(a)
+Inﬂuence on ALL
+(Ours)
++1.24
+(b)
+Inﬂuence on Disc. Loss
++0.67
+(c)
+Isolation Forest
++0.73
+(d)
+Random
++0.43
+22
+
+Published as a conference paper at ICLR 2021
+Table 10: (i) top 36 harmful and (ii) helpful MNIST instances predicted by the different approaches,
+(iii) the test generated samples, and (iv) changes in test FID after the data cleansing with nh = 25.0k.
+All the generated samples use the same series of test latent variables in Ztest.
+(i) Harmful
+(ii) Helpful
+(iii) Generated
+(iv) FID
+(a)
+No removal
+n/a
+n/a
+±0
+(b)
+Inﬂuence on IS
+(Ours)
+−0.71
+(c)
+Inﬂuence on FID
+(Ours)
+−0.85
+(d)
+Inﬂuence on D Loss
+−0.21
+(e)
+Isolation Forest
++1.80
+(f)
+Random
+−0.21
+23
+
+Published as a conference paper at ICLR 2021
+Table 11: Comparison among different random seeds used in the training in 2D-Normal case. See
+Table 9 for how the plots are generated.
+(i) Harmful instances
+(ii) Generated distribution
+(iii) ALL
+(a) 1st rand. seed
++1.24
+(b) 2nd rand. seed
++0.29
+(c) 3rd rand. seed
++0.54
+(d) 4th rand. seed
++0.32
+(e) 5th rand. seed
++0.58
+24
+
+Published as a conference paper at ICLR 2021
+Table 12: Comparison among different random seeds used in the training in MNIST case. The
+generated samples from the model without cleansing (iii) and cleansed model (iv) in the same row
+use the same series of test latent variables. See Table 10 for the detail of how the images are obtained.
+(i)
+Harmful
+(ii)
+Helpful
+(iii)
+Generated
+(No removal)
+(iv)
+Generated
+(Cleansed)
+(v)
+FID
+(a) 1st rand. seed
+−0.85
+(b) 2nd rand. seed
+−0.45
+(c) 3rd rand. seed
++0.09
+(d) 4th rand. seed
+−0.71
+(e) 5th rand. seed
+−0.12
+25
+

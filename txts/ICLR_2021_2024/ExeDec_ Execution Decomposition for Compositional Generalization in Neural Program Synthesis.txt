@@ -1,0 +1,1993 @@
+Published as a conference paper at ICLR 2024
+EXEDEC: EXECUTION DECOMPOSITION
+FOR COMPOSITIONAL GENERALIZATION
+IN NEURAL PROGRAM SYNTHESIS
+Kensen Shi
+Google DeepMind
+kshi@google.com
+Joey Hong ∗
+UC Berkeley
+joey hong@berkeley.edu
+Yinlin Deng ∗
+University of Illinois
+Urbana-Champaign
+yinlind2@illinois.edu
+Pengcheng Yin
+Google DeepMind
+pcyin@google.com
+Manzil Zaheer
+Google DeepMind
+manzilzaheer@google.com
+Charles Sutton
+Google DeepMind
+charlessutton@google.com
+ABSTRACT
+When writing programs, people have the ability to tackle a new complex task by
+decomposing it into smaller and more familiar subtasks. While it is difﬁcult to
+measure whether neural program synthesis methods have similar capabilities, we
+can measure whether they compositionally generalize, that is, whether a model that
+has been trained on the simpler subtasks is subsequently able to solve more complex
+tasks. In this paper, we characterize several different forms of compositional
+generalization that are desirable in program synthesis, forming a meta-benchmark
+which we use to create generalization tasks for two popular datasets, RobustFill
+and DeepCoder. We then propose ExeDec, a novel decomposition-based synthesis
+strategy that predicts execution subgoals to solve problems step-by-step informed
+by program execution at each step. When used with Transformer models trained
+from scratch, ExeDec has better synthesis performance and greatly improved
+compositional generalization ability compared to baselines. Finally, we use our
+benchmarks to demonstrate that LLMs struggle to compositionally generalize when
+asked to do programming-by-example in a few-shot setting, but an ExeDec-style
+prompting approach can improve the generalization ability and overall performance.
+1
+INTRODUCTION
+Program synthesis aims to assist programmers by automatically producing code according to a
+user’s speciﬁcation of what the code should do (Gulwani et al., 2017). Program synthesis systems,
+such as programming by example (PBE) systems, have been effective for tasks such as string
+manipulation (Gulwani, 2011; Devlin et al., 2017; Shi et al., 2022b), writing short Java functions (Shi
+et al., 2019), and tensor manipulation (Shi et al., 2022a). Neural program synthesizers, especially
+those based on large language models (Chen et al., 2021a; Austin et al., 2021; Li et al., 2022), have
+been particularly successful at generating code functions and blocks across a variety of general-
+purpose programming languages.
+An essential capability of human programmers is their ability to generalize by recombining parts of
+prior knowledge to solve new tasks. For example, a capable programmer can quickly adapt to new
+concepts and APIs, and compose different code idioms in unseen ways to solve novel problems. These
+skills are instances of compositional generalization, which is the ability to generalize to test examples
+consisting of different compositions of components individually seen during training (Keysers et al.,
+2020). While compositionality has been studied in natural language processing (Chomsky, 1957;
+Lake & Baroni, 2018; Gu et al., 2021), it has not been studied deeply in the context of programming
+by example. This problem is potentially fruitful not only because it might help to build more robust
+program synthesizers, but also as an example of how more general problem-solving is compositional.
+∗These authors contributed during internships at Google DeepMind.
+1
+
+Published as a conference paper at ICLR 2024
+To build neural synthesis systems that are better at compositional generalization, we propose designing
+systems that learn to decompose a complex task into a list of simpler subtasks. Each subtask is deﬁned
+by a goal, so the process of decomposing a task is essentially planning. Indeed, decomposition is a
+skill so fundamental to software engineering that the ﬁrst programming course at Stanford University
+introduces decomposition within the ﬁrst week (Parlante, 2022). This can enable compositional
+generalization because subtasks seen during training can be combined in different ways at test time.
+Based on this intuition, we propose ExeDec, a novel search method for neural program synthesis
+that performs decomposition within the execution space. A PBE task deﬁnes a program by pairs of
+program inputs with their desired outputs. Thus, it is natural to describe a subgoal by the desired
+intermediate state, i.e., values of local variables, for the next subtask. To describe the intuition in
+another way, we imagine that a human programmer does not decide on what code to write one token
+at a time, but rather thinks about what the result of the next code block should be, and then writes
+code to accomplish that. Speciﬁcally, ExeDec uses two neural models, a subgoal model that predicts
+the desired program state for the next part of the program, and a synthesizer model that attempts to
+generate a program that reaches that subgoal from the prior state. We interleave neural prediction with
+program execution within a beam search that enables exploring different predicted decompositions.
+To evaluate this approach, we introduce a new meta-benchmark for measuring the compositional
+generalization abilities of program synthesizers. Given a standard program synthesis benchmark
+containing a domain-speciﬁc language and a distribution over target programs, our meta-benchmark
+describes train-test splits for 5 different types of compositional generalization, such as length gener-
+alization or composing API functions in different combinations in the training and test sets. While
+ExeDec has slightly better performance than a Transformer baseline in the i.i.d. setting, ExeDec also
+achieves a 2× to 4× accuracy increase in the compositional generalization setting. Additionally,
+ExeDec improves upon an ablation that does not explicitly propose subgoals, showing the importance
+of reasoning about execution subgoals instead of directly predicting code.
+Interestingly, a similar approach can be applied to explore compositional generalization in large
+language models (LLMs). We explore whether the LLM can solve PBE tasks that compositionally
+generalize beyond those in a few-shot prompt. We similarly ﬁnd that the LLM performs signiﬁcantly
+worse when compositional generalization is required, and that an adaptation of ExeDec to the few-shot
+prompting setup increases the LLM’s performance overall, including in compositional generalization.
+Even so, compositional generalization during program generation in LLMs remains a challenge.
+2
+COMPOSITIONAL GENERALIZATION IN PROGRAMMING
+The goal in program synthesis is to ﬁnd a program in a given language that is consistent with a
+speciﬁcation. Formally, we are given a domain speciﬁc language (DSL) which deﬁnes a set P of
+programs. Elements in the DSL include functions (which we call operations), identiﬁers, constants,
+and so on. In programming by example (PBE), the desired program is speciﬁed by a set of input/output
+(I/O) examples denoted X = {(I1, O1), . . . (In, On)}. Then, solving speciﬁcation X means ﬁnding
+a program P ∈P that correctly solves all of the examples: P(Ii) = Oi, ∀i. A robust program
+synthesizer should generalize to programs not in the training set. Regardless of the programming
+language or DSL, programs are nearly always built from smaller parts, which we call subprograms,
+such as lines and blocks of code, functions, and so on. For compositional generalization, we are
+interested in whether the synthesizer can combine subprograms in new ways from the training set.
+We design our benchmark around ﬁve compositional generalization tasks applicable to program
+synthesis (Figure 1). These tasks measure whether synthesizers can generalize to longer programs
+or to programs that use concepts, such as API methods, in different compositional ways. These
+concepts partition the DSL operations into groups.1 In this section, we describe the generalization
+tasks abstractly, forming a meta-benchmark that can be applied in future work to construct new
+compositional generalization benchmarks using existing datasets or DSLs. Then, in Section 3, we
+concretize the tasks for speciﬁc DSLs for our experiments. The ﬁve generalization tasks are:
+1. Length-Generalization: Can a model produce longer code than seen in training, when necessary?
+Here, “length” counts the number of subprograms and not the number of tokens, so there is more
+1Ideally, operations within a group should have meaningful commonalities that form one concept, and each
+concept should have roughly equal semantic complexity, but these are not strictly required.
+2
+
+Published as a conference paper at ICLR 2024
+Compose Different 
+Concepts
+Length
+Generalization
+Switch Concept
+Order
+Compose New 
+Operation
+Add Operation 
+Functionality
+Train
+Test
+Figure 1: Our ﬁve compositional generalization tasks. Circles represent subprograms that join to
+form programs as train or test examples, colored circles represent subprograms of a particular concept
+or operation, and bold outlines represent analogous functionality of different operations.
+emphasis on generalizing to more complex compositional patterns. For this task, we train on
+problems of lengths 1 to n and test on lengths n + 1 to m (where m > n).
+2. Compose-Different-Concepts: Can a model use concepts in different combinations than seen in
+training? Speciﬁcally, train the model on compositions of operations from the same concept, and
+test on compositions from different concepts. For example, if two concepts consist of operations
+{A1, A2, . . .} and {B1, B2, . . . }, then the training programs have the form Ai ◦Aj and Bi ◦Bj,
+and the testing programs have the form Ai ◦Bj and Bi ◦Aj (and similarly for compositions
+of 3 or more operations). A real-world example might be training on program containing only
+TensorFlow or only NumPy, but synthesizing code at test time using both libraries.
+3. Switch-Concept-Order: Can a model compose concepts in different orders than seen in training?
+We train on compositions of operations drawn from one sequence of concepts and test on a
+different sequence of concepts, e.g., train on Ai ◦Bj and test on Bi ◦Aj. As a real-world
+example, in the training data a function might be validating inputs at the beginning of the code,
+but we want to use the function in a different context, e.g., to validate results at the end.
+4. Compose-New-Operation: Can a model learn to use a new isolated operation within a larger
+composition? In this task, we train on the isolated operation and compositions without the
+operation, and test on compositions using the operation. A real-world example of this kind of
+generalization would be composing a new function with others in a larger solution, after seeing
+examples of the function used in isolation.
+5. Add-Operation-Functionality: Can a model extend its understanding of an operation by drawing
+on parallels to other operations? We omit from the training data some functionality of an operation
+that could be inferred from other context, and test on programs using that functionality. This
+task can occur when a library function is upgraded with a new parameter whose behavior can be
+inferred from analogous parameters in other functions.
+These ﬁve tasks can be grouped into three themes: (a) length generalization; (b) mix and match
+concepts (tasks 2 and 3): compose concepts in ways that were not seen during training; and (c) apply
+general principles (tasks 4 and 5): adapt to new, updated, or custom APIs.
+3
+BENCHMARK CREATION
+While Section 2 focused on the meta-benchmark describing ﬁve compositional generalization tasks,
+this section describes our instantiation of those tasks into compositional generalization datasets for
+two popular synthesis domains, RobustFill (Devlin et al., 2017) and DeepCoder (Balog et al., 2017).
+RobustFill.
+In the RobustFill domain, the objective is to synthesize a sequence of string manip-
+ulation operations from I/O examples, where each example’s input is a single string. A RobustFill
+program is a concatenation of expressions. There are 4 categories of expressions: operations that ex-
+tract a substring from the input (e.g., GetToken(regex, index)), operations that return a modiﬁed
+version of the input (e.g., ToCase(case)), a special Compose operation (applying a modiﬁcation
+operation to the result of another operation), or a constant string character. For example, the program
+GetFrom(' ') | Const('.') | Compose(ToCase(PROPER), GetToken(WORD, 1)) is a
+3
+
+Published as a conference paper at ICLR 2024
+Algorithm 1 ExeDec: synthesis via decomposition in the execution space.
+Note, {xi} is short for [x1, . . . , xn] throughout, where n is the number of I/O examples.
+1: function EXEDEC({(Ii, Oi)})
+2:
+t ←1
+3:
+(I(1)
+i
+, O(1)
+i
+) ←(Ii, Oi), ∀i
+4:
+while True do
+5:
+{S(t)
+i } ←SUBGOALMODEL({(I(t)
+i , O(t)
+i )})
+▷Predict the next execution subgoals
+6:
+P (t) ←SYNTHESIZERMODEL({(I(t)
+i , S(t)
+i )})
+▷Predict the next subprogram
+7:
+E(t)
+i
+←EXECUTE(P (t), I(t)
+i ), ∀i
+8:
+if ∀i. E(t)
+i
+= O(t)
+i
+then
+▷Is this the last subprogram?
+9:
+return COMBINEPROGRAMPARTS(P (1), . . . , P (t))
+▷Update {(I(t)
+i , O(t)
+i )} to represent work that is left to be done (domain-speciﬁc).
+10:
+(I(t+1)
+i
+, O(t+1)
+i
+) ←UPDATESPECIFICATION(I(t)
+i , O(t)
+i , E(t)
+i ), ∀i
+11:
+t ←t + 1
+concatenation of 3 expressions and transforms the input string “TURING, Alan” into the output string
+“Alan.Turing”. See Appendix A for the full RobustFill DSL, which we extended from the original
+RobustFill paper (Devlin et al., 2017) by adding more operations. Appendix B contains further details
+about our constructed datasets, including the different compositional generalization splits and the
+process for generating synthetic programming tasks according to those splits.
+DeepCoder.
+The DeepCoder domain involves manipulation of integer lists in a line-by-line pro-
+gramming style. Tasks have one or more inputs which may be integers or integer lists. Each line
+of a DeepCoder program applies one DSL operation to inputs or previous variables and assigns
+the result to a new variable. The result of the last line is the program’s output. Operations include
+ﬁrst-order list operations (Sort, Reverse, and various forms of indexing, slicing, and aggregating)
+and higher-order operations (Haskell-inspired Map, Filter, Count, ZipWith, and Scanl1) which
+manipulate lists using one of several hardcoded lambda functions. As an example, the program x0
+= INPUT | x1 = Map (**2) x0 | x2 = Sort x1 (where “|” denotes a new line) transforms
+the input list [5, 3, −4] into the output list [9, 16, 25]. See Appendix A for the full DeepCoder DSL
+and Appendix B for more details about our instantiation in the DeepCoder domain.
+Choice of Domains.
+Both domains allow us to generate a large amount of synthetic training data
+with ground-truth decompositions into subprograms. For more realistic code in general-purpose
+programming languages, such data collection requires more effort, especially if “natural” decomposi-
+tions are desired. Beyond the difference in string versus list manipulation, RobustFill and DeepCoder
+are quite different in other important ways, allowing us to study the compositional generalization of
+various approaches in different scenarios. First, RobustFill gradually builds an output by combining
+results of subprograms that are mostly independent, while DeepCoder applies operations repeatedly
+to the same few objects until the output is reached. In this sense, RobustFill is closer to inverse
+CAD (Ellis et al., 2019), instantiating complex objects with many ﬁelds like dataclasses, or other
+tasks involving several independent analyses, while DeepCoder is closer to tensor manipulation (Shi
+et al., 2022a), dynamic programming, or other tasks involving sequences of manipulations or updates
+applied to the same objects. Second, RobustFill uses the same input for each subprogram while
+DeepCoder involves program states that change due to the new variable bindings on each line, making
+DeepCoder more complex and closer to realistic programs with execution states changing over time.
+4
+PROGRAM SYNTHESIS VIA DECOMPOSITION
+In this section we describe our proposed program synthesis method based on execution decomposition,
+where the model predicts step-by-step execution subgoals and synthesizes subprograms for each step.
+Execution Decomposition (ExeDec).
+The ExeDec strategy outlined in Algorithm 1 aims to reason
+about the step-by-step execution behavior of a program rather than the code tokens. As in Section 2,
+we assume that the program is a sequence of one or more subprograms that may be combined
+later. At each step, to synthesize the next subprogram, we ﬁrst call a SubgoalModel that takes I/O
+4
+
+Published as a conference paper at ICLR 2024
+examples and predicts the next execution subgoals, i.e., the output of the next subprogram for each
+example. Because the subgoal is the desired output at this step, predicting the next subprogram is
+itself a PBE task. Thus, we provide the inputs and subgoals to a SynthesizerModel which predicts the
+corresponding subprogram. Finally, we execute the predicted subprogram and compute an updated
+speciﬁcation that describes the work that remains to be done by the rest of the program.
+This updated speciﬁcation is maintained throughout the step-by-step synthesis process. Because the
+overall program is speciﬁed by I/O examples, we use I/O examples for the updated speciﬁcation
+as well. Intuitively, the inputs in the updated speciﬁcation will be the current program state, and
+the outputs will be the output of the overall task, but the details are slightly different because of
+speciﬁcs of the DSLs. We begin with the original I/O examples for the overall synthesis task, and
+we update them in a domain-speciﬁc way as subprograms are synthesized (line 10). For instance,
+in RobustFill the input for each subprogram is the same as the original input, while the output
+becomes smaller as we remove already-synthesized preﬁxes of the output: (I(t+1)
+i
+, O(t+1)
+i
+) ←
+(I(t)
+i , REMOVEPREFIX(O(t)
+i , E(t)
+i )); this is because the top level operation in RobustFill programs is
+always concatenation.2 For DeepCoder, the input is the full program state (i.e., the set of variables and
+their values for each example) which is expanded with new variables as subprograms are synthesized,
+while the output remains constant for each example: (I(t+1)
+i
+, O(t+1)
+i
+) ←(I(t)
+i
+∪E(t)
+i , O(t)
+i ). If
+ExeDec synthesizes a subprogram that executes to the entire remaining output, there are no more
+subprograms to synthesize, so the subprograms are combined to form the full synthesized program.
+Algorithm 1 describes a single synthesis attempt, but we actually perform a search comprising
+multiple synthesis attempts running efﬁciently in parallel using a modiﬁed beam search where each
+beam state is a partial rollout of the step-by-step synthesis algorithm. Appendix C has more details.
+Model Architecture.
+Recall from Algorithm 1 that ExeDec relies on two models, the Sub-
+goalModel and SynthesizerModel. We let both be sequence-to-sequence (seq2seq) models, which
+have been shown to be successful on various natural language (Bahdanau et al., 2016; Vaswani et al.,
+2017) and program synthesis tasks (Devlin et al., 2017). We choose our seq2seq model to be a Trans-
+former due to its impressive performance on natural language tasks over traditional RNNs (Vaswani
+et al., 2017). We modify the baseline Transformer architecture to account for the fact that we operate
+on sets of inputs due to having multiple I/O examples. We call our model a Speciﬁcation-Transformer.
+For consistent notation for the two models, we let {Xi} be the multi-example input to the transformer
+and Y its output. Formally, Xi = (Ii, Oi) for SubgoalModel and (Ii, Si) for SynthesizerModel, and
+Y = [S1, Sep, S2, Sep, . . . , Sn] for SubgoalModel and Y = P for SynthesizerModel, where Sep is
+a new token added to our vocabulary to partition the subgoals across examples. Note that subgoals Si
+and subprogram P are sequences of tokens.
+Our Speciﬁcation-Transformer consists of two modules. A Transformer encoder receives the speci-
+ﬁcation {Xi} and produces an encoding φ. Following Devlin et al. (2017), our encoder performs
+double attention on the speciﬁcation. That is, for each example Xi, the encoder performs the op-
+eration φi ←TransformerEncoder(Xi), where the encoder performs self-attention on input Ii
+followed by cross-attention from the output (either Oi or Si) to Ii. Then, the encoding φ is simply the
+concatenation across examples φ ←Concat({φi}). Next, a Transformer decoder takes the encoding
+and autoregressively generates the output token-by-token. Formally, let Yℓ−1 = [y1, y2, . . . , yℓ−1] be
+the output (subgoals or subprogram) generated so far. The decoder predicts the next output token as
+yℓ←TransformerDecoder(Yℓ−1, φ). As described by Vaswani et al. (2017), the Transformer en-
+coder and decoder both apply a stack of self-attention and feed-forward units. For the SubgoalModel,
+we use Aligned Relative Attention (ARA), a new technique that helps the model output a sequence of
+sequences (a subgoal for each I/O example, concatenated together); see Appendix D for details.
+No-Subgoal Ablation.
+We also experiment with an ablation of ExeDec that performs step-by-step
+decomposition but without predicting execution subgoals ﬁrst, instead directly predicting the next
+subprogram from the I/O examples. In Algorithm 1, this ablation is achieved by replacing lines 5 and
+6 with a single line, P (t) ←COMBINEDMODEL({(I(t)
+i , O(t)
+i )}), thus skipping the step of predicting
+execution subgoals. This ablation uses the same model architecture (without ARA) and an analogous
+2If the synthesized subprogram does not execute to a preﬁx of the current output for all examples, this
+synthesis attempt cannot succeed due to RobustFill’s concatenation of subprograms. Such “invalid” subprograms
+are detected and handled during a beam search.
+5
+
+Published as a conference paper at ICLR 2024
+Figure 2: Compositional generalization results with beam size 10. Error bars denote 95% conﬁdence
+intervals of the mean across 5 trials. On both datasets, ExeDec generalizes better than the no-subgoal
+ablation, while both decomposition variations greatly outperform the Transformer baseline.
+beam search. Several prior works (Zohar & Wolf, 2018; Ellis et al., 2019; Chen et al., 2019) perform
+synthesis step-by-step, providing execution feedback to the synthesizer after each step to inform
+future predictions. Our ablation captures the essence of those approaches adapted to our setting.
+Model Training.
+We generate training problems as described in Section 3. We train the ExeDec
+and ablation models using decomposed data, that is, based on teacher forcing using Algorithm 1.
+Speciﬁcally, for each subprogram in the ground-truth solution, we collect (A) the updated speciﬁca-
+tion based on executing the previous ground-truth subprograms, (B) the subprogram’s execution result
+on all examples, and (C) the subprogram itself. Then, we train the SubgoalModel to predict (B) given
+(A), the SynthesizerModel to predict (C) given (B) and the example inputs from (A), and the Com-
+binedModel to predict (C) given (A). Each model type is trained separately for each generalization
+task. Appendix E contains more training details, including model sizes and hyperparameters.
+5
+EXPERIMENTS
+We experiment with Transformers trained from scratch and with LLMs using few-shot prompting.
+5.1
+TRANSFORMERS TRAINED FROM SCRATCH
+These experiments compare ExeDec, a version with smaller models called ExeDec-Small, the no-
+subgoal ablation, a Transformer baseline without any decomposition, and Latent Programmer (Hong
+et al., 2021). All models use the same hyperparameters and architecture except: (1) ExeDec-Small
+and Latent Programmer use smaller models (details and reasoning in Appendix E), (2) ARA only
+applies to the SubgoalModel, and (3) because the baseline Transformer and Latent Programmer
+are trained on entire programs instead of subprograms, but the number of training examples is held
+constant, they actually see more subprograms during training than our models.
+Using our compositional generalization datasets (Section 3) and models (Section 4), we ran the
+different approaches and measured their overall success rate on 1000 test examples per generalization
+task. We repeated the experiments using 5 different random initializations for model training. Figure 2
+shows the results when using a beam size of 10, Appendix F contains results with beam size 1, and
+Appendix G analyzes the accuracy of individual steps.
+6
+
+Published as a conference paper at ICLR 2024
+Discussion.
+On both domains, ExeDec signiﬁcantly outperforms the Transformer baseline on
+every generalization task and in the i.i.d. setting (testing on the training distribution without any
+compositional generalization). Speciﬁcally, ExeDec achieves +44% higher average compositional
+generalization than the Transformer baseline on RobustFill and +18% on DeepCoder, a 4.4× higher
+success rate. But despite the notable improvements, DeepCoder in particular remains a difﬁcult
+domain with deeply nested operation compositions that obscure the intended computation, while
+RobustFill has a more ﬂat compositional structure that is easier to learn.
+Our step-by-step decomposition approach introduces important inductive biases into the approach. By
+training models on the decomposed data, we teach the models that subprograms can be reasoned about
+separately, regardless of the compositional patterns present in other subprograms. The SubgoalModel
+does not see any code tokens and is only affected by compositional generalization patterns indirectly
+(since the distribution over programs affects the distribution over execution traces), and the Synthe-
+sizerModel only sees code tokens for the current subprogram and cannot reference any compositional
+patterns that appear when comparing to other subprograms. In contrast, the Transformer baseline
+sees all compositional patterns in the full programs, making it more likely to overﬁt to those patterns.
+The decomposition strategy also encourages our models to understand intermediate program states
+while the Transformer baseline is not trained with such execution information.
+Compared to the no-subgoal ablation, ExeDec achieves higher compositional generalization perfor-
+mance on a majority of generalization tasks across the two domains, averaging +7% improvement on
+RobustFill (a 34% reduction in failures) and +5% on DeepCoder (a 1.28× multiplicative improve-
+ment). This supports our hypothesis that predicting execution states is more robust than predicting
+code in the compositional generalization setting. ExeDec-Small performs slightly worse than ExeDec
+(1.4% worse on average and up to 3% worse on any individual generalization task) but ExeDec-Small
+still signiﬁcantly outperforms the other approaches overall.
+Even though ExeDec performs the best in most situations, the no-subgoal variation is slightly better
+on DeepCoder’s training distribution and Length-Generalization. Appendix H provides some intuition
+on “spurious patterns” related to this result. In theory, one could combine the two decomposition
+variations in an ensemble to get the best of both approaches on unknown test distributions. Finally,
+we observe that in most cases ExeDec has smaller variance across random initializations than the
+no-subgoal variation, i.e., ExeDec might be more consistent in practice.
+As a case study, we compare ExeDec, the no-subgoal ablation, and the Transformer baseline on
+example RobustFill and DeepCoder problems in Appendix I. Through these examples, we discuss
+some behaviors and observations that clarify the advantages to ExeDec’s approach.
+5.2
+LLM EXPERIMENTS
+It is fundamentally difﬁcult to measure compositional generalization in LLMs, because compositional
+generalization is a function of the relationship between the training and test distributions, but in LLMs
+it is not easy to control the pretraining data. However, we have more control in a few-shot prompting
+setup, as long as we focus on program concepts that cannot have occurred in the pretraining data set.
+Based on this insight, in these experiments, we used our benchmarks to measure the compositional
+generalization ability of PaLM 2 Unicorn (Google et al., 2023) during few-shot prompting for PBE.
+We use the same compositional generalization splits for DeepCoder and RobustFill, except that the
+few-shot examples and test problems have length at most 3. We make the problems easier because
+LLMs in general perform poorly on program synthesis tasks speciﬁed only through I/O examples,
+compared to natural language speciﬁcations. Within each split we balance the distribution of program
+lengths as much as possible,3 and we use 200 test problems per generalization task. Each prompt
+contains a description of the DSL including the available functionality, followed by 4 few-shot
+examples of PBE tasks and solutions drawn from the training split (different tasks are randomly
+chosen for different test problems), followed by the speciﬁcation for a test problem (see Appendix J).
+To make the tasks better suited to LLMs, we transform our DSL programs into Python functions
+that call a hypothetical dsl library to access the DSL functionality. The RobustFill subprogram
+GetToken(WORD, 1) becomes dsl.GetToken(x, dsl.Type.Word, 1), and the DeepCoder
+3For example, Compose-Different-Concepts, Switch-Concept-Order, and Compose-New-Operation all require
+programs of length at least 2, so these tasks have a 50/50 split between programs of lengths 2 and 3.
+7
+
+Published as a conference paper at ICLR 2024
+Table 1: Compositional generalization results for the LLM experiments. Each cell contains the
+number of solved tasks out of 200 test problems. For approaches, @1 means 1 greedy decoding and
+@5 means using 5 samples with temperature 0.4. For columns, “None” means no generalization, “Gen.
+Tasks” refers to the 5 compositional generalization tasks in the order given in Section 2 (consistent
+with the other ﬁgures), and “Avg” is the average across the 5 generalization tasks.
+RobustFill
+DeepCoder
+DeepCoder-Pythonic
+Approach
+None
+Gen. Tasks
+Avg
+None
+Gen. Tasks
+Avg
+None
+Gen. Tasks
+Avg
+Baseline @1
+4
+4 0 1 0
+0
+1.0
+23
+0 1
+6 0
+5
+2.4
+25
+1 0 11
+0
+4
+3.2
+Ablation @1
+16
+4 0 0 1
+6
+2.2
+31
+1 2 13 3
+5
+4.8
+30
+4 0 12
+4
+4
+4.8
+ExeDec @1
+21
+5 0 0 1
+6
+2.4
+36
+2 3 11 4 10
+6.0
+46
+3 3 15
+5
+16
+8.4
+Baseline @5
+15
+1 0 1 2
+5
+1.8
+36
+0 1 11 5 13
+6.0
+34
+2 1 15
+5
+8
+6.2
+Ablation @5
+29
+7 1 0 4
+7
+3.8
+51
+1 4 18 8 21
+10.4
+42
+4 8 19 10 11
+10.4
+ExeDec @5
+32
+5 0 0 5 10
+4.0
+56
+2 5 17 8 17
+9.8
+59
+5 9 25 12 30
+16.2
+subprogram x2 = Map (**2) x1 becomes x2 = dsl.Map(dsl.SQUARE, x1). For DeepCoder,
+we alternatively try using Pythonic expressions for all DSL functionality except the Scanl1 operation,
+which is difﬁcult to inline; the previous example then becomes x2 = [x ** 2 for x in x1].
+By representing DSL programs as Python functions in this way, we enable the LLM to draw upon
+its general understanding of Python from its pretraining data, while requiring the LLM to use a new
+Python library from only a description of the library along with 4 few-shot examples. This setting
+mirrors realistic use-cases where a user asks about a new, custom, or proprietary library that the LLM
+was not trained on. Appendix J contains examples of our prompts and Python-style programs. The
+LLM is allowed to use arbitrary Python, although it usually follows the style in the examples.
+We experimented with three prompting approaches analogous to the other experiments:
+1. The baseline approach is to predict the entire solution program in one decoding.
+2. The Ablation-style approach predicts the program step-by-step. Given the problem speciﬁcation
+and history of previous steps, the LLM predicts the next line of code. We then execute the program-
+so-far and concatenate the predicted line of code along with its execution results into the history
+portion of the prompt, which will inﬂuence future steps. This stepwise process continues until the
+desired outputs are reached, the program fails to execute, or a budget of 3 steps is exhausted.
+3. The ExeDec-style approach is similar, except that at each step, the LLM predicts the next execution
+subgoal followed by a line of code for that step (analogous to calling the SubgoalModel and
+SynthesizerModel). Note that the LLM’s subgoal prediction might be inconsistent with the
+predicted code, so in the history of previous steps, we replace the predicted subgoals with the
+actual execution results (analogous to how the speciﬁcation is updated in ExeDec). Over multiple
+steps, this process creates a prompt almost identical to that of the Ablation-style approach, except
+that ExeDec-style has the execution results of a step before the code for that step, while the
+Ablation-style has the execution results after the code.
+The results are in Table 1. The ExeDec-style prompting strategy leads to the best performance for all
+no-generalization cases, and all but one case for the generalization average. Also, the ExeDec-style
+approach signiﬁcantly improves when programs are written in a more natural form (going from
+DeepCoder to DeepCoder-Pythonic), which is a promising sign for its general applicability. For
+DeepCoder-Pythonic, the ExeDec-style approach solves between 40% and 75% more tasks than the
+next-best approach, considering each combination of no-generalization vs. generalization average and
+greedy decoding vs. pass@5 sampling. But despite these improvements, compositional generalization
+remains difﬁcult for LLMs. Appendix K discusses common failure modes in the LLM experiments.
+6
+RELATED WORK
+Compositional Generalization.
+Compositional generalization is well-studied in NLP, with estab-
+lished benchmarks evaluating the understanding of natural language sentences with compositionally
+novel structures, either constructed by synthesizing examples based on predeﬁned generalization
+patterns similar to this work (Lake & Baroni, 2018; Bahdanau et al., 2019), or by partitioning
+i.i.d. samples into splits with disjoint compositional structures (Finegan-Dollak et al., 2018; Keysers
+8
+
+Published as a conference paper at ICLR 2024
+et al., 2020; Shaw et al., 2021). Our benchmark takes inspiration from SCAN (Lake & Baroni, 2018)
+and COGS (Kim & Linzen, 2020), which deﬁne a taxonomy of compositional patterns in natural lan-
+guage. While some generalization concepts are similar to those in Section 2, we focus on measuring
+compositional generalization of computer programs using I/O examples without natural language
+utterances, whose compositional structures are quite different from those in natural language.
+To improve compositional generalization in natural language understanding, earlier works have
+proposed specialized task-dependent neural architectures (Russin et al., 2019; Li et al., 2019; Liu
+et al., 2020; Chen et al., 2020; Herzig & Berant, 2020). More generalized approaches include meta-
+learning (Lake, 2019; Wang et al., 2021a; Conklin et al., 2021) and data augmentation (Andreas, 2020;
+Oren et al., 2021; Aky¨urek et al., 2021; Wang et al., 2021b; Qiu et al., 2022). There have also been
+recent attempts in improving the compositional generalization capabilities of large language models
+via representation learning (Furrer et al., 2020; Herzig et al., 2021) and in-context learning (Zhou
+et al., 2023; Drozdov et al., 2023).
+In machine learning for code, some works include length generalization results (Bieber et al., 2020;
+Balog et al., 2017; Ellis et al., 2019), and Nye et al. (2021) use compositional generalization in some
+experiments, but we study compositional generalization in a much more systematic manner.
+Programming by Example.
+Various techniques have been applied to program synthesis (Gulwani
+et al., 2017), and recently much attention has focused on machine learning for programming by
+example (Devlin et al., 2017; Parisotto et al., 2017; Ellis et al., 2021). Many methods incorporate
+learning to guide the search over programs, such as using learned premise selection (Balog et al., 2017;
+Odena & Sutton, 2020), syntax-guided search (Yin & Neubig, 2017; Lee et al., 2018), bottom-up
+search (Shi et al., 2022a; Barke et al., 2020), two-level search (Nye et al., 2019), and execution-guided
+synthesis methods (Odena et al., 2020; Shi et al., 2022b).
+Multi-step Program Synthesis.
+ExeDec is an instance of multi-step program synthesis, which
+broadly refers to methods involving multiple calls to (potentially different) models. Execution-guided
+synthesis is a popular form of this, iteratively generating and reﬁning partial programs using execution
+information (Zohar & Wolf, 2018; Ellis et al., 2019; Chen et al., 2019; Shrivastava et al., 2021),
+and some approaches do this with latent representations of the program state (Chen et al., 2021b)
+or execution traces (Shin et al., 2018). Planning is another form of multi-step synthesis that ﬁrst
+generates high-level plans of what the program should do (Nye et al., 2019; Murali et al., 2018;
+Zhang et al., 2023), sometimes with latent representations of plans (Hong et al., 2021). Our method,
+ExeDec, draws ideas from both avenues of multi-step synthesis, making plans by predicting subgoals
+and using step-by-step program execution to guide the search.
+7
+CONCLUSION
+We explored the important aspect of compositional generalization in neural program synthesis. The
+ability to decompose complex tasks into smaller subtasks is a fundamental skill employed by human
+programmers, and measuring whether neural program synthesis methods exhibit similar capabilities
+is crucial for assessing their potential. We introduced a meta-benchmark that characterizes 5 forms of
+compositional generalization in program synthesis, and we instantiated these generalization tasks
+in the RobustFill and DeepCoder domains. The ﬁndings demonstrate that the ExeDec approach of
+predicting decompositions of program execution, rather than solely focusing on program syntax, leads
+to signiﬁcantly improved compositional generalization for both Transformers trained from scratch
+and LLMs in a few-shot setting. This suggests that incorporating information about the step-by-step
+decomposition and leveraging it in the synthesis of programs can enhance the ability of neural models
+to tackle more complex tasks. Even so, compositional generalization remains challenging for neural
+program synthesizers, and our meta-benchmark can help measure continued progress in this area.
+Limitations.
+One limitation of ExeDec is its need for a training dataset with ground-truth decom-
+positions. Our experiments used synthetic programs with line-by-line decomposition, but perhaps
+better results could be obtained with a dataset containing more natural decompositions. Furthermore,
+the line-by-line decomposition could be a limitation as programmers often think in larger chunks or
+hierarchically; Appendix L discusses a potential hierarchical formulation of ExeDec to address this
+limitation in future work. Lastly, our SubgoalModel predicts tokenizations of objects, but to handle
+more complex objects, a more general SubgoalModel might instead predict abstractions of objects.
+9
+
+Published as a conference paper at ICLR 2024
+REPRODUCIBILITY STATEMENT
+Our code, datasets, and checkpoints for the Transformer models trained from scratch are available
+at https://github.com/google-deepmind/exedec. Additionally, Appendix E contains
+details about model hyperparameters and sizes for the models we trained.
+ACKNOWLEDGEMENTS
+The authors would like to thank Xinyun Chen, Martin Abadi, Rif Saurous, and the anonymous
+reviewers for their helpful comments.
+REFERENCES
+Ekin Aky¨urek, Afra Feyza Aky¨urek, and Jacob Andreas. Learning to recombine and resample data for
+compositional generalization. In International Conference on Learning Representations (ICLR),
+2021.
+Jacob Andreas. Good-enough compositional data augmentation. In Assocation for Computational
+Linguistics (ACL), 2020.
+Jacob Austin, Augustus Odena, Maxwell Nye, Maarten Bosma, Henryk Michalewski, David Dohan,
+Ellen Jiang, Carrie Cai, Michael Terry, Quoc Le, and Charles Sutton. Program synthesis with large
+language models. arXiv preprint arXiv:2108.07732, 2021.
+Dzmitry Bahdanau, Kyunghyun Cho, and Yoshua Bengio. Neural machine translation by jointly
+learning to align and translate. In International Conference on Learning Representations (ICLR),
+2016.
+Dzmitry Bahdanau, Harm de Vries, Timothy J. O’Donnell, Shikhar Murty, Philippe Beaudoin, Yoshua
+Bengio, and Aaron C. Courville. CLOSURE: Assessing systematic generalization of CLEVR
+models. arXiv preprint arXiv:1912.05783, 2019.
+Matej Balog, Alexander L Gaunt, Marc Brockschmidt, Sebastian Nowozin, and Daniel Tarlow.
+DeepCoder: Learning to write programs. In International Conference on Learning Representations
+(ICLR), 2017.
+Shraddha Barke, Hila Peleg, and Nadia Polikarpova. Just-in-time learning for bottom-up enumerative
+synthesis. In Object-oriented Programming, Systems, Languages, and Applications (OOPSLA),
+2020.
+David Bieber, Charles Sutton, Hugo Larochelle, and Daniel Tarlow. Learning to execute programs
+with instruction pointer attention graph neural networks. In Neural Information Processing Systems
+(NeurIPS), 2020.
+Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Pond´e de Oliveira Pinto, Jared
+Kaplan, Harrison Edwards, Yuri Burda, Nicholas Joseph, Greg Brockman, Alex Ray, Raul Puri,
+Gretchen Krueger, Michael Petrov, Heidy Khlaaf, Girish Sastry, Pamela Mishkin, Brooke Chan,
+Scott Gray, Nick Ryder, Mikhail Pavlov, Alethea Power, Lukasz Kaiser, Mohammad Bavarian,
+Clemens Winter, Philippe Tillet, Felipe Petroski Such, Dave Cummings, Matthias Plappert, Fotios
+Chantzis, Elizabeth Barnes, Ariel Herbert-Voss, William Hebgen Guss, Alex Nichol, Alex Paino,
+Nikolas Tezak, Jie Tang, Igor Babuschkin, Suchir Balaji, Shantanu Jain, William Saunders,
+Christopher Hesse, Andrew N. Carr, Jan Leike, Joshua Achiam, Vedant Misra, Evan Morikawa,
+Alec Radford, Matthew Knight, Miles Brundage, Mira Murati, Katie Mayer, Peter Welinder, Bob
+McGrew, Dario Amodei, Sam McCandlish, Ilya Sutskever, and Wojciech Zaremba. Evaluating
+large language models trained on code. arXiv preprint arXiv:2107.03374, 2021a.
+Xinyun Chen, Chang Liu, and Dawn Song. Execution-guided neural program synthesis. In Interna-
+tional Conference on Learning Representations (ICLR), 2019.
+Xinyun Chen, Chen Liang, Adams Wei Yu, D. Song, and Denny Zhou. Compositional generalization
+via neural-symbolic stack machines. In Neural Information Processing Systems (NeurIPS), 2020.
+10
+
+Published as a conference paper at ICLR 2024
+Xinyun Chen, Dawn Song, and Yuandong Tian. Latent execution for neural program synthesis
+beyond domain-speciﬁc languages. In Neural Information Processing Systems (NeurIPS), 2021b.
+Noam Chomsky. Syntactic Structures. Mouton de Gruyter, 1957.
+Henry Conklin, Bailin Wang, Kenny Smith, and Ivan Titov. Meta-learning to compositionally
+generalize. In Association for Computational Linguistics and International Joint Conference on
+Natural Language Processing (ACL/IJCNLP), 2021.
+R´obert Csord´as, Kazuki Irie, and J¨urgen Schmidhuber. The devil is in the detail: Simple tricks
+improve systematic generalization of transformers. In Empirical Methods in Natural Language
+Processing (EMNLP), 2021.
+Jacob Devlin, Jonathan Uesato, Surya Bhupatiraju, Rishabh Singh, Abdel-rahman Mohamed, and
+Pushmeet Kohli. RobustFill: Neural program learning under noisy I/O. In International Conference
+on Machine Learning (ICML), 2017.
+Andrew Drozdov, Nathanael Sch¨arli, Ekin Aky¨urek, Nathan Scales, Xinying Song, Xinyun Chen,
+Olivier Bousquet, and Denny Zhou. Compositional semantic parsing with large language models.
+In International Conference on Learning Representations (ICLR), 2023.
+Kevin Ellis, Maxwell I. Nye, Yewen Pu, Felix Sosa, Josh Tenenbaum, and Armando Solar-Lezama.
+Write, execute, assess: Program synthesis with a REPL. In Neural Information Processing Systems
+(NeurIPS), 2019.
+Kevin Ellis, Catherine Wong, Maxwell I. Nye, Mathias Sabl´e-Meyer, Lucas Morales, Luke B. Hewitt,
+Luc Cary, Armando Solar-Lezama, and Joshua B. Tenenbaum. DreamCoder: bootstrapping
+inductive program synthesis with wake-sleep library learning. In Programming Language Design
+and Implementation (PLDI), 2021.
+Catherine Finegan-Dollak, Jonathan K. Kummerfeld, Li Zhang, Karthik Ramanathan, Sesh Sadasivam,
+Rui Zhang, and Dragomir Radev. Improving text-to-SQL evaluation methodology. In Assocation
+for Computational Linguistics (ACL), 2018.
+Daniel Furrer, Marc van Zee, Nathan Scales, and Nathanael Sch¨arli. Compositional generalization
+in semantic parsing: Pre-training vs. specialized architectures. arXiv preprint arXiv:2007.08970,
+2020.
+Google, Rohan Anil, Andrew M. Dai, Orhan Firat, Melvin Johnson, Dmitry Lepikhin, Alexandre
+Passos, Siamak Shakeri, Emanuel Taropa, Paige Bailey, Zhifeng Chen, Eric Chu, Jonathan H. Clark,
+Laurent El Shafey, Yanping Huang, Kathy Meier-Hellstern, Gaurav Mishra, Erica Moreira, Mark
+Omernick, Kevin Robinson, Sebastian Ruder, Yi Tay, Kefan Xiao, Yuanzhong Xu, Yujing Zhang,
+Gustavo Hernandez Abrego, Junwhan Ahn, Jacob Austin, Paul Barham, Jan Botha, James Bradbury,
+Siddhartha Brahma, Kevin Brooks, Michele Catasta, Yong Cheng, Colin Cherry, Christopher A.
+Choquette-Choo, Aakanksha Chowdhery, Cl´ement Crepy, Shachi Dave, Mostafa Dehghani, Sunipa
+Dev, Jacob Devlin, Mark D´ıaz, Nan Du, Ethan Dyer, Vlad Feinberg, Fangxiaoyu Feng, Vlad
+Fienber, Markus Freitag, Xavier Garcia, Sebastian Gehrmann, Lucas Gonzalez, Guy Gur-Ari,
+Steven Hand, Hadi Hashemi, Le Hou, Joshua Howland, Andrea Hu, Jeffrey Hui, Jeremy Hurwitz,
+Michael Isard, Abe Ittycheriah, Matthew Jagielski, Wenhao Jia, Kathleen Kenealy, Maxim Krikun,
+Sneha Kudugunta, Chang Lan, Katherine Lee, Benjamin Lee, Eric Li, Music Li, Wei Li, YaGuang
+Li, Jian Li, Hyeontaek Lim, Hanzhao Lin, Zhongtao Liu, Frederick Liu, Marcello Maggioni,
+Aroma Mahendru, Joshua Maynez, Vedant Misra, Maysam Moussalem, Zachary Nado, John
+Nham, Eric Ni, Andrew Nystrom, Alicia Parrish, Marie Pellat, Martin Polacek, Alex Polozov,
+Reiner Pope, Siyuan Qiao, Emily Reif, Bryan Richter, Parker Riley, Alex Castro Ros, Aurko Roy,
+Brennan Saeta, Rajkumar Samuel, Renee Shelby, Ambrose Slone, Daniel Smilkov, David R. So,
+Daniel Sohn, Simon Tokumine, Dasha Valter, Vijay Vasudevan, Kiran Vodrahalli, Xuezhi Wang,
+Pidong Wang, Zirui Wang, Tao Wang, John Wieting, Yuhuai Wu, Kelvin Xu, Yunhan Xu, Linting
+Xue, Pengcheng Yin, Jiahui Yu, Qiao Zhang, Steven Zheng, Ce Zheng, Weikang Zhou, Denny
+Zhou, Slav Petrov, and Yonghui Wu. PaLM 2 technical report. arXiv preprint arXiv:2305.10403,
+2023.
+11
+
+Published as a conference paper at ICLR 2024
+Yu Gu, Sue Kase, Michelle Vanni, Brian Sadler, Percy Liang, Xifeng Yan, and Yu Su. Beyond IID:
+three levels of generalization for question answering on knowledge bases. In The Web Conference
+(WWW), 2021.
+Sumit Gulwani. Automating string processing in spreadsheets using input-output examples. In
+Principles of Programming Languages (POPL), 2011.
+Sumit Gulwani, Oleksandr Polozov, and Rishabh Singh. Program Synthesis, volume 4 of Foundations
+and Trends® in Programming Languages. 2017.
+Jonathan Herzig and Jonathan Berant. Span-based semantic parsing for compositional generalization.
+In Empirical Methods in Natural Language Processing (EMNLP), 2020.
+Jonathan Herzig, Peter Shaw, Ming-Wei Chang, Kelvin Guu, Panupong Pasupat, and Yuan Zhang.
+Unlocking compositional generalization in pre-trained models using intermediate representations.
+arXiv preprint arXiv:2104.07478, 2021.
+Joey Hong, David Dohan, Rishabh Singh, Charles Sutton, and Manzil Zaheer. Latent programmer:
+Discrete latent codes for program synthesis. In International Conference on Machine Learning
+(ICML), 2021.
+Daniel Keysers, Nathanael Sch¨arli, Nathan Scales, H. Buisman, Daniel Furrer, Sergii Kashubin,
+Nikola Momchev, Danila Sinopalnikov, Lukasz Staﬁniak, Tibor Tihon, D. Tsarkov, Xiao Wang,
+Marc van Zee, and O. Bousquet. Measuring compositional generalization: A comprehensive
+method on realistic data. In International Conference on Learning Representations (ICLR), 2020.
+Najoung Kim and Tal Linzen. COGS: A compositional generalization challenge based on semantic
+interpretation. In Empirical Methods in Natural Language Processing (EMNLP), 2020.
+Brenden M. Lake. Compositional generalization through meta sequence-to-sequence learning. In
+Neural Information Processing Systems (NeurIPS), 2019.
+Brenden M. Lake and Marco Baroni. Generalization without systematicity: On the compositional
+skills of sequence-to-sequence recurrent networks. In International Conference on Machine
+Learning (ICML), 2018.
+Woosuk Lee, Kihong Heo, Rajeev Alur, and Mayur Naik. Accelerating search-based program synthe-
+sis using learned probabilistic models. In Programming Language Design and Implementation
+(PLDI), 2018.
+Yuanpeng Li, Liang Zhao, JianYu Wang, and Joel Hestness. Compositional generalization for
+primitive substitutions. In Empirical Methods in Natural Language Processing and International
+Joint Conference on Natural Language Processing (EMNLP-IJCNLP), 2019.
+Yujia Li, David H. Choi, Junyoung Chung, Nate Kushman, Julian Schrittwieser, R´emi Leblond,
+Tom Eccles, James Keeling, Felix Gimeno, Agustin Dal Lago, Thomas Hubert, Peter Choy,
+Cyprien de Masson d’Autume, Igor Babuschkin, Xinyun Chen, Po-Sen Huang, Johannes Welbl,
+Sven Gowal, Alexey Cherepanov, James Molloy, Daniel J. Mankowitz, Esme Sutherland Robson,
+Pushmeet Kohli, Nando de Freitas, Koray Kavukcuoglu, and Oriol Vinyals. Competition-level
+code generation with AlphaCode. Science, 378(6624):1092–1097, 2022.
+Qian Liu, Shengnan An, Jianguang Lou, B. Chen, Zeqi Lin, Yan Gao, Bin Zhou, Nanning Zheng,
+and Dongmei Zhang. Compositional generalization by learning analytical expressions. In Neural
+Information Processing Systems (NeurIPS), 2020.
+Vijayaraghavan Murali, Letao Qi, Swarat Chaudhuri, and Chris Jermaine. Neural sketch learning for
+conditional program generation. In International Conference on Learning Representations (ICLR),
+2018.
+Maxwell Nye, Luke Hewitt, Joshua B. Tenenbaum, and Armando Solar-Lezama. Learning to infer
+program sketches. In International Conference on Machine Learning (ICML), 2019.
+12
+
+Published as a conference paper at ICLR 2024
+Maxwell Nye, Yewen Pu, Matthew Bowers, Jacob Andreas, Joshua B. Tenenbaum, and Armando
+Solar-Lezama. Representing partial programs with blended abstract semantics. In International
+Conference on Learning Representations (ICLR), 2021.
+Augustus Odena and Charles Sutton. Learning to represent programs with property signatures. In
+International Conference on Learning Representations (ICLR), 2020.
+Augustus Odena, Kensen Shi, David Bieber, Rishabh Singh, Charles Sutton, and Hanjun Dai.
+BUSTLE: Bottom-up program synthesis through learning-guided exploration. In International
+Conference on Learning Representations (ICLR), 2020.
+Inbar Oren, Jonathan Herzig, and Jonathan Berant. Finding needles in a haystack: Sampling
+structurally-diverse training sets from synthetic data for compositional generalization. In Empirical
+Methods in Natural Language Processing (EMNLP), 2021.
+Emilio Parisotto, Abdel-rahman Mohamed, Rishabh Singh, Lihong Li, Dengyong Zhou, and Pushmeet
+Kohli. Neuro-symbolic program synthesis. In International Conference on Learning Representa-
+tions (ICLR), 2017.
+Nick Parlante. CS106A: Programming methodologies. Course at Stanford University, 2022.
+Linlu Qiu, Peter Shaw, Panupong Pasupat, Pawel Krzysztof Nowak, Tal Linzen, Fei Sha, and Kristina
+Toutanova. Improving compositional generalization with latent structure and data augmentation.
+In North American Chapter of the Association for Computational Linguistics: Human Language
+Technologies (NAACL-HLT), 2022.
+Jake Russin, Jason Jo, Randall O’Reilly, and Yoshua Bengio. Compositional generalization in a deep
+seq2seq model by separating syntax and semantics. arXiv preprint arXiv:1904.09708, 2019.
+Peter Shaw, Jakob Uszkoreit, and Ashish Vaswani. Self-attention with relative position representations.
+In North American Chapter of the Association for Computational Linguistics (NAACL), 2018.
+Peter Shaw, Ming-Wei Chang, Panupong Pasupat, and Kristina Toutanova. Compositional generaliza-
+tion and natural language variation: Can a semantic parsing approach handle both? In Association
+for Computational Linguistics and International Joint Conference on Natural Language Processing
+(ACL/IJCNLP), 2021.
+Kensen Shi, Jacob Steinhardt, and Percy Liang. FrAngel: Component-based synthesis with control
+structures. Proceedings of the ACM on Programming Languages (PACMPL), 3(POPL):1–29, 2019.
+Kensen Shi, David Bieber, and Rishabh Singh. TF-Coder: Program synthesis for tensor manipulations.
+ACM Transactions on Programming Languages and Systems (TOPLAS), 44(2):1–36, 2022a.
+Kensen Shi, Hanjun Dai, Kevin Ellis, and Charles Sutton. CrossBeam: Learning to search in
+bottom-up program synthesis. In International Conference on Learning Representations (ICLR),
+2022b.
+Richard Shin, Illia Polosukhin, and Dawn Song. Improving neural program synthesis with inferred
+execution traces. In Neural Information Processing Systems (NeurIPS), 2018.
+Disha Shrivastava, Hugo Larochelle, and Daniel Tarlow. Learning to combine per-example solutions
+for neural program synthesis. In Neural Information Processing Systems (NeurIPS), 2021.
+Ilya Sutskever, Oriol Vinyals, and Quoc V. Le. Sequence to sequence learning with neural networks.
+In Neural Information Processing Systems (NeurIPS), 2014.
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz
+Kaiser, and Illia Polosukhin. Attention is all you need. In Neural Information Processing Systems
+(NeurIPS), 2017.
+Bailin Wang, Mirella Lapata, and Ivan Titov. Meta-learning for domain generalization in semantic
+parsing. In North American Chapter of the Association for Computational Linguistics: Human
+Language Technologies (NAACL-HLT), 2021a.
+13
+
+Published as a conference paper at ICLR 2024
+Bailin Wang, Wenpeng Yin, Xi Victoria Lin, and Caiming Xiong. Learning to synthesize data for
+semantic parsing. In North American Chapter of the Association for Computational Linguistics:
+Human Language Technologies (NAACL-HLT), 2021b.
+Pengcheng Yin and Graham Neubig. A syntactic neural model for general-purpose code generation.
+In Assocation for Computational Linguistics (ACL), 2017.
+Shun Zhang, Zhenfang Chen, Yikang Shen, Mingyu Ding, Joshua B. Tenenbaum, and Chuang Gan.
+Planning with large language models for code generation. In International Conference on Learning
+Representations (ICLR), 2023.
+Denny Zhou, Nathanael Sch¨arli, Le Hou, Jason Wei, Nathan Scales, Xuezhi Wang, Dale Schuurmans,
+Claire Cui, Olivier Bousquet, Quoc V. Le, and Ed H. Chi. Least-to-most prompting enables complex
+reasoning in large language models. In International Conference on Learning Representations
+(ICLR), 2023.
+Amit Zohar and Lior Wolf. Automatic program synthesis of long programs with a learned garbage
+collector. In Neural Information Processing Systems (NeurIPS), 2018.
+14
+
+Published as a conference paper at ICLR 2024
+Appendices
+A
+ROBUSTFILL AND DEEPCODER DSLS
+Figure 3 contains the DSL for the RobustFill experiments. See Devlin et al. (2017) for a description
+of what the operations do. We add the operations Substitute, SubstituteAll, which replace the
+ith occurrence (or all occurrences) of a regex r with character c, and Remove, RemoveAll, which
+remove the ith occurrence (or all occurrences) of a regex r, to increase the expressivity of our DSL.
+Figure 4 shows the DSL used for the DeepCoder experiments. The operations are exactly as described
+in Balog et al. (2017).
+Program P
+:=
+Concat(e1, e2, . . .)
+Expression e
+:=
+s | m | o | ConstStr(c)
+Compose o
+:=
+m1(m2) | m(s)
+Substring s
+:=
+SubStr(k1, k2) | GetSpan(r1, i1, b1, r2, i2, b2) | GetToken(r, i)
+| GetUpto(r) | GetFrom(r)
+Modiﬁcation m
+:=
+ToCase(a) | Replace(δ1, δ2) | Trim() | GetFirst(r, i) | GetAll(r)
+| Substitute(r, i, c) | SubstituteAll(r, c) | Remove(r, i) | RemoveAll(r)
+Regex r
+:=
+NUMBER | WORD | ALPHANUM | ALL CAPS | PROPER CASE | LOWER | DIGIT | CHAR | δ
+Case a
+:=
+ALL CAPS | PROPER CASE | LOWER
+Position k
+:=
+−100 | −99 | . . . | −1 | 0 | 1 | 2 | . . . | 100
+Index i
+:=
+−5 | −4 | . . . | −1 | 1 | 2 | . . . | 5
+Boundary b
+:=
+START | END
+Character c
+:=
+A | . . . | Z | a | . . . | z | 0 | . . . | 9 | δ
+Delimiter δ
+:=
+&,.?!@()[]%{}/:;$# "’
+Figure 3: The DSL for string transformation tasks in the RobustFill domain, slightly modiﬁed from
+Devlin et al. (2017) to add more functionality.
+Program P
+:=
+i1; i2; . . . ; a1; a2; . . .
+Initialization i
+:=
+v ←INPUT
+Assignment a
+:=
+v ←f | v ←h
+First-Order Operation f
+:=
+Head(l) | Last(l) | Access(n, l) | Minimum(l) | Maximum(l) | Sum(l)
+| Take(n, l) | Drop(n, l) | Reverse(l) | Sort(l)
+Higher-Order Operation h
+:=
+Map(λ, l) | Filter(β, l) | Count(β, l) | ZipWith(Σ, l, l) | Scanl1(Σ, l)
+int →int Lambda λ
+:=
+(+1) | (−1) | (∗2) | (/2) | (∗(−1)) | (∗∗2) | (∗3) | (/3) | (∗4) | (/4)
+int →bool Lambda β
+:=
+(> 0) | (< 0) | (%2 == 0) | (%2 == 1)
+(int, int) →int Lambda Σ
+:=
+(+) | (−) | (∗) | (min) | (max)
+Integer Variable n
+:=
+v
+List Variable l
+:=
+v
+Variable Name v
+:=
+x1 | x2 | . . .
+Figure 4: The DSL for integer and list manipulation tasks in the DeepCoder domain, originally
+proposed in Balog et al. (2017).
+15
+
+Published as a conference paper at ICLR 2024
+B
+ROBUSTFILL AND DEEPCODER BENCHMARK DETAILS
+RobustFill.
+To create a task for our RobustFill datasets, we ﬁrst sample random input strings up
+to 20 characters, one string for each of 4 examples. We then sample a program according to the
+train or test distribution for the generalization task (as described below), such that the program
+executes successfully on the inputs to form the example outputs. Due to the concatenation structure
+of RobustFill programs, we treat each concatenated expression as a subprogram, and recall that we
+denote the length of a program to be the number of subprograms.
+For Length-Generalization, we train on programs of length 1 to 6 inclusive and test on programs of
+length 7 to 10. For Compose-Different-Concepts, we group together all of the substring operations
+into a substring concept and all of the modiﬁcation operations plus constant strings as a non-substring
+concept (the Compose operation is omitted), using programs of length 2-6 for both train and test.
+We use the same lengths and concepts for Switch-Concept-Order, where training tasks use only the
+substring concept for the ﬁrst half of the parts and only the non-substring concept for the latter half,
+and test tasks have the ordering reversed. For Compose-New-Operation, 25% of training tasks are
+length 1 programs containing only a Compose operation, the remainder of the training tasks are
+length 2-6 programs without Compose, and we test on length 2-6 programs that use Compose. For
+Add-Operation-Functionality, all tasks are length 1-6 programs, we train on those where a substring
+operation is not used within a Compose operation, and we test on programs where a substring
+operation is used within a Compose operation.
+DeepCoder.
+For DeepCoder, we treat each non-input line as a subprogram, so the example program
+above has length 2. We use 3 I/O examples, at most 2 inputs, lists with at most 5 elements, and
+integers between −50 and 50 inclusive. For Length-Generalization, we train on programs of length
+1 to 4 and test on length 5. For Compose-Different-Concepts and Switch-Concept-Order, we use
+programs of length 1 to 4 and split the operations into a concept containing all ﬁrst-order operations
+plus the Map operation, and another concept containing all remaining higher-order operations. For
+Compose-New-Operation, 25% of training tasks are length 1 programs containing only a Scanl1
+operation, the remainder of training tasks are length 2-4 programs without Scanl1, and we test on
+length 2-4 programs that use Scanl1. For Add-Operation-Functionality, all tasks are length 1-4
+programs, Scanl1 is only used with the lambdas (-) and (min) during training, and we test on
+tasks where Scanl1 is used with the other lambdas (+), (*), and (max).
+The program sampling procedure that we used for RobustFill ensures that the ground-truth program
+for a test task is within the test distribution over programs. However, the task might actually have
+a different solution within the train distribution. Then, solving this test task is not necessarily a
+signal of generalization.4 To address this, we construct the DeepCoder dataset more carefully as
+follows. We sample random inputs as before. Then, we perform an exhaustive enumerative search of
+all programs in the train distribution up to a maximum length, and similarly for programs in the test
+distribution. As a result, we can identify all minimal-length solution programs for a given task (if it is
+solvable by any program up to the maximum enumerated length). Finally, we sample training tasks
+among those where there exists a minimal-length solution program in the train distribution, and test
+tasks among those where all minimal-length solutions are in the test distribution.5
+C
+BEAM SEARCH DURING EXEDEC
+Section 4 and Algorithm 1 describe a single synthesis attempt, but we design a beam search process
+to run multiple synthesis attempts efﬁciently in parallel.
+Our goal is the same as in traditional beam search (Sutskever et al., 2014), which is to output k
+sequences that maximize a score function. Formally, a candidate sequence C at step t is a sequence
+of execution subgoals and subprograms C = [{S(1)
+i
+}, P (1), . . . , {S(t)
+i }, P (t)]. As notation, we let
+C(j) denote the preﬁx of C up to and including the j-th subprogram P (j). The score for a candidate
+4This issue is far less prevalent in the RobustFill dataset due to the concatenation program structure reducing
+the number of different programs that solve a task.
+5Note that it is still possible for a test task to be solved with a longer program in the train distribution, but
+detecting these cases in general is extremely difﬁcult.
+16
+
+Published as a conference paper at ICLR 2024
+sequence C is given by
+Score(C) =
+t
+X
+j=1
+Score({S(j)
+i
+}) + Score(P (j)) + Valid(C(j)) .
+(1)
+Here, since both SubgoalModel and SynthesizerModel in ExeDec are autoregressive sequence
+models (see Section 4 for more details), they can produce token sequences (either set of subgoals
+or a subprogram) with their corresponding log-probabilities which we use as the score function,
+i.e., Score({S(j)
+i
+}) = log p(S(j)
+i
+| {(I(j)
+i
+, O(j)
+i )}) and Score(P (j)) = log p(P (j) | {(I(j)
+i
+, S(j)
+i
+)}).
+By default, Valid(C(j)) = 0 unless C(j) fails to meet some required conditions. First, we set
+Valid(C(j)) = −∞if any subgoal or subprogram in C(j) is a token sequence that does not parse, or
+if any subprogram does not execute successfully. We also check whether C(j) leads to unique program
+functionality within the beam of k candidate sequences. Note that different candidate sequences
+can result in the same subprograms even if the subgoals are different, and furthermore, combining
+different subprograms might result in full programs with the same functionality that are practically
+equivalent for future steps. Therefore, we set Valid(C(j)) = −∞for all candidate sequences in the
+beam with corresponding program functionality equivalent to that of another higher-scoring candidate
+sequence in the beam. Finally, domain-speciﬁc checks may determine that the candidate sequence
+C(j) is unlikely to result in a successful program in later steps, or that some computation limit such
+as a maximum number of steps is reached. In any case, an “invalid” beam element will drop out of
+the beam at the next step, freeing space in the beam for expansions of other surviving beam elements.
+Note that we do not perform separate beam searches for each call to a model, since an isolated beam
+search would start with a single empty beam element with score 0. Instead, we perform a single long
+beam search throughout Algorithm 1 where each beam element is a candidate sequence C with score
+Score(C). Model calls can be seen as “extending” the ongoing beam search, adding more tokens to
+the existing candidate sequences while maintaining their scores.
+D
+ALIGNED RELATIVE ATTENTION FOR THE SUBGOALMODEL
+In the Speciﬁcation-Transformer (Section 4), we use relative attention (Shaw et al., 2018), i.e.,
+representations of relative positions (distances between positions) instead of absolute positions of
+tokens. This improves Transformer performance, particularly in length generalization (Shaw et al.,
+2018; Csord´as et al., 2021). However, unlike the other models, our SubgoalModel actually predicts a
+sequence of sequences, i.e., a subgoal for each I/O example, concatenated together. Thus, the relative
+position between subgoal Si and I/O encoding φi is not consistent for every example index i, so a
+naive relative position embedding would not represent consistent information across examples. To
+remedy this, we propose aligned relative attention (ARA), which alters the “positions” of subgoal
+tokens in the relative distance calculation. Speciﬁcally, we increment the current position by 1 for
+each token during subgoal prediction as usual, but when starting a new subgoal Si we set the current
+position to the position of φi. This ensures that the relative position between the beginnings of Si and
+φi is always 0. ARA only applies to the SubgoalModel to help it perform the sequence-of-sequences
+prediction, and it is not intended to address compositional generalization directly.
+E
+TRAINING DETAILS
+For the experiments involving Transformer models trained from scratch (Section 5.1), we performed
+a small hyperparameter search varying the learning rate and model size, choosing a single setting
+that performed well on training metrics across generalization tasks and model types. We used an
+embedding dimension of 512, hidden dimension of 1024, 3 layers, and 4 attention heads. For
+relative attention, we use 32 buckets for relative position embeddings, with bucket boundaries placed
+logarithmically given the maximum relative distance which is computed based on the lengths of the
+input and output sequences. We train with the Adam optimizer with a learning rate of 2 × 10−4 with
+linear warmup for 16,000 steps and square root decay, with a batch size of 128 and 500K training
+steps, using fresh synthetic training data without repeating examples. Training took about 1 day for
+RobustFill (or about 5 hours for DeepCoder) with 8 TPU v2 accelerators per model.
+In our experiments, some models have different sizes (with the other hyperparameters held constant):
+17
+
+Published as a conference paper at ICLR 2024
+• ExeDec, the no-subgoal ablation, and the Transformer baseline all use an embedding dimension of
+512 and hidden dimension of 1024, as selected from the hyperparameter search mentioned above.
+• ExeDec-Small uses an embedding dimension of 360 and hidden dimension of 720, such that the
+total number of parameters between the SubgoalModel and SynthesizerModel is approximately
+equal to the number of parameters in the no-subgoal ablation or in the baseline, which only
+use one model each. ExeDec’s code solution only comes from the SynthesizerModel, while the
+SubgoalModel’s predictions do not show up anywhere in the solution and only encourage the
+SynthesizerModel to think about the next subgoal instead of the end goal. Thus, compared to
+the ablation and baseline, ExeDec holds the SynthesizerModel size constant to compare the two
+modes of thinking, while ExeDec-Small holds the total number of parameters constant to verify
+that the improvements are not only due to extra parameters in the SubgoalModel.
+• Latent Programmer uses a smaller embedding dimension of 256 and hidden dimension of 512
+because we ran into out-of-memory issues when using the Latent Programmer’s training script
+which trains two models at once. Our trained Latent Programmer models are still larger than
+those reported in the Latent Programmer paper leading to a corresponding performance increase,
+reaching 76% accuracy on no-generalization RobustFill compared to 57% reported in the Latent
+Programmer paper.
+Additionally, for Latent Programmer, we performed a separate hyperparameter search varying the
+learning rate and number of pretraining steps. We chose a learning rate of 5 × 10−4 for RobustFill
+and 2 × 10−4 for DeepCoder, and 20,000 pretraining steps for both datasets. We use a beam size of
+10 and a latent beam size of 3, as in the Latent Programmer paper. (For experiments with beam size
+of 1, the latent beam size is also 1.) All other settings were kept the same as for the other models.
+For DeepCoder, the ground-truth training programs have variable names chosen randomly among a
+ﬁxed set of possible names. If the variable names were used in a canonical order instead, the models
+would be unable to predict subprograms using variable names unseen during training, as is required
+for length generalization. When predicting a subprogram, the model only predicts the right hand side
+of the assignment, which at test time is assigned to a new variable name using a canonical ordering.
+F
+BEAM SIZE 1 RESULTS FOR MODELS TRAINED FROM SCRATCH
+Figure 2 in Section 5.1 shows detailed results for all generalization tasks, using beam size 10. We
+also performed experiments with beam size 1, summarized below in Table 2.
+Table 2: Results for beam size 1 and beam size 10 (end-to-end test accuracy as percentages). “NoGen”
+refers to the case where no compositional generalization is required, while “GenAvg” refers to the
+average across the 5 compositional generalization tasks.
+RobustFill
+DeepCoder
+Beam Size 1
+Beam Size 10
+Beam Size 1
+Beam Size 10
+Approach
+NoGen
+GenAvg
+NoGen
+GenAvg
+NoGen
+GenAvg
+NoGen
+GenAvg
+ExeDec
+81.4
+73.1
+95.5
+87.0
+39.1
+8.4
+61.2
+23.1
+ExeDec-Small
+78.7
+71.2
+94.4
+85.9
+36.1
+7.7
+58.4
+21.4
+Ablation
+79.5
+63.8
+94.9
+80.2
+39.9
+5.6
+64.7
+18.1
+Transformer
+83.7
+33.9
+90.9
+42.4
+50.7
+4.9
+53.6
+5.7
+Latent Programmer
+66.0
+26.3
+76.1
+33.7
+40.5
+2.4
+46.5
+3.5
+We observe that ExeDec achieves the highest generalization average, for both RobustFill and Deep-
+Coder and for both beam size 1 and 10. Additionally, for both no-generalization and average
+generalization, the baseline Transformer’s performance does not improve that much going from beam
+size 1 to 10. On the other hand, ExeDec improves signiﬁcantly more from beam size 1 to 10, showing
+the effectiveness of our modiﬁed beam search (Appendix C) that enables exploring different solution
+routes by planning in the execution space.
+18
+
+Published as a conference paper at ICLR 2024
+G
+SINGLE-STEP ACCURACY
+To gain more insight into the step-by-step synthesis process, we measured the “single-step accuracy”
+for ExeDec’s SubgoalModel and SynthesizerModel, and the CombinedModel from the no-subgoal
+ablation. More speciﬁcally, for a single step in a trajectory that matches the ground-truth so far,
+how often does the SubgoalModel predict subgoals exactly matching the ground-truth ones (for
+all I/O examples) with a single greedy decoding? And, given a ground-truth trajectory so far, how
+often does the SynthesizerModel or CombinedModel predict a program whose behavior matches the
+ground-truth subprogram? The single-step accuracy results are in Table 3.
+Table 3: Single-step accuracy percentages.
+RobustFill
+DeepCoder
+Generalization Task
+Subgoal
+Synthesizer
+Combined
+Subgoal
+Synthesizer
+Combined
+No Generalization
+97.7
+97.1
+94.9
+55.8
+98.9
+64.4
+Length-Generalization
+97.2
+96.4
+94.0
+31.6
+96.4
+41.9
+Compose-Different-Concepts
+95.3
+98.9
+90.5
+38.0
+94.3
+40.0
+Switch-Concept-Order
+90.8
+98.9
+87.4
+16.4
+77.8
+17.9
+Compose-New-Operation
+93.9
+94.0
+84.4
+40.8
+91.3
+44.4
+Add-Operation-Functionality
+94.0
+84.4
+82.3
+40.3
+60.0
+41.5
+Note that the single-step accuracy metric is particularly low for the SubgoalModel and Combined-
+Model on DeepCoder because there are potentially many correct ways of solving the problem, and
+this metric only considers the single ground-truth solution. In fact, the SubgoalModel does not need
+to have super high accuracy in order for ExeDec to achieve good end-to-end results, because the
+SynthesizerModel can ignore slight errors in the subgoals and still produce a program that behaves
+as closely as possible while using only 1 DSL operation. We have seen many concrete cases of the
+SynthesizerModel being given a slightly incorrect subgoal and then producing the correct subprogram
+anyway, which disagrees with the subgoal but correctly makes progress overall.
+H
+INTUITION OF SPURIOUS PATTERNS
+In Figure 2, ExeDec sometimes performs worse than the no-subgoal ablation in Length-Generalization
+and Switch-Concept-Order, while ExeDec performs much better in Compose-Different-Concepts and
+Compose-New-Operation. For Add-Operation-Functionality, ExeDec and the no-subgoal ablation
+have a much smaller improvement over the Transformer baseline, especially in RobustFill. These
+observations may be explained by analyzing the different kinds of “spurious patterns” that arise in
+the various compositional generalization splits:
+• For Length-Generalization and Switch-Concept-Order, the index of the current subprogram carries
+major implications in the training distribution, for example, “the problem should be almost solved
+by now” or “we must use this category of operation”. However, these implications are drastically
+changed in the test distribution, leading to spurious patterns that may lead to poor performance on
+the test split. The Transformer baseline is aware of the length of the prediction so far, so it can be
+easily confused by this distribution shift — and indeed, it performs particularly poorly on these
+tasks. On the other hand, both ExeDec and the no-subgoal ablation are less aware of the current
+index of the subprogram, since the prior subprograms are only indirectly provided to the models
+through the program state. For these tasks, ExeDec and the no-subgoal ablation have relatively
+similar performance but greatly outperform the Transformer baseline.
+• For Compose-Different-Concepts and Compose-New-Operation, the spurious patterns arise from
+comparison to what work needs to be done outside the current subprogram, for example, “this
+subprogram uses the same category of operation as the other subprograms” or “this subprogram
+can use operation X only if there are no other subprograms”. Again, these patterns are changed
+between the train and test distributions. The no-subgoal ablation is susceptible to overﬁtting on
+these patterns because it sees the I/O speciﬁcation for the current subprogram composed with all
+future subprograms. On the other hand, ExeDec is more shielded from these spurious patterns
+because its SynthesizerModel only sees the I/O speciﬁcation for the current subprogram (provided
+19
+
+Published as a conference paper at ICLR 2024
+that the SubgoalModel predicts the correct subgoals). This difference may explain why ExeDec
+has a larger performance improvement over the no-subgoal ablation for these generalization tasks.
+• For Add-Operation-Functionality, the spurious pattern is actually within an individual subprogram,
+i.e., some subprograms in test problems are outside the distribution of subprograms seen during
+training. None of the compared approaches are well-shielded from this form of spurious pattern,
+leading to the relatively low performance of our methods on this generalization task for RobustFill.
+(For DeepCoder, the trend is less clear since some problems may be solved using longer programs
+outside the test distribution.)
+I
+ALGORITHM COMPARISON CASE STUDY
+RobustFill.
+Figure 5 and Figure 6 compare how ExeDec, the no-subgoal ablation, and the Trans-
+former baseline perform on two example problems from the RobustFill DSL, under the Compose-
+New-Operation generalization task where models were not trained on composed programs (other
+than length-1 programs) that use the Compose operation. A beam size of 1 (greedy decoding) is used
+for simplicity. In the ﬁgures, subprograms and execution results are colored red if they are incorrect.
+Portions of the ﬁnal programs are colored yellow if they do execute correctly but implement the
+desired functionality suboptimally, i.e., with more subprograms than necessary.
+For both example problems, ExeDec successfully solves the problem using a minimal-length program
+that is within the test distribution of the compositional generalization task, showing successful
+generalization. However, the no-subgoal ablation does not perform as well. In Figure 5, it uses the
+Compose operation incorrectly because, due to the Compose-New-Operation task, it has never been
+trained to use Compose to produce a preﬁx of the output. This is not an issue for ExeDec because
+the preﬁxes are provided by the SubgoalModel. In Figure 6, the ablation predicts a correct but
+suboptimal program in the training distribution, replacing a Compose operation with three separate
+steps. The Transformer baseline is comparatively the worst, predicting incorrect programs in the
+training distribution for both problems, showing a clear inability to compositionally generalize.
+DeepCoder.
+Figure 7 shows a similar comparison between the three approaches, this time on a
+DeepCoder list manipulation problem under the Compose-Different-Concepts generalization task.
+For this generalization task, we partition the DSL operations into two groups or “concepts” – one
+concept contains the higher-order operations Scanl1, Filter, Count, and ZipWith, while the
+other concept contains all of the ﬁrst-order operations6. The training problems have minimal-length
+ground-truth programs that only compose operations within the same concept, while test problems
+require mixing operations from different concepts to achieve a minimal-length solution program.
+The problem in Figure 7 is solved using operations from both concepts: Scanl1 is higher-order,
+while Take and Sort are ﬁrst-order operations. The Transformer baseline fails to solve this problem.
+It correctly uses Scanl1 as the ﬁrst step but incorrectly continues to use higher-order operations.
+This behavior makes sense because the model was trained on programs showing a similar pattern,
+and it does not deviate from the pattern because this approach is not compositionally general.
+Similarly, the no-subgoal ablation correctly uses Scanl1 in the ﬁrst step but also continues to use
+higher-order operations in subsequent steps until eventually the program fails to typecheck. We
+observe that, after successfully using Scanl1 in the ﬁrst subprogram, the updated speciﬁcation
+actually describes a problem with a solution program within the training distribution (using ﬁrst-
+order operations Take and Sort from the same concept). So, why is the ablation unable to solve
+the updated speciﬁcation, even though the SynthesizerModel is not directly conditioned on the
+previous subprograms like the Transformer baseline is? We hypothesize that the SynthesizerModel
+recognizes from the speciﬁcation that x2 was computed by applying a Scanl1 operation to x0, and
+thus according to patterns seen during training, the model is inclined to continue using higher-order
+operations. This hypothesis is supported by the fact that the ablation, as well as ExeDec and the
+baseline, all correctly solve a simpliﬁed version of this problem where the input x0 is replaced with
+the result of the ﬁrst subprogram, x2 = Scanl1 (+) x0, such that the Scanl1 portion is “already
+computed” but not in a way visible from the speciﬁcation. In other words, the ablation succeeds for
+the simpliﬁed problem because it is now unable to refer to previous subprograms.
+6The concept with ﬁrst-order operations also contains the higher-order operation Map, to better balance the
+number of different program functionalities obtainable within each concept.
+20
+
+Published as a conference paper at ICLR 2024
+In contrast, ExeDec successfully solves the problem with a minimal-length solution that switches
+between concepts. Note that its SynthesizerModel cannot directly or indirectly reference previous
+subprograms. The SubgoalModel can indirectly refer to previous subprograms by examining the
+speciﬁcation, but it is generally less susceptible to spurious compositional patterns. For example, the
+ablation’s SynthesizerModel might learn the pattern “predict an operation in the same concept as
+previously” which is very easy for a neural model to recognize and implement, whereas it is more
+difﬁcult for ExeDec’s SubgoalModel to learn the pattern “predict a subgoal that is implementable
+with an operation in the same concept as previously”. This provides some intuition for why ExeDec
+is more compositionally general overall.
+21
+
+Published as a conference paper at ICLR 2024
+No more steps: The updated speciﬁcation output is
+empty for all examples.
+Synthesis result: Success
+Final program:
+GetAll(NUMBER) | Const('.') | Compose(ToCase(ALL_CAPS), GetToken(WORD, -1)) | 
+Const(',') | Compose(ToCase(PROPER), GetToken(WORD, 1))
+RobustFill Example Problem 1
+Speciﬁcation:
+[  (“alan Turing1” → “1.TURING,Alan”),            (“21.Donald@knuTh” → “21.KNUTH,Donald”),
+   (“8:grace,HoppeR&” → “8.HOPPER,Grace”),   (“EDSGER99 DIJKSTRA” → “99.DIJKSTRA,Edsger”)  ]
+Transformer Baseline
+Prediction:
+GetToken(NUMBER, -1) | Const('.') |
+ToCase(ALL_CAPS) | Const(',') |
+Const('A') | GetFirst(LOWER, 1)
+Execution: [“1.ALAN TURING1,Aalan”,
+          “21.21.DONALD@KNUTH,Aonald”,
+          “8.8:GRACE,HOPPER&,Agrace”,
+          “99.EDSGER99 DIJKSTRA,A”]
+Synthesis result: Failure
+ExeDec
+Step 1:
+●Subgoals: [“1”, “21”, “8”, “99”]
+●Subprogram: GetAll(NUMBER)
+●Execution: [“1”, “21”, “8”, “99”]
+●Updated speciﬁcation:
+[ (“alan Turing1” → “.TURING,Alan”), ... ]
+Step 2:
+●Subgoals: [“.”, “.”, “.”, “.”]
+●Subprogram: Const('.')
+●Execution: [“.”, “.”, “.”, “.”]
+●Updated speciﬁcation:
+[ (“alan Turing1” → “TURING,Alan”), ... ]
+Step 3:
+●Subgoals: [“TURING”, “KNUTH”, “HOPPER”, ... ]
+●Subprogram: Compose(ToCase(ALL_CAPS),
+                   GetToken(WORD, -1))
+●Execution: [“TURING”, “KNUTH”, “HOPPER”, ... ]
+●Updated speciﬁcation:
+[ (“alan Turing1” → “,Alan”), ... ]
+Step 4:
+●Subgoals: [“,”, “,”, “,”, “,”]
+●Subprogram: Const(',')
+●Execution: [“,”, “,”, “,”, “,”]
+●Updated speciﬁcation:
+[ (“alan Turing1” → “Alan”), ... ]
+Step 5:
+●Subgoals: [“Alan”, “Donald”, “Grace”, ... ]
+●Subprogram: Compose(ToCase(PROPER),
+                   GetToken(WORD, 1))
+●Execution: [“Alan”, “Donald”, “Grace”, ... ]
+●Updated speciﬁcation:
+[ (“alan Turing1” → “”), ... ]
+No-Subgoal Ablation
+Step 1:
+●Subgoals: not predicted
+●Subprogram: GetToken(NUMBER, -1)
+●Execution: [“1”, “21”, “8”, “99”]
+●Updated speciﬁcation:
+[ (“alan Turing1” → “.TURING,Alan”), ... ]
+Step 2:
+●Subgoals: not predicted
+●Subprogram: Const('.')
+●Execution: [“.”, “.”, “.”, “.”]
+●Updated speciﬁcation:
+[ (“alan Turing1” → “TURING,Alan”), ... ]
+Step 3:
+●Subgoals: not predicted
+●Subprogram: Compose(ToCase(ALL_CAPS),
+                   GetFrom(','))
+●Execution: [“”, “”, “HOPPER&”, “”]
+●Updated speciﬁcation: Invalid
+No more steps: In example #3, the subprogram’s 
+output “HOPPER&” is not a preﬁx of the desired output 
+“HOPPER,Grace”.
+Synthesis result: Failure
+Figure 5: A comparison of different approaches on the same string manipulation problem in the
+RobustFill domain, under the Compose-New-Operation generalization task. ExeDec is able to solve
+the problem correctly with a length 5 program including two usages of the new operation (Compose).
+The no-subgoal ablation fails to correctly use the Compose operation in step 3, likely because the
+model has not seen the Compose operation used to produce a preﬁx of the output. On the other
+hand, ExeDec succeeds in that step because the relevant preﬁxes are predicted as subgoals ﬁrst. The
+Transformer baseline performs poorly on this task and does not use a single Compose operation.
+22
+
+Published as a conference paper at ICLR 2024
+RobustFill Example Problem 2
+Speciﬁcation:
+[  (“12.04 1999” → “1999/12/04”),   (“07/08, 2000” → “2000/07/08”),
+   (“04/12/1995” → “1995/04/12”),   (“09.30.2001” → “2001/09/30”)  ]
+Transformer Baseline
+Prediction:
+GetToken(NUMBER, -1) | Const('/') |
+GetToken(DIGIT, 1) |
+GetSpan(CHAR, 2, START, NUMBER, 1, END) |
+Const('/') |
+GetSpan(NUMBER, 1, START, CHAR, 5, END)
+Execution: [“1999/12/12.04”, “2000/07/07/08”,
+         “1995/04/04/12”, “2001/09/09.30”]
+Synthesis result: Failure
+ExeDec
+Step 1:
+●Subgoals: [“1999”, “2000”, “1995”, “2001”]
+●Subprogram: GetToken(NUMBER, -1)
+●Execution: [“1999”, “2000”, “1995”, “2001”]
+●Updated speciﬁcation:
+[ (“12.04 1999” → “/12/04”), ... ]
+Step 2:
+●Subgoals: [“/”, “/”, “/”, “/”]
+●Subprogram: Const('/')
+●Execution: [“/”, “/”, “/”, “/”]
+●Updated speciﬁcation:
+[ (“12.04 1999” → “12/04”), ... ]
+Step 3:
+●Subgoals: [“12/04”, “07/08”, “04/12”, ... ]
+●Subprogram: Compose(Replace('.', '/'),
+                   GetFirst(CHAR, 5))
+●Execution: [“12/04”, “07/08”, “04/12”, ... ]
+●Updated speciﬁcation:
+[ (“12.04 1999” → “”), ... ]
+No more steps: The updated speciﬁcation output is
+empty for all examples.
+Synthesis result: Success
+Final program:
+GetToken(NUMBER, -1) | Const('/') |
+Compose(Replace('.', '/'),
+       GetFirst(CHAR, 5))
+No-Subgoal Ablation
+Step 1:
+●Subgoals: not predicted
+●Subprogram: GetToken(NUMBER, -1)
+●Execution: [“1999”, “2000”, “1995”, “2001”]
+●Updated speciﬁcation:
+[ (“12.04 1999” → “/12/04”), ... ]
+Step 2:
+●Subgoals: not predicted
+●Subprogram: Const('/')
+●Execution: [“/”, “/”, “/”, “/”]
+●Updated speciﬁcation:
+[ (“12.04 1999” → “12/04”), ... ]
+Step 3:
+●Subgoals: not predicted
+●Subprogram: GetUpto(NUMBER)
+●Execution: [“12”, “07”, “04”, “09”]
+●Updated speciﬁcation:
+[ (“12.04 1999” → “/04”), ... ]
+Step 4:
+●Subgoals: not predicted
+●Subprogram: Const('/')
+●Execution: [“/”, “/”, “/”, “/”]
+●Updated speciﬁcation:
+[ (“12.04 1999” → “04”), ... ]
+Step 5:
+●Subgoals: not predicted
+●Subprogram: GetToken(NUMBER, -2)
+●Execution: [“04”, “08”, “12”, “30”]
+●Updated speciﬁcation:
+[ (“12.04 1999” → “”), ... ]
+No more steps: The updated speciﬁcation output is
+empty for all examples.
+Synthesis result: Success
+Final program:
+GetToken(NUMBER, -1) | Const('/') |
+GetUpto(NUMBER) | Const('/') |
+GetToken(NUMBER, -2)
+Figure 6: Another comparison on a different string manipulation problem. Here, ExeDec ﬁnds a
+minimal-length solution using 3 subprograms and 1 Compose operation. Meanwhile, the no-subgoal
+ablation solves the problem in a suboptimal way, replacing the Compose operation with 3 separate
+steps. The Transformer baseline also used a suboptimal approach in the middle of the program and
+was wrong in the last step.
+23
+
+Published as a conference paper at ICLR 2024
+DeepCoder Example Problem
+Speciﬁcation:
+[  ( { x0 = [5,-2,1], x1 = 2 } → [3,5] ),   ( { x0 = [7,1,5,-2], x1 = 4 } → [7,8,11,13] ),
+   ( { x0 = [8,-4,-1,7], x1 = 3 } → [3,4,8] )  ]
+Transformer Baseline
+Prediction:
+x0 = INPUT | x1 = INPUT |
+x2 = Scanl1 (+) x0 |
+x3 = Filter (%2==1) x2 |
+x4 = ZipWith (min) x2 x3
+Execution: [[5,3], [7,8,11], [3]]
+Synthesis result: Failure
+ExeDec
+Step 1:
+●Subgoals: [[5,3,4], [7,8,13,11], [8,4,3,10]]
+●Subprogram: x2 = Scanl1 (+) x0
+●Execution: [[5,3,4], [7,8,13,11], [8,4,3,10]]
+●Updated speciﬁcation:
+[ ( { x0 = [5,-2,1], x1 = 2, x2 = [5,3,4] }
+     → [3,5] ), ... ]
+Step 2:
+●Subgoals: [[5,3], [7,8,13,11], [8,4,3]]
+●Subprogram: x3 = Take x1 x2
+●Execution: [[5,3], [7,8,13,11], [8,4,3]]
+●Updated speciﬁcation:
+[ ( { x0 = [5,-2,1], x1 = 2, x2 = [5,3,4],
+     x3 = [5,3] } → [3,5] ), ... ]
+Step 3:
+●Subgoals: [[3,5], [7,8,11,13], [3,4,8]]
+●Subprogram: x4 = Sort x3
+●Execution: [[3,5], [7,8,11,13], [3,4,8]]
+●Updated speciﬁcation:
+[ ( { x0 = [5,-2,1], x1 = 2, x2 = [5,3,4],
+     x3 = [5,3], x4 = [3,5] } → [3,5] ), ... ]
+No more steps: The updated speciﬁcation has x4 
+matching the output for all examples.
+Synthesis result: Success
+Final program:
+x0 = INPUT | x1 = INPUT |
+x2 = Scanl1 (+) x0 | x3 = Take x1 x2 |
+x4 = Sort x3
+No-Subgoal Ablation
+Step 1:
+●Subgoals: not predicted
+●Subprogram: x2 = Scanl1 (+) x0
+●Execution: [[5,3,4], [7,8,13,11], [8,4,3,10]]
+●Updated speciﬁcation:
+[ ( { x0 = [5,-2,1], x1 = 2, x2 = [5,3,4] }
+     → [3,5] ), ... ]
+Step 2:
+●Subgoals: not predicted
+●Subprogram: x3 = Scanl1 (max) x2
+●Execution: [[5,5,5], [7,8,13,13], [8,8,8,10]]
+●Updated speciﬁcation:
+[ ( { x0 = [5,-2,1], x1 = 2, x2 = [5,3,4],
+     x3 = [5,5,5] } → [3,5] ), ... ]
+Step 3:
+●Subgoals: not predicted
+●Subprogram: x4 = Filter (>0) x0
+●Execution: [[5,1], [7,1,5], [8,7]]
+●Updated speciﬁcation:
+[ ( { x0 = [5,-2,1], x1 = 2, x2 = [5,3,4],
+     x3 = [5,5,5], x4 = [5,1] } → [3,5] ), ... ]
+Step 4:
+●Subprogram: x5 = Filter (%2==1) x2
+●Execution: [[5,3], [7,13,11], [3]]
+Step 5:
+●Subprogram: x6 = Filter (>0) x3
+●Execution: [[5,5,5], [7,8,13,13], [8,8,8,10]]
+Step 6:
+●Subprogram: x7 = ZipWith (min) x2 x6
+●Execution: [[5,3,4], [7,8,13,11], [8,4,3,10]]
+Step 7:
+●Subprogram: x8 = Drop x2 x7
+●Execution: TypeError
+No more steps: The last subprogram contains an error 
+because x2 is a list but Drop expects an integer.
+Synthesis result: Failure
+Figure 7: A comparison on a DeepCoder list manipulation problem under the Compose-Different-
+Concepts generalization task. All three approaches get the ﬁrst step correct, but the ablation and
+baseline are unable to continue correctly, erroneously using higher-order operations for subsequent
+steps according to the compositional pattern in the training data. However, the design of ExeDec
+makes it less susceptible to overﬁtting on such patterns, and indeed ExeDec solves this problem using
+a minimal-length program from the test distribution.
+24
+
+Published as a conference paper at ICLR 2024
+J
+PROGRAMS AND PROMPTS FOR LLM EXPERIMENTS
+J.1
+DSL PROGRAMS AS PYTHON FUNCTIONS
+For the LLM experiments, we transform the DSL programs into Python functions that call a hypo-
+thetical dsl library, enabling the LLM to use its understanding of Python programming while we
+measure how well it generalizes to new functionality it has not been trained on.
+The
+RobustFill
+program
+GetFrom(' ') | Const('.')
+| Compose(ToCase(PROPER),
+GetToken(WORD, 1)) transforms the input string “TURING, Alan” into the output string
+“Alan.Turing”. For the LLM experiments, it is written as a Python function as follows:
+def program(x):
+parts = [
+dsl.GetFrom(x, ' '),
+dsl.Const('.'),
+dsl.ToCase(dsl.GetToken(x, dsl.Type.WORD, 1), dsl.Case.PROPER),
+]
+return ''.join(parts)
+The DeepCoder program x0 = INPUT | x1 = Map (**2) x0 | x2 = Sort x1 transforms
+the input list [5, 3, −4] into the output list [9, 16, 25]. As a Python function, this would be:
+def program(x0):
+x1 = dsl.Map(dsl.SQUARE, x0)
+x2 = dsl.Sort(x1)
+return x2
+We also experiment with a “Pythonic” form of DeepCoder programs, for example:
+def program(x0):
+x1 = [x ** 2 for x in x0]
+x2 = sorted(x1)
+return x2
+J.2
+LLM PROMPTS
+We programmatically create prompts for 3 LLM approaches (baseline, ablation, and ExeDec), for 3
+kinds of datasets (RobustFill, DeepCoder, and DeepCoder-Pythonic). We provide prompts for a few
+example combinations in ﬁgures:
+• Figure 8 has a Baseline-style prompt for RobustFill,
+• Figure 9 has an Ablation-style prompt for DeepCoder,
+• Figure 10 has an ExeDec-style prompt for RobustFill, and
+• Figure 11 has an ExeDec-style prompt for DeepCoder-Pythonic.
+In each ﬁgure, the prompt contains only 1 few-shot example for brevity, but our experiments used 4
+few-shot examples for all prompts. Line wrapping is denoted with the ,→symbol.
+Observe that the information contained in the ExeDec-style prompt is the same as in the Ablation-style
+prompt, just with different ordering of the code for a step and its corresponding execution results.
+Although this difference may seem slight, it leads to the improved performance for the ExeDec-style
+approach.
+25
+
+Published as a conference paper at ICLR 2024
+The `dsl` module is a custom library for manipulating strings. It
+,→contains the following functions:
+Const, SubStr, GetSpan, GetToken, ToCase, Replace, Trim, GetUpto,
+,→GetFrom, GetFirst, GetAll, Substitute, SubstituteAll, Remove,
+,→RemoveAll
+Additionally, the module defines the following constants:
+dsl.Type.NUMBER, dsl.Type.WORD, dsl.Type.ALPHANUM, dsl.Type.ALL_CAPS,
+,→dsl.Type.PROP_CASE, dsl.Type.LOWER, dsl.Type.DIGIT,
+,→dsl.Type.CHAR, dsl.Case.PROPER, dsl.Case.ALL_CAPS,
+,→dsl.Case.LOWER, dsl.Boundary.START, dsl.Boundary.END
+Below are example programming problems using the `dsl` module, with
+,→input-output test cases illustrating their behavior.
+Important: All programs begin with ```python and end with ``` alone.
+[BEGIN PROBLEM]
+Input-output test cases:
+Case 1. "TURING, Alan" --> "Alan.Turing"
+Case 2. "knuth Donald" --> "Donald.Knuth"
+Case 3. "Hopper Grace" --> "Grace.Hopper"
+Case 4. "DIJKSTRA... Edsger" --> "Edsger.Dijkstra"
+Program:
+```python
+def program(x):
+parts = [
+dsl.GetFrom(x, ' '),
+dsl.Const('.'),
+dsl.ToCase(dsl.GetToken(x, dsl.Type.WORD, 1), dsl.Case.PROPER),
+]
+return ''.join(parts)
+```
+[END PROBLEM]
+[BEGIN PROBLEM]
+Input-output test cases:
+Case 1. "apple" --> "Apple!"
+Case 2. "banana" --> "Banana!"
+Case 3. "clementine" --> "Clementine!"
+Case 4. "durian" --> "Durian!"
+Program:
+```python
+Figure 8: Baseline-style prompt on RobustFill. The LLM’s continuation contains its predicted
+program as one entire function, terminated with triple backticks.
+26
+
+Published as a conference paper at ICLR 2024
+The `dsl` module is a custom library for manipulating lists of integers. It contains the
+,→following functions:
+Head, Last, Take, Drop, Access, Minimum, Maximum, Reverse, Sort, Sum, Map, Filter, Count,
+,→ZipWith, Scanl1
+Additionally, the module defines the following constants:
+PLUS_ONE, MINUS_ONE, TIMES_TWO, DIV_TWO, NEGATE, SQUARE, TIMES_THREE, DIV_THREE,
+,→TIMES_FOUR, DIV_FOUR, IS_POSITIVE, IS_NEGATIVE, IS_EVEN, IS_ODD, ADD, SUBTRACT,
+,→MULTIPLY, MIN, MAX
+Below are example programming problems using the `dsl` module, with input-output test cases
+,→illustrating the program behavior step-by-step.
+Important: All programs begin with ```python and end with ``` alone.
+[BEGIN PROBLEM]
+Input-output test cases:
+Case 1. x0 = [5, 3, -4] --> [9, 16, 25]
+Case 2. x0 = [-2] --> [4]
+Case 3. x0 = [3, 7, 1, 4] --> [1, 9, 16, 49]
+We solve this problem step-by-step.
+Step 1 code:
+```python
+x1 = dsl.Map(dsl.SQUARE, x0)
+```
+Step 1 computes:
+Case 1. x1 = [25, 9, 16]
+Case 2. x1 = [4]
+Case 3. x1 = [9, 49, 1, 16]
+Step 2 code:
+```python
+x2 = dsl.Sort(x1)
+```
+Step 2 computes:
+Case 1. x2 = [9, 16, 25]
+Case 2. x2 = [4]
+Case 3. x2 = [1, 9, 16, 49]
+Putting the steps together, the problem is solved with the program:
+```python
+def program(x0):
+x1 = dsl.Map(dsl.SQUARE, x0)
+x2 = dsl.Sort(x1)
+return x2
+```
+[END PROBLEM]
+[BEGIN PROBLEM]
+Input-output test cases:
+Case 1. x0 = [1, 3, 5, 7], x1 = 2 --> [3, 9]
+Case 2. x0 = [2, -4, 1, 0, 5], x1 = 4 --> [6, -12, 3, 0]
+Case 3. x0 = [11], x1 = 3 --> [33]
+We solve this problem step-by-step.
+Step 1 code:
+Figure 9: Ablation-style prompt on DeepCoder. For the ablation-style approach, the execution
+result of each step is shown after the code for that step. The LLM will respond with the ﬁrst step
+toward solving the test problem, surrounded by triple backticks. We then execute that code (making
+some assumptions about its format, e.g., that it assigns to a variable) and construct a new prompt with
+the ﬁrst step’s code and execution results in the history, following the pattern in the few-shot example,
+so that the LLM’s next prediction is the second step conditioned on the ﬁrst step.
+27
+
+Published as a conference paper at ICLR 2024
+[... Description of the `dsl` module ...]
+[BEGIN PROBLEM]
+Input-output test cases:
+Case 1. x = "TURING, Alan" --> "Alan.Turing"
+Case 2. x = "knuth Donald" --> "Donald.Knuth"
+Case 3. x = "Hopper Grace" --> "Grace.Hopper"
+Case 4. x = "DIJKSTRA... Edsger" --> "Edsger.Dijkstra"
+We solve this problem step-by-step.
+Step 1 computes:
+Case 1. "Alan" so ".Turing" remains
+Case 2. "Donald" so ".Knuth" remains
+Case 3. "Grace" so ".Hopper" remains
+Case 4. "Edsger" so ".Dijkstra" remains
+Step 1 code:
+```python
+dsl.GetFrom(x, ' ')
+```
+Step 2 computes:
+Case 1. "." so "Turing" remains
+Case 2. "." so "Knuth" remains
+Case 3. "." so "Hopper" remains
+Case 4. "." so "Dijkstra" remains
+Step 2 code:
+```python
+dsl.Const('.')
+```
+Step 3 computes:
+Case 1. "Turing" so "" remains
+Case 2. "Knuth" so "" remains
+Case 3. "Hopper" so "" remains
+Case 4. "Dijkstra" so "" remains
+Step 3 code:
+```python
+dsl.ToCase(dsl.GetToken(x, dsl.Type.WORD, 1), dsl.Case.PROPER)
+```
+Putting the steps together, the problem is solved with the program:
+```python
+def program(x):
+parts = [
+dsl.GetFrom(x, ' '),
+dsl.Const('.'),
+dsl.ToCase(dsl.GetToken(x, dsl.Type.WORD, 1), dsl.Case.PROPER),
+]
+return ''.join(parts)
+```
+[END PROBLEM]
+[BEGIN PROBLEM]
+Input-output test cases:
+Case 1. x = "apple" --> "Apple!"
+Case 2. x = "banana" --> "Banana!"
+Case 3. x = "clementine" --> "Clementine!"
+Case 4. x = "durian" --> "Durian!"
+We solve this problem step-by-step.
+Step 1 computes:
+Figure 10: ExeDec-style prompt on RobustFill. For the ExeDec-style approach, the execution
+result of a step comes before the code for that step. This is how we get the LLM to perform “execution
+decomposition” — it must predict execution subgoals before predicting code for that step. We extract
+the predicted code (surrounded by triple backticks), run it, and construct a new prompt containing
+this step’s code and execution results (ignoring the model’s predicted subgoals). The dsl module’s
+description at the top of the prompt is omitted for space, but is identical to that in Figure 8.
+28
+
+Published as a conference paper at ICLR 2024
+The `dsl` module is a custom library for manipulating lists of integers. It contains the
+,→following functions:
+def Scanl1(f, xs):
+ys = []
+for i, x in enumerate(xs):
+if i == 0:
+ys.append(x)
+else:
+ys.append(f(ys[-1], x))
+return ys
+Below are example programming problems using the `dsl` module, with input-output test cases
+,→illustrating the program behavior step-by-step.
+Important: All programs begin with ```python and end with ``` alone.
+[BEGIN PROBLEM]
+Input-output test cases:
+Case 1. x0 = [5, 3, -4] --> [9, 16, 25]
+Case 2. x0 = [-2] --> [4]
+Case 3. x0 = [3, 7, 1, 4] --> [1, 9, 16, 49]
+We solve this problem step-by-step.
+Step 1 computes:
+Case 1. x1 = [25, 9, 16]
+Case 2. x1 = [4]
+Case 3. x1 = [9, 49, 1, 16]
+Step 1 code:
+```python
+x1 = [x ** 2 for x in x0]
+```
+Step 2 computes:
+Case 1. x2 = [9, 16, 25]
+Case 2. x2 = [4]
+Case 3. x2 = [1, 9, 16, 49]
+Step 2 code:
+```python
+x2 = sorted(x1)
+```
+Putting the steps together, the problem is solved with the program:
+```python
+def program(x0):
+x1 = [x ** 2 for x in x0]
+x2 = sorted(x1)
+return x2
+```
+[END PROBLEM]
+[BEGIN PROBLEM]
+Input-output test cases:
+Case 1. x0 = [1, 3, 5, 7], x1 = 2 --> [3, 9]
+Case 2. x0 = [2, -4, 1, 0, 5], x1 = 4 --> [6, -12, 3, 0]
+Case 3. x0 = [11], x1 = 3 --> [33]
+We solve this problem step-by-step.
+Step 1 computes:
+Figure 11: ExeDec-style prompt on DeepCoder-Pythonic. For DeepCoder-Pythonic, only the
+Scanl1 operation remains in the hypothetical dsl library while every other operation and lambda
+function is written in Pythonic form. Thus, the beginning of the prompt has the library description
+updated correspondingly. We provide the implementation of Scanl1 because it’s only one function.
+29
+
+Published as a conference paper at ICLR 2024
+K
+FAILURE MODES IN LLM EXPERIMENTS
+In the LLM experiments, ExeDec’s incorrect solution programs encounter a variety of errors. Table 4
+lists the speciﬁc errors, the number of programs encountering an error considering all generalization
+tasks (including no generalization), and the proportion of that error among all incorrect programs for
+that dataset.
+Table 4: Error analysis for LLM experiments for ExeDec @ 1 (greedy decoding).
+RobustFill
+DeepCoder
+DeepCoder-Pythonic
+(Correct)
+33
+—
+66
+—
+88
+—
+AssertionError
+2
+0.2%
+0
+0.0%
+0
+0.0%
+AttributeError
+6
+0.5%
+63
+5.6%
+0
+0.0%
+IndexError
+0
+0.0%
+0
+0.0%
+18
+1.6%
+NameError
+0
+0.0%
+0
+0.0%
+9
+0.8%
+SyntaxError
+1
+0.1%
+1
+0.1%
+0
+0.0%
+TypeError
+234
+20.1%
+150
+13.2%
+9
+0.8%
+ValueError
+0
+0.0%
+0
+0.0%
+3
+0.3%
+ZeroDivisionError
+0
+0.0%
+0
+0.0%
+15
+1.3%
+Wrong behavior
+924
+79.2%
+920
+81.1%
+1058
+95.1%
+For RobustFill, about 20% of failures are TypeErrors caused by using the DSL incorrectly, while
+about 79% of failures do not encounter a runtime error but simply have behavior inconsistent with
+the I/O speciﬁcation.
+For DeepCoder, AttributeError accounts for about 5.6% of failures (when the predicted pro-
+gram attempts to use a hallucinated function or constant in the DSL), TypeError accounts for
+about 13% of failures, and about 81% of failures are due to wrong behavior. For DeepCoder-Pythonic,
+about 5% of failures are from various runtime errors, while about 95% are due to wrong behavior.
+Overall, the vast majority of failures are due to wrong behavior. Although LLMs have seen much
+success in predicting programs from natural language speciﬁcations, they still perform poorly in
+programming-by-example without natural language hints, especially for synthetic problems.
+L
+HIERARCHICAL EXEDEC
+The following is Python-like pseudocode describing how ExeDec might be extended to enable
+hierarchical decompositions. We leave exploration of this extension to future work.
+def ExeDecHierarchical(inputs, outputs):
+difficulty = DifficultyModel(inputs, outputs)
+# outputs easy/hard
+if difficulty == 'easy':
+# base case
+return SynthesizerModel(inputs, outputs)
+# recursive case
+subprograms = []
+while True:
+subgoals = SubgoalModel(inputs, outputs)
+subprogram = ExeDecHierarchical(inputs, subgoals)
+# recurse
+subprograms.append(subprogram)
+execution_result = Execute(subprogram, inputs)
+if execution_result == outputs:
+return CombineProgramParts(subprograms)
+(inputs, outputs) = UpdateSpecification(inputs, outputs,
+execution_result)
+30
+

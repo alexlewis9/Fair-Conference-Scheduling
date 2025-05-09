@@ -1,0 +1,2194 @@
+Published as a conference paper at ICLR 2021
+DDPNOPT: DIFFERENTIAL DYNAMIC PROGRAMMING
+NEURAL OPTIMIZER
+Guan-Horng Liu1 2, Tianrong Chen3, and Evangelos A. Theodorou1 2
+1Center for Machine Learning, 2School of Aerospace Engineering,
+3School of Electrical and Computer Engineering, Georgia Institute of Technology, USA
+{ghliu,tianrong.chen,evangelos.theodorou}@gatech.edu
+ABSTRACT
+Interpretation of Deep Neural Networks (DNNs) training as an optimal control
+problem with nonlinear dynamical systems has received considerable attention
+recently, yet the algorithmic development remains relatively limited. In this work,
+we make an attempt along this line by reformulating the training procedure from the
+trajectory optimization perspective. We ﬁrst show that most widely-used algorithms
+for training DNNs can be linked to the Differential Dynamic Programming (DDP), a
+celebrated second-order method rooted in the Approximate Dynamic Programming.
+In this vein, we propose a new class of optimizer, DDP Neural Optimizer (DDP-
+NOpt), for training feedforward and convolution networks. DDPNOpt features
+layer-wise feedback policies which improve convergence and reduce sensitivity
+to hyper-parameter over existing methods. It outperforms other optimal-control
+inspired training methods in both convergence and complexity, and is competitive
+against state-of-the-art ﬁrst and second order methods. We also observe DDPNOpt
+has surprising beneﬁt in preventing gradient vanishing. Our work opens up new
+avenues for principled algorithmic design built upon the optimal control theory.
+1
+INTRODUCTION
+In this work, we consider the following optimal control problem (OCP) in the discrete-time setting:
+min
+¯u J(¯u; x0) :=
+"
+φ(xT ) +
+T −1
+X
+t=0
+ℓt(xt, ut)
+#
+s.t. xt+1 = ft(xt, ut) ,
+(OCP)
+where xt ∈Rn and ut ∈Rm represent the state and control at each time step t. ft(·, ·), ℓt(·, ·) and
+φ(·) respectively denote the nonlinear dynamics, intermediate cost and terminal cost functions. OCP
+aims to ﬁnd a control trajectory, ¯u ≜{ut}T −1
+t=0 , such that the accumulated cost J over the ﬁnite
+horizon t ∈{0, 1, · · · , T} is minimized. Problems with the form of OCP appear in multidisciplinary
+areas since it describes a generic multi-stage decision making problem (Gamkrelidze, 2013), and have
+gained commensurate interest recently in deep learning (Weinan, 2017; Liu & Theodorou, 2019).
+Central to the research along this line is the interpretation of DNNs as discrete-time nonlinear
+dynamical systems, where each layer is viewed as a distinct time step (Weinan, 2017). The dynamical
+system perspective provides a mathematically-sound explanation for existing DNN models (Lu et al.,
+2019). It also leads to new architectures inspired by numerical differential equations and physics (Lu
+et al., 2017; Chen et al., 2018; Greydanus et al., 2019). In this vein, one may interpret the training as
+the parameter identiﬁcation (PI) of nonlinear dynamics. However, PI typically involves (i) searching
+time-independent parameters (ii) given trajectory measurements at each time step (Voss et al., 2004;
+Peifer & Timmer, 2007). Neither setup holds in piratical DNNs training, which instead optimizes
+time- (i.e. layer-) varying parameters given the target measurements only at the ﬁnal stage.
+An alternative perspective, which often leads to a richer analysis, is to recast network weights as
+control variables. Through this lens, OCP describes w.l.o.g. the training objective composed of layer-
+wise loss (e.g. weight decay) and terminal loss (e.g. cross-entropy). This perspective (see Table 1)
+has been explored recently to provide theoretical statements for convergence and generalization
+(Weinan et al., 2018; Seidman et al., 2020). On the algorithmic side, while OCP has motivated new
+1
+
+Published as a conference paper at ICLR 2021
+architectures (Benning et al., 2019) and methods for breaking sequential computation (Gunther et al.,
+2020; Zhang et al., 2019), OCP-inspired optimizers remain relatively limited, often restricted to either
+speciﬁc network class (e.g. discrete weight) (Li & Hao, 2018) or small-size dataset (Li et al., 2017).
+The aforementioned works are primarily inspired by the Pontryagin Maximum Principle (PMP,
+Boltyanskii et al. (1960)), which characterizes the ﬁrst-order optimality conditions to OCP. Another
+parallel methodology which receives little attention is the Approximate Dynamic Programming (ADP,
+Bertsekas et al. (1995)). Despite both originate from the optimal control theory, ADP differs from
+PMP in that at each time step a locally optimal feedback policy (as a function of state xt) is computed.
+These policies, as opposed to the vector update from PMP, are known to enhance the numerical
+stability of the optimization process when models admit chain structures (e.g. in DNNs) (Liao &
+Shoemaker, 1992; Tassa et al., 2012). Practical ADP algorithms such as the Differential Dynamic
+Programming (DDP, Jacobson & Mayne (1970)) appear extensively in modern autonomous systems
+for complex trajectory optimization (Tassa et al., 2014; Gu, 2017). However, whether they can be
+lifted to large-scale stochastic optimization, as in the DNN training, remains unclear.
+Table 1: Terminology mapping
+Deep Learning
+Optimal Control
+J
+Total Loss
+Trajectory Cost
+xt
+Activation Vector
+State Vector
+ut
+Weight Parameter
+Control Vector
+f
+Layer Propagation
+Dynamical System
+φ
+End-goal Loss
+Terminal Cost
+ℓ
+Weight Decay
+Intermediate Cost
+In this work, we make a signiﬁcant advance to-
+ward optimal-control-theoretic training algorithms
+inspired by ADP. We ﬁrst show that most exist-
+ing ﬁrst- and second-order optimizers can be de-
+rived from DDP as special cases.
+Built upon
+this intriguing connection, we present a new
+class of optimizer which marries the best of both.
+The proposed method, DDP Neural Optimizer
+(DDPNOpt), features layer-wise feedback poli-
+cies, which, as we will show through experiments,
+improve convergence and robustness. To enable
+efﬁcient training, DDPNOpt adapts key components including (i) curvature adaption from existing
+methods, (ii) stabilization techniques used in trajectory optimization, and (iii) an efﬁcient factoriza-
+tion to OCP. These lift the complexity by orders of magnitude compared with other OCP-inspired
+baselines, without sacriﬁcing the performance. In summary, we present the following contributions.
+• We draw a novel perspective of DNN training from the trajectory optimization viewpoint, based
+on a theoretical connection between existing training methods and the DDP algorithm.
+• We present a new class of optimizer, DDPNOpt, that performs a distinct backward pass inherited
+with Bellman optimality and generates layer-wise feedback policies to robustify the training
+against unstable hyperparameter (e.g. large learning rate) setups.
+• We show that DDPNOpt achieves competitive performance against existing training methods
+on classiﬁcation datasets and outperforms previous OCP-inspired methods in both training
+performance and runtime complexity. We also identify DDPNOpt can mitigate vanishing gradient.
+2
+PRELIMINARIES
+We will start with the Bellman principle to OCP and leave discussions on PMP in Appendix A.1.
+Theorem 1 (Dynamic Programming (DP) (Bellman, 1954)). Deﬁne a value function Vt : Rn 7→R
+at each time step that is computed backward in time using the Bellman equation
+Vt(xt) =
+min
+ut(xt)∈Γxt
+ℓt(xt, ut) + Vt+1(ft(xt, ut))
+|
+{z
+}
+Qt(xt,ut)≡Qt
+,
+VT (xT ) = φ(xT ) ,
+(1)
+where Γxt : Rn 7→Rm denotes a set of mapping from state to control space. Then, we have
+V0(x0) = J∗(x0) be the optimal objective value to OCP. Further, let µ∗
+t (xt) ∈Γxt be the minimizer
+of Eq. 1 for each t, then the policy π∗= {µ∗
+t (xt)}T −1
+t=0 is globally optimal in the closed-loop system.
+Notation: We will always use t as the time step of dynamics and denote a subsequence trajectory until
+time s as ¯xs ≜{xt}s
+t=0, with ¯x ≜{xt}T
+t=0 as the whole. For any real-valued time-dependent function Ft,
+we denote its derivatives evaluated on a given state-control pair (xt ∈Rn and ut ∈Rm) as ∇xtFt ∈Rn,
+∇2
+xtFt ∈Rn×n, ∇xtutFt ∈Rn×m, or simply F t
+x, F t
+xx, and F t
+xu for brevity. The vector-tensor product, i.e.
+the contraction mapping on the dimension of the vector space, is denoted by Vx · fxx ≜Pn
+i=1[Vx]i [fxx]i,
+where [Vx]i is the i-th element of the vector Vx and [fxx]i is the Hessian matrix corresponding to that element.
+2
+
+Published as a conference paper at ICLR 2021
+Algorithm 1 Differential Dynamic Programming
+1: Input: ¯u ≜{ut}T −1
+t=0 , ¯x ≜{xt}T
+t=0
+2: Set V T
+x = ∇xφ and V T
+xx = ∇2
+xφ
+3: for t = T −1 to 0 do
+4:
+Compute δu∗
+t (δxt) using V t+1
+x
+, V t+1
+xx
+(Eq. 3, 4)
+5:
+Compute V t
+x and V t
+xx using Eq. 5
+6: end for
+7: Set ˆx0 = x0
+8: for t = 0 to T −1 do
+9:
+u∗
+t = ut + δu∗
+t (δxt), where δxt = ˆxt −xt
+10:
+ˆxt+1 = ft(ˆxt, u∗
+t )
+11: end for
+12: ¯u ←{u∗
+t }T −1
+t=0
+Algorithm 2 Back-propagation (BP) with GD
+1: Input: ¯u ≜{ut}T −1
+t=0 , ¯x ≜{xt}T
+t=0, learning
+rate η
+2: Set pT ≡∇xT JT = ∇xφ
+3: for t = T −1 to 0 do
+4:
+δu∗
+t = −η∇utJt = −η(ℓt
+u + f t
+u
+Tpt+1)
+5:
+pt ≡∇xtJt = f t
+x
+Tpt+1
+6: end for
+7: for t = 0 to T −1 do
+8:
+u∗
+t = ut + δu∗
+t
+9: end for
+10: ¯u ←{u∗
+t }T −1
+t=0
+Hereafter we refer Qt(xt, ut) to the Bellman objective. The Bellman principle recasts minimization
+over a control sequence to a sequence of minimization over each control. The value function Vt
+summarizes the optimal cost-to-go at each stage, provided all afterward stages also being minimized.
+Differential Dynamic Programming (DDP). Despite providing the sufﬁcient conditions to OCP,
+solving Eq. 1 for high-dimensional problems appears to be infeasible, well-known as the Bellman
+curse of dimensionality. To mitigate the computational burden of the minimization involved at each
+stage, one can approximate the Bellman objective in Eq. 1 with its second-order Taylor expansion.
+Such an approximation is central to DDP, a second-order trajectory optimization method that inherits
+a similar Bellman optimality structure while being computationally efﬁcient.
+Alg. 1 summarizes the DDP algorithm. Given a nominal trajectory (¯x, ¯u) with its initial cost J, DDP
+iteratively optimizes the objective value, where each iteration consists a backward (lines 2-6) and
+forward pass (lines 7-11). During the backward pass, DDP performs second-order expansion on the
+Bellman objective Qt at each stage and computes the updates through the following minimization,
+δu∗
+t (δxt) =
+arg min
+δut(δxt)∈Γ′
+δxt
+{1
+2
+"
+1
+δxt
+δut
+#T 
+
+0
+Qt
+x
+T
+Qt
+u
+T
+Qt
+x
+Qt
+xx
+Qt
+xu
+Qt
+u
+Qt
+ux
+Qt
+uu
+
+
+"
+1
+δxt
+δut
+#
+} ,
+(2)
+where Qt
+x=
+Qt
+u=
+ℓt
+x + f t
+x
+TV t+1
+x
+ℓt
+u + f t
+u
+TV t+1
+x
+,
+Qt
+xx=
+Qt
+uu=
+Qt
+ux=
+ℓt
+xx + f t
+x
+TV t+1
+xx f t
+x + V t+1
+x
+· f t
+xx
+ℓt
+uu + f t
+u
+TV t+1
+xx f t
+u + V t+1
+x
+· f t
+uu
+ℓt
+ux + f t
+u
+TV t+1
+xx f t
+x + V t+1
+x
+· f t
+ux
+.
+(3)
+We note that all derivatives in Eq. 3 are evaluated at the state-control pair (xt, ut) at time t among the
+nominal trajectory. The derivatives of Qt follow standard chain rule and the dot notation represents
+the product of a vector with a 3D tensor. Γ′
+δxt={bt+Atδxt : bt ∈Rm, At ∈Rm×n} denotes the
+set of all afﬁne mapping from δxt. The analytic solution to Eq. 2 admits a linear form given by
+δu∗
+t (δxt) = kt + Ktδxt , where kt ≜−(Qt
+uu)−1Qt
+u and Kt ≜−(Qt
+uu)−1Qt
+ux
+(4)
+denote the open and feedback gains, respectively. δxt is called the state differential, which will
+play an important role later in our analysis. Note that this policy is only optimal locally around the
+nominal trajectory where the second order approximation remains valid. Substituting Eq. 4 back to
+Eq. 2 gives us the backward update for Vx and Vxx,
+V t
+x = Qt
+x −Qt T
+ux(Qt
+uu)−1Qt
+u ,
+and
+V t
+xx = Qt
+xx −Qt T
+ux(Qt
+uu)−1Qt
+ux .
+(5)
+In the forward pass, DDP applies the feedback policy sequentially from the initial time step while
+keeping track of the state differential between the new simulated trajectory and the nominal trajectory.
+3
+DIFFERENTIAL DYNAMIC PROGRAMMING NEURAL OPTIMIZER
+3.1
+TRAINING DNNS AS TRAJECTORY OPTIMIZATION
+Recall that DNNs can be interpreted as dynamical systems where each layer is viewed as a distinct
+time step. Consider e.g. the propagation rule in feedforward layers,
+xt+1 = σt(ht) ,
+ht = gt(xt, ut) = Wtxt + bt .
+(6)
+3
+
+Published as a conference paper at ICLR 2021
+xt ∈Rnt and xt+1 ∈Rnt+1 represent the activation vector at layer t and t + 1, with ht ∈Rnt+1
+being the pre-activation vector. σt and gt respectively denote the nonlinear activation function and
+the afﬁne transform parametrized by the vectorized weight ut ≜[vec(Wt), bt]T. Eq. 6 can be seen
+as a dynamical system (by setting ft ≡σt ◦gt in OCP) propagating the activation vector xt using ut.
+Next, notice that the gradient descent (GD) update, denoted δ ¯u∗≡−η∇¯uJ with η being the learning
+rate, can be break down into each layer, i.e. δ ¯u∗≜{δu∗
+t }T −1
+t=0 , and computed backward by
+δu∗
+t = arg min
+δut∈Rmt{Jt + ∇utJT
+t δut + 1
+2δuT
+t ( 1
+ηIt)δut} ,
+(7)
+where Jt(xt, ut) ≜ℓt(ut) + Jt+1(ft(xt, ut), ut+1) ,
+JT (xT ) ≜φ(xT )
+(8)
+is the per-layer objective1 at layer t. It can be readily veriﬁed that pt ≡∇xtJt gives the exact
+Back-propagation dynamics. Eq. 8 suggests that GD minimizes the quadratic expansion of Jt with
+the Hessian ∇2
+utJt replaced by 1
+ηIt. Similarly, adaptive ﬁrst-order methods, such as RMSprop and
+Adam, approximate the Hessian with the diagonal of the covariance matrix. Second-order methods,
+such as KFAC and EKFAC (Martens & Grosse, 2015; George et al., 2018), compute full matrices
+using Gauss-Newton (GN) approximation:
+∇2
+uJt ≈E[JutJT
+ut] = E[(xt ⊗Jht)(xt ⊗Jht)T] ≈E[(xtxT
+t )] ⊗E[(JhtJT
+ht)] .
+(9)
+We now draw a novel connection between the training procedure of DNNs and DDP. Let us ﬁrst
+summarize the Back-propagation (BP) with gradient descent in Alg. 2 and compare it with DDP
+(Alg. 1). At each training iteration, we treat the current weight as the control ¯u that simulates the
+activation sequence ¯x. Starting from this nominal trajectory (¯x, ¯u), both algorithms recursively
+deﬁne some layer-wise objectives (Jt in Eq. 8 vs Vt in Eq. 1), compute the weight/control update from
+the quadratic expansions (Eq. 7 vs Eq. 2), and then carry certain information (∇xtJt vs (V t
+x, V t
+xx))
+backward to the preceding layer. The computation graph between the two approaches is summarized
+in Fig. 1. In the following proposition, we make this connection formally and provide conditions
+when the two algorithms become equivalent.
+Proposition 2. Assume Qt
+ux = 0 at all stages,
+then the backward dynamics of the value deriva-
+tive can be described by the Back-propagation,
+∀t ,V t
+x = ∇xtJ , Qt
+u = ∇utJ , Qt
+uu = ∇2
+utJ .
+(10)
+In this case, the DDP policy is equivalent to the
+stage-wise Newton, in which the gradient is pre-
+conditioned by the block-wise inverse Hessian at
+each layer:
+kt + Ktδxt = −(∇2
+utJ)−1∇utJ .
+(11)
+If further we have Qt
+uu ≈1
+ηI, then DDP degener-
+ates to Back-propagation with gradient descent.
+Figure 1: DDP backward propagates the value
+derivatives (Vx, Vxx) instead of ∇xtJ and up-
+dates weight using layer-wise feedback policy,
+δu∗
+t (δxt), with additional forward propagation.
+Proof is left in Appendix A.2. Proposition 2 states that the backward pass in DDP collapses to BP
+when Qux vanishes at all stages. In other words, existing training methods can be seen as special
+cases of DDP when the mixed derivatives (i.e. ∇xtut) of the layer-wise objective are discarded.
+3.2
+EFFICIENT APPROXIMATION AND FACTORIZATION
+Motivated by Proposition 2, we now present a new class of optimizer, DDP Neural Optimizer
+(DDPNOpt), on training feedforward and convolution networks. DDPNOpt follows the same pro-
+cedure in vanilla DDP (Alg. 1) yet adapts several key traits arising from DNN training, which we
+highlight below.
+Evaluate derivatives of Qt with layer dynamics. The primary computation in DDPNOpt comes
+from constructing the derivatives of Qt at each layer. When the dynamics is represented by the layer
+1 Hereafter we drop xt in all ℓt(·) as the layer-wise loss typically involves weight regularization alone.
+4
+
+Published as a conference paper at ICLR 2021
+Table 2: Update rule at each layer t, ut ←ut −ηM −1
+t
+dt. (Expectation taken over batch data)
+Methods
+Precondition matrix Mt
+Update direction dt
+SGD
+It
+E[Jut]
+RMSprop
+diag(
+p
+E[Jut ⊙Jut] + ϵ)
+E[Jut]
+KFAC & EKFAC
+E[xtxT
+t ] ⊗E[JhtJT
+ht]
+E[Jut]
+vanilla DDP
+E[Qt
+uu]
+E[Qt
+u + Qt
+uxδxt]
+DDPNOpt
+Mt ∈
+
+
+
+It ,
+diag(
+p
+E[Qtu ⊙Qtu] + ϵ) ,
+E[xtxT
+t ] ⊗E[V t
+hV t T
+h ]
+
+
+
+E[Qt
+u + Qt
+uxδxt]
+propagation (recall Eq. 6 where we set ft ≡σt ◦gt), we can rewrite Eq. 3 as:
+Qt
+x = gt T
+x V t
+h ,
+Qt
+u = ℓt
+u + gt T
+u V t
+h ,
+Qt
+xx = gt T
+x V t
+hhgt
+x ,
+Qt
+ux = gt T
+u V t
+hhgt
+x ,
+(12)
+where V t
+h ≜σt T
+h V t+1
+x
+and V t
+hh ≜σt T
+h V t+1
+xx σt
+h absorb the computation of the non-parametrized
+activation function σ. Note that Eq. 12 expands the dynamics only up to ﬁrst order, i.e. we omitt the
+tensor products which involves second-order expansions on dynamics, as the stability obtained by
+keeping only the linearized dynamics is thoroughly discussed and widely adapted in practical DDP
+usages (Todorov & Li, 2005). The matrix-vector product with the Jacobian of the afﬁne transform
+(i.e. gt
+u, gt
+x) can be evaluated efﬁciently for both feedforward (FF) and convolution (Conv) layers:
+ht
+FF= Wtxt + bt ⇒gt
+x
+TV t
+h = W T
+t V t
+h ,
+gt
+u
+TV t
+h = xt ⊗V t
+h ,
+(13)
+ht
+Conv
+= ωt ∗xt
+⇒gt
+x
+TV t
+h = ωT
+t ˆ∗V t
+h ,
+gt
+u
+TV t
+h = xt ˆ∗V t
+h ,
+(14)
+where ⊗, ˆ∗, and ∗respectively denote the Kronecker product and (de-)convolution operator.
+Curvature approximation. Next, since DNNs are highly over-parametrized models, ut (i.e. the
+layer weight) will be in high-dimensional space. This makes Qt
+uu and (Qt
+uu)−1 computationally
+intractable to solve; thus requires approximation. Recall the interpretation we draw in Eq. 8 where
+existing optimizers differ in approximating the Hessian ∇2
+utJt. DDPNOpt adapts the same curvature
+approximation to Qt
+uu. For instance, we can approximate Qt
+uu simply with an identity matrix It,
+adaptive diagonal matrix diag(
+p
+E[Qtu ⊙Qtu] ), or the GN matrix:
+Qt
+uu ≈E[Qt
+uQt
+u
+T] = E[(xt ⊗V t
+h)(xt ⊗V t
+h)T] ≈E[xtxT
+t ] ⊗E[V t
+hV t
+h
+T] .
+(15)
+Table 2 summarizes the difference in curvature approximation (i.e. the precondition Mt ) for different
+methods. Note that DDPNOpt constructs these approximations using (V, Q) rather than J since they
+consider different layer-wise objectives. As a direct implication from Proposition 2, DDPNOpt will
+degenerate to the optimizer it adapts for curvature approximation whenever all Qt
+ux vanish.
+Outer-product factorization. When the memory efﬁciency becomes nonnegligible as the problem
+scales, we make GN approximation to ∇2φ, since the low-rank structure at the prediction layer has
+been observed for problems concerned in this work (Nar et al., 2019; Lezama et al., 2018). In the
+following proposition, we show that for a speciﬁc type of OCP, which happens to be the case of DNN
+training, such a low-rank structure preserves throughout the DDP backward pass.
+Proposition 3 (Outer-product factorization in DDPNOpt). Consider the OCP where ℓt ≡ℓt(ut) is
+independent of xt, If the terminal-stage Hessian can be expressed by the outer product of vector zT
+x ,
+∇2φ(xT ) = zT
+x ⊗zT
+x (for instance, zT
+x = ∇φ for GN), then we have the factorization for all t:
+Qt
+ux = qt
+u ⊗qt
+x ,
+Qt
+xx = qt
+x ⊗qt
+x ,
+V t
+xx = zt
+x ⊗zt
+x .
+(16)
+qt
+u, qt
+x, and zt
+x are outer-product vectors which are also computed along the backward pass.
+qt
+u = f t
+u
+Tzt+1
+x
+,
+qt
+x = f t
+x
+Tzt+1
+x
+,
+zt
+x =
+q
+1 −qt T
+u (Qtuu)−1qtu qt
+x .
+(17)
+The derivation is left in Appendix A.3. In other words, the outer-product factorization at the ﬁnal
+layer can be backward propagated to all proceeding layers. Thus, large matrices, such as Qt
+ux, Qt
+xx,
+V t
+xx, and even feedback policies Kt, can be factorized accordingly, greatly reducing the complexity.
+5
+
+Published as a conference paper at ICLR 2021
+Algorithm 3 Differential Dynamic Programming Neural Optimizer (DDPNOpt)
+1: Input: dataset D, learning rate η, training iteration K, batch size B, regularization ϵVxx
+2: Initialize the network weights ¯u(0) (i.e. nominal control trajectory)
+3: for k = 1 to K do
+4:
+Sample batch initial state from dataset, X0 ≡{x(i)
+0 }B
+i=1 ∼D
+5:
+Forward propagate to generate nominal batch trajectory Xt
+▷Forward simulation
+6:
+Set V T
+x(i) = ∇x(i)Φ(x(i)
+T ) and V T
+xx(i) = ∇2
+x(i)Φ(x(i)
+T )
+7:
+for t = T −1 to 0 do
+▷Backward Bellman pass
+8:
+Compute Qt
+u, Qt
+x, Qt
+xx, Qt
+ux with Eq. 12 (or Eq. 16-17 if factorization is used)
+9:
+Compute E[Qt
+uu] with one of the precondition matrices in Table 2
+10:
+Store the layer-wise feedback policy δu∗
+t (δXt) = 1
+B
+PB
+i=1 k(i)
+t
++ K(i)
+t δx(i)
+t
+11:
+Compute V t
+x(i) and V t
+xx(i) with Eq. 5 (or Eq. 16-17 if factorization is used)
+12:
+V t
+xx(i) ←V t
+xx(i) + ϵVxxIt if regularization is used
+13:
+end for
+14:
+Set ˆx(i)
+0
+= x(i)
+0
+15:
+for t = 0 to T −1 do
+▷Additional forward pass
+16:
+u∗
+t = ut + δu∗
+t (δXt), where δXt = {ˆx(i)
+t
+−x(i)
+t }B
+i=1
+17:
+ˆx(i)
+t+1 = ft(ˆx(i)
+t , u∗
+t )
+18:
+end for
+19:
+¯u(k+1) ←{u∗
+t }T −1
+t=0
+20: end for
+Regularization on Vxx. Finally, we apply Tikhonov regularization to the value Hessian V t
+xx (line 12
+in Alg. 3). This can be seen as placing a quadratic state-cost and has been shown to improve stability
+on optimizing complex humanoid behavior (Tassa et al., 2012). For the application of DNN where
+the dimension of the state (i.e.the vectorized activation) varies during forward/backward pass, the
+Tikhonov regularization prevents the value Hessian from low rank (throught gt T
+u V t
+hhgt
+x); hence we
+also observe similar stabilization effect in practice.
+4
+THE ROLE OF FEEDBACK POLICIES
+DDPNOpt differs from existing methods in the use of feedback Kt and state differential δxt. The
+presence of these terms result in a distinct backward pass inherited with the Bellman optimality.
+As shown in Table 2, the two frameworks differ in computing the update directions dt, where the
+Bellman formulation applies the feedback policy through additional forward pass with δxt. We have
+built the connection between these two dt in Proposition 2. In this section, we further characterize
+the role of the feedback policy Kt and state differential δxt during optimization.
+First we discuss the relation of DDPNOpt with other second-order methods and highlight the role
+feedback during training. To do so let us consider the example in Fig. 2a. Given an objective L
+expanded at (x0, u0), standard second-order methods compute the Hessian w.r.t. u then apply the
+update δu = −L−1
+uuLu (shown as green arrows). DDPNOpt differs in that it also computes the mixed
+partial derivatives, i.e. Lux. The resulting update law has the same intercept but with an additional
+feedback term linear in δx (shown as red arrows). Thus, DDPNOpt searches for an update from the
+afﬁne mapping Γ′
+δxt (Eq. 2), rather than the vector space Rmt (Eq. 7).
+Next, to show how the state differential δxt arises during optimization, notice from Alg. 1 that ˆxt can
+be compactly expressed as ˆxt = Ft(x0, ¯u + δ ¯u∗(δ¯x))2. Therefore, δxt = ˆxt −xt captures the state
+difference when new updates δ ¯u∗(δ¯x) are applied until layer t −1. Now, consider the 2D example in
+Fig 2b. Back-propagation proposes the update directions (shown as blue arrows) from the ﬁrst-order
+derivatives expanded along the nominal trajectory (¯x, ¯u). However, as the weight at each layer is
+correlated, parameter updates from previous layers δ ¯u∗
+s affect proceeding states {xt : t > s}, thus the
+trustworthiness of their descending directions. As shown in Fig 2c, cascading these (green) updates
+may cause an over-shoot w.r.t. the designed target. From the trajectory optimization perspective,
+a much stabler direction will be instead ∇utJt(ˆxt, ut) (shown as orange), where the derivative is
+2 Ft ≜ft ◦· · · ◦f0 denotes the compositional dynamics propagating x0 with the control sequence {us}t
+s=0.
+6
+
+Published as a conference paper at ICLR 2021
+Figure 2: (a) A toy illustration of the standard update (green) and the DDP feedback (red). The DDP
+policy in this case is a line lying at the valley of objective L. (bc) Trajectory optimization viewpoint
+of DNN training. Green and orange arrows represent the proposed updates from GD and DDP.
+evaluated at the new cascading state ˆxt, which accounts for previous updates, rather than the original
+state xt. This is exactly what DDPNOpt proposes, as we can derive the relation (see Appendix A.5),
+Ktδxt ≈
+arg min
+δut(δxt)∈Γ′
+δxt
+∥∇utJ(ˆxt, ut + δut(δxt)) −∇utJ(xt, ut)∥.
+(18)
+Thus, the feedback direction compensates the over-shoot by steering the GD update toward
+∇utJt(ˆxt, ut) after observing δxt. The difference between ∇utJ(ˆxt, ut) and ∇utJ(xt, ut) cannot
+be neglected especially during early training when the loss landscape contains nontrivial curvature
+everywhere (Alain et al., 2019). In short, the use of feedback Kt and state differential δxt arises from
+the fact that deep nets exhibit chain structures. DDPNOpt feedback policies thus have a stabilization
+effect on robustifying the training dynamics against e.g.improper hyper-parameters which may cause
+unstable training. This perspective (i.e. optimizing chained parameters) is explored rigorously in
+trajectory optimization, where DDP is shown to be numerically stabler than direct optimization such
+as Newton method (Liao & Shoemaker, 1992).
+Remarks on other optimizers. Our discussions so far rigorously explore the connection between
+DDP and stage/layer-wise Newton, thus include many popular second-order training methods. Gen-
+eral Newton method coincides with DDP only for linear dynamics (Murray & Yakowitz, 1984),
+despite both share the same convergence rate when the dynamics is fully expanded to second order.
+We note that computing layer-wise value Hessians with only ﬁrst-order expansion on the dynamics
+(Eq. 12) resembles the computation in Gauss-Newton method (Botev et al., 2017). For other control-
+theoretic methods, e.g. PID optimizers (An et al., 2018), they mostly consider the dynamics over
+training iterations. DDPNOpt instead focuses on the dynamics inherited in the DNN architecture.
+5
+EXPERIMENTS
+5.1
+PERFORMANCE ON CLASSIFICATION DATASET
+Networks & Baselines Setup. We ﬁrst validate the performance of training fully-connected (FCN)
+and convolution networks (CNN) using DDPNOpt on classiﬁcation datasets.
+FCN consists of 5
+fully-connected layers with the hidden dimension ranging from 10 to 32, depending on the size of
+the dataset. CNN consists of 4 convolution layers (with 3×3 kernel, 32 channels), followed by 2
+fully-connected layers. We use ReLU activation on all datasets except Tanh for WINE and DIGITS
+to better distinguish the differences between optimizers. The batch size is set to 8-32 for datasets
+trained with FCN, and 128 for datasets trained with CNN. As DDPNOpt combines strengths from
+both standard training methods and OCP framework, we select baselines from both sides. This
+includes ﬁrst-order methods, i.e. SGD (with tuned momentum), RMSprop, Adam, and second-order
+method EKFAC (George et al., 2018), which is a recent extension of the popular KFAC (Martens &
+Grosse, 2015). For OCP-inspired methods, we compare DDPNOpt with vanilla DDP and E-MSA (Li
+et al., 2017), which is also a second-order method yet built upon the PMP framework. Regarding the
+curvature approximation used in DDPNOpt (Mt in Table 2), we found that using adaptive diagonal
+and GN matrices respectively for FCNs and CNNs give the best performance in practice. We leave
+the complete experiment setup and additional results in Appendix A.6.
+Training Results. Table 3 presents the results over 10 random trials. It is clear that DDPNOpt
+outperforms two OCP baselines on all datasets and network types. In practice, both baselines suffer
+from unstable training and require careful tuning on the hyper-parameters. In fact, we are not able
+to obtain results for vanilla DDP with any reasonable amount of computational resources when the
+problem size goes beyond FC networks. This is in contrast to DDPNOpt which adapts amortized
+7
+
+Published as a conference paper at ICLR 2021
+Table 3: Performance comparison on accuracy (%). All values averaged over 10 seeds.
+DataSet
+Standard baselines
+OCP-inspired baselines
+DDPNOpt (ours)
+SGD-m
+RMSProp
+Adam
+EKFAC
+E-MSA
+vanilla DDP
+Feed-forward
+WINE
+94.35
+98.10
+98.13
+94.60
+93.56
+98.00
+98.18
+DIGITS
+95.36
+94.33
+94.98
+95.24
+94.87
+91.68
+95.13
+MNIST
+92.65
+91.89
+92.54
+92.73
+90.24
+90.42
+93.30
+F-MNIST
+82.49
+83.87
+84.36
+84.12
+82.04
+81.98
+84.98
+CNN
+MNIST
+97.94
+98.05
+98.04
+98.02
+96.48
+N/A
+98.09
+SVHN
+89.00
+88.41
+87.76
+90.63
+79.45
+90.70
+CIFAR-10
+71.26
+70.52
+70.04
+71.85
+61.42
+71.92
+101
+102
+10
+1
+100
+wall-clock time (s/iter.)
+101
+102
+100
+101
+Memory (GB)
+Adam
+EKFAC
+vanilla DDP
+E-MSA
+DDPNOpt
+Batch Size
+Figure 3: Runtime comparison on MNIST.
+Table 4: Computational complexity in backward pass.
+(B: batch size, X: hidden state dim., L: # of layers)
+Method
+Adam
+Vanilla DDP
+DDPNOpt
+Memory
+O(X2L)
+O(BX3L)
+O(X2L + BX)
+Speed
+O(BX2L)
+O(B3X3L)
+O(BX2L)
+curvature estimation from widely-used methods; thus exhibits much stabler training dynamics with
+superior convergence. In Table 4, we provide the analytic runtime and memory complexity among
+different methods. While vanilla DDP grows cubic w.r.t. BX, DDPNOpt reduces the computation by
+orders of magnitude with efﬁcient approximation presented in Sec. 3. As a result, when measuring the
+actual computational performance with GPU parallelism, DDPNOpt runs nearly as fast as standard
+methods and outperforms E-MSA by a large margin. The additional memory complexity, when
+comparing DDP-inspired methods with Back-propagation methods, comes from the layer-wise
+feedback policies. However, DDPNOpt is much memory-efﬁcient compared with vanilla DDP by
+exploiting the factorization in Proposition 3.
+Ablation Analysis. On the other hand, the performance gain between DDPNOpt and standard
+methods appear comparatively small. We conjecture this is due to the inevitable use of similar
+curvature adaptation, as the local geometry of the landscape directly affects the convergence behavior.
+To identify scenarios where DDPNOpt best shows its effectiveness, we conduct an ablation analysis
+on the feedback mechanism. This is done by recalling Proposition 2: when Qt
+ux vanishes, DDPNOpt
+degenerates to the method associated with each precondition matrix. For instance, DDPNOpt with
+identity (resp. adaptive diagonal and GN) precondition Mt will generate the same updates as SGD
+(resp. RMSprop and EKFAC) when all Qt
+ux are zeroed out. In other words, these DDPNOpt variants
+can be viewed as the DDP-extension to existing baselines.
+In Fig. 4a we report the performance difference between each baseline and its associated DDPNOpt
+variant. Each grid corresponds to a distinct training conﬁguration that is averaged over 10 random
+trails, and we keep all hyper-parameters (e.g. learning rate and weight decay) the same between
+baselines and their DDPNOpt variants. Thus, the performance gap only comes from the feedback
+policies, or equivalently the update directions in Table 2. Blue (resp. red) indicates an improvement
+(resp. degradation) when the feedback policies are presented. Clearly, the improvement over baselines
+remains consistent across most hyper-parameters setups, and the performance gap tends to become
+obvious as the learning rate increases. This aligns with the previous study on numerical stability (Liao
+& Shoemaker, 1992), which suggests the feedback can stabilize the optimization when e.g. larger
+control updates are taken. Since larger control corresponds to a further step size in the application of
+DNN training, one should expect DDPNOpt to show its robustness as the learning rate increases. As
+shown in Fig. 4b, such a stabilization can also lead to smaller variance and faster convergence. This
+sheds light on the beneﬁt gained by bridging two seemly disconnected methodologies between DNN
+training and trajectory optimization.
+5.2
+DISCUSSION ON FEEDBACK POLICIES
+Visualization of Feedback Policies. To understand the effect of feedback policies more perceptually,
+in Fig. 5 we visualize the feedback policy when training CNNs. This is done by ﬁrst conducting
+8
+
+Published as a conference paper at ICLR 2021
+5e-05 1e-04 5e-04 1e-03
+0.4
+0.6
+0.7
+0.8
+DDPNOpt vs SGD (training loss)
+0.4
+0.0
+0.4
+5e-05 1e-04 5e-04 1e-03
+0.4
+0.6
+0.7
+0.8
+DDPNOpt vs SGD (accuracy %)
+10
+0
+10
+1e-09 1e-08 5e-06 1e-05
+0.01
+0.02
+0.03
+0.045
+DDPNOpt vs RMSprop (training loss)
+0.05
+0.00
+0.05
+1e-09 1e-08 5e-06 1e-05
+0.01
+0.02
+0.03
+0.045
+DDPNOpt vs RMSprop (accuracy %)
+2
+0
+2
+1e-07 5e-07 5e-06 1e-05
+0.05
+0.09
+0.1
+0.3
+DDPNOpt vs EKFAC (training loss)
+0.07
+0.00
+0.07
+1e-07 5e-07 5e-06 1e-05
+0.05
+0.09
+0.1
+0.3
+DDPNOpt vs EKFAC (accuracy %)
+2
+0
+2
+(a)
+Learning Rate
+Vxx regularization
+0
+1
+2
+Config: lr 0.6, Vxx=1e-3
+SGD
+DDPNOpt
+0
+500
+1000
+1500
+0.4
+0.8
+0
+1
+2
+Config: lr 0.01, Vxx=1e-5
+RMSprop
+DDPNOpt
+0
+500
+1000
+1500
+0.4
+0.8
+(b)
+Train Loss
+Accuracy
+Train Loss
+Accuracy
+Iterations
+Iterations
+Figure 4: (a) Performance difference between DDPNOpt and baselines on DIGITS across hyper-
+parameter grid. Blue (resp. red) indicates an improvement (resp. degradation) over baselines. We
+observe similar behaviors on other datasets. (b) Examples of the actual training dynamics.
+Figure 5: Visualization of the
+feedback policies on MNIST.
+0
+1000
+2000
+3000
+4000
+Iterations
+6
+7
+8
+9
+10
+Training Loss
+SGD-VGR
+EKFAC
+DDPNOpt
+DDPNOpt2nd
+1
+3
+5
+7
+9
+Layer
+0.0
+0.1
+0.2
+Update Norm
+SGD-VGR
+EKFAC
+DDPNOpt
+DDPNOpt2nd
+(a)
+(b)
+Figure 6: Training a 9-layer sigmoid-activated FCN on
+DIGITS using MMC loss. DDPNOpt2nd denotes when the layer
+dynamics is fully expanded to the second order.
+singular-value decomposition on the feedback matrices Kt, then projecting the leading right-singular
+vector back to image space (see Alg. 4 and Fig. 7 in Appendix for the pseudo-code). These feature
+maps, denoted δxmax in Fig. 5, correspond to the dominating differential image that the policy shall
+respond with during weight update. Fig. 5 shows that the feedback policies indeed capture non-trivial
+visual features related to the pixel-wise difference between spatially similar classes, e.g. (8, 3) or
+(7, 1). These differential maps differ from adversarial perturbation (Goodfellow et al., 2014) as the
+former directly links the parameter update to the change in activation; thus being more interpretable.
+Vanishing Gradient. Lastly, we present an interesting ﬁnding on how the feedback policies help
+mitigate vanishing gradient (VG), a notorious effect when DNNs become impossible to train as
+gradients vanish along Back-propagation. Fig. 6a reports results on training a sigmoid-activated
+DNN on DIGITS. We select SGD-VGR, which imposes a speciﬁc regularization to mitigate VG
+(Pascanu et al., 2013), and EKFAC as our baselines. While both baselines suffer to make any progress,
+DDPNOpt continues to generate non-trivial updates as the state-dependent feedback, i.e. Ktδxt,
+remains active. The effect becomes signiﬁcant when dynamics is fully expanded to the second order.
+As shown in Fig. 6b, the update norm from DDPNOpt is typically 5-10 times larger. We note that in
+this experiment, we replace the cross-entropy (CE) with Max-Mahalanobis center (MMC) loss, a new
+classiﬁcation objective that improves robustness on standard vision datasets (Pang et al., 2019). MMC
+casts classiﬁcation to distributional regression, providing denser Hessian and making problems similar
+to original trajectory optimization. None of the algorithms escape from VG using CE. We highlight
+that while VG is typically mitigated on the architecture basis, by having either unbounded activation
+function or residual blocks, DDPNOpt provides an alternative from the algorithmic perspective.
+6
+CONCLUSION
+In this work, we introduce DDPNOpt, a new class of optimizer arising from a novel perspective by
+bridging DNN training to optimal control and trajectory optimization. DDPNOpt features layer-wise
+feedback policies which improve convergence and robustness to hyper-parameters over existing
+optimizers. It outperforms other OCP-inspired methods in both training performance and scalability.
+This work provides a new algorithmic insight and bridges between deep learning and optimal control.
+9
+
+Published as a conference paper at ICLR 2021
+ACKNOWLEDGMENTS
+The authors would like to thank Chen-Hsuan Lin, Yunpeng Pan, Yen-Cheng Liu, and Chia-Wen Kuo
+for many helpful discussions on the paper. This research was supported by NSF Award Number
+1932288.
+REFERENCES
+Guillaume Alain, Nicolas Le Roux, and Pierre-Antoine Manzagol. Negative eigenvalues of the
+hessian in deep neural networks. arXiv preprint arXiv:1902.02366, 2019.
+Wangpeng An, Haoqian Wang, Qingyun Sun, Jun Xu, Qionghai Dai, and Lei Zhang. A pid controller
+approach for stochastic optimization of deep networks. In Proceedings of the IEEE Conference on
+Computer Vision and Pattern Recognition, pp. 8522–8531, 2018.
+Richard Bellman. The theory of dynamic programming. Technical report, Rand corp santa monica
+ca, 1954.
+Martin Benning, Elena Celledoni, Matthias J Ehrhardt, Brynjulf Owren, and Carola-Bibiane Schönlieb.
+Deep learning as optimal control problems: models and numerical methods. arXiv preprint
+arXiv:1904.05657, 2019.
+Dimitri P Bertsekas, Dimitri P Bertsekas, Dimitri P Bertsekas, and Dimitri P Bertsekas. Dynamic
+programming and optimal control. Athena scientiﬁc Belmont, MA, 1995.
+Vladimir Grigor’evich Boltyanskii, Revaz Valer’yanovich Gamkrelidze, and Lev Semenovich Pon-
+tryagin. The theory of optimal processes. i. the maximum principle. Technical report, TRW SPACE
+TECHNOLOGY LABS LOS ANGELES CALIF, 1960.
+Aleksandar Botev, Hippolyt Ritter, and David Barber. Practical gauss-newton optimisation for deep
+learning. In Proceedings of the 34th International Conference on Machine Learning-Volume 70,
+pp. 557–565. JMLR. org, 2017.
+Tian Qi Chen, Yulia Rubanova, Jesse Bettencourt, and David K Duvenaud. Neural ordinary dif-
+ferential equations. In Advances in Neural Information Processing Systems, pp. 6572–6583,
+2018.
+R Gamkrelidze. Principles of optimal control theory, volume 7. Springer Science & Business Media,
+2013.
+Thomas George, César Laurent, Xavier Bouthillier, Nicolas Ballas, and Pascal Vincent.
+Fast
+approximate natural gradient descent in a kronecker factored eigenbasis. In Advances in Neural
+Information Processing Systems, pp. 9550–9560, 2018.
+Ian J Goodfellow, Jonathon Shlens, and Christian Szegedy. Explaining and harnessing adversarial
+examples. arXiv preprint arXiv:1412.6572, 2014.
+Samuel Greydanus, Misko Dzamba, and Jason Yosinski. Hamiltonian neural networks. In Advances
+in Neural Information Processing Systems, pp. 15353–15363, 2019.
+Tianyu Gu. Improved trajectory planning for on-road self-driving vehicles via combined graph
+search, optimization & topology analysis. PhD thesis, Carnegie Mellon University, 2017.
+Stefanie Gunther, Lars Ruthotto, Jacob B Schroder, Eric C Cyr, and Nicolas R Gauger. Layer-parallel
+training of deep residual neural networks. SIAM Journal on Mathematics of Data Science, 2(1):
+1–23, 2020.
+D.H. Jacobson and D.Q. Mayne. Differential Dynamic Programming. Modern analytic and computa-
+tional methods in science and mathematics. American Elsevier Publishing Company, 1970. URL
+https://books.google.com/books?id=tA-oAAAAIAAJ.
+José Lezama, Qiang Qiu, Pablo Musé, and Guillermo Sapiro. Ole: Orthogonal low-rank embedding-
+a plug and play geometric loss for deep learning. In Proceedings of the IEEE Conference on
+Computer Vision and Pattern Recognition, pp. 8109–8118, 2018.
+10
+
+Published as a conference paper at ICLR 2021
+Qianxiao Li and Shuji Hao. An optimal control approach to deep learning and applications to
+discrete-weight neural networks. arXiv preprint arXiv:1803.01299, 2018.
+Qianxiao Li, Long Chen, Cheng Tai, and E Weinan. Maximum principle based algorithms for deep
+learning. The Journal of Machine Learning Research, 18(1):5998–6026, 2017.
+Li-zhi Liao and Christine A Shoemaker. Advantages of differential dynamic programming over
+newton’s method for discrete-time optimal control problems. Technical report, Cornell University,
+1992.
+Guan-Horng Liu and Evangelos A Theodorou. Deep learning theory review: An optimal control and
+dynamical systems perspective. arXiv preprint arXiv:1908.10920, 2019.
+Yiping Lu, Aoxiao Zhong, Quanzheng Li, and Bin Dong. Beyond ﬁnite layer neural networks:
+Bridging deep architectures and numerical differential equations. arXiv preprint arXiv:1710.10121,
+2017.
+Yiping Lu, Zhuohan Li, Di He, Zhiqing Sun, Bin Dong, Tao Qin, Liwei Wang, and Tie-Yan Liu.
+Understanding and improving transformer from a multi-particle dynamic system point of view.
+arXiv preprint arXiv:1906.02762, 2019.
+James Martens and Roger Grosse. Optimizing neural networks with kronecker-factored approximate
+curvature. In International conference on machine learning, pp. 2408–2417, 2015.
+DM Murray and SJ Yakowitz. Differential dynamic programming and newton’s method for discrete
+optimal control problems. Journal of Optimization Theory and Applications, 43(3):395–414, 1984.
+Kamil Nar, Orhan Ocal, S Shankar Sastry, and Kannan Ramchandran. Cross-entropy loss and
+low-rank features have responsibility for adversarial examples. arXiv preprint arXiv:1901.08360,
+2019.
+Tianyu Pang, Kun Xu, Yinpeng Dong, Chao Du, Ning Chen, and Jun Zhu. Rethinking softmax
+cross-entropy loss for adversarial robustness. arXiv preprint arXiv:1905.10626, 2019.
+Razvan Pascanu, Tomas Mikolov, and Yoshua Bengio. On the difﬁculty of training recurrent neural
+networks. In International conference on machine learning, pp. 1310–1318, 2013.
+M Peifer and J Timmer. Parameter estimation in ordinary differential equations for biochemical
+processes using the method of multiple shooting. IET Systems Biology, 1(2):78–88, 2007.
+Lev Semenovich Pontryagin, EF Mishchenko, VG Boltyanskii, and RV Gamkrelidze. The mathemat-
+ical theory of optimal processes. 1962.
+Jacob H Seidman, Mahyar Fazlyab, Victor M Preciado, and George J Pappas. Robust deep learning as
+optimal control: Insights and convergence guarantees. Proceedings of Machine Learning Research
+vol xxx, 1:14, 2020.
+Yuval Tassa, Tom Erez, and Emanuel Todorov. Synthesis and stabilization of complex behaviors
+through online trajectory optimization. In 2012 IEEE/RSJ International Conference on Intelligent
+Robots and Systems, pp. 4906–4913. IEEE, 2012.
+Yuval Tassa, Nicolas Mansard, and Emo Todorov. Control-limited differential dynamic programming.
+In 2014 IEEE International Conference on Robotics and Automation (ICRA), pp. 1168–1175.
+IEEE, 2014.
+Emanuel Todorov and Weiwei Li. A generalized iterative lqg method for locally-optimal feedback
+control of constrained nonlinear stochastic systems. In Proceedings of the 2005, American Control
+Conference, 2005., pp. 300–306. IEEE, 2005.
+Henning U Voss, Jens Timmer, and Jürgen Kurths. Nonlinear dynamical system identiﬁcation from
+uncertain and indirect measurements. International Journal of Bifurcation and Chaos, 14(06):
+1905–1933, 2004.
+E Weinan. A proposal on machine learning via dynamical systems. Communications in Mathematics
+and Statistics, 5(1):1–11, 2017.
+11
+
+Published as a conference paper at ICLR 2021
+E Weinan, Jiequn Han, and Qianxiao Li. A mean-ﬁeld optimal control formulation of deep learning.
+arXiv preprint arXiv:1807.01083, 2018.
+Matthew D Zeiler and Rob Fergus. Visualizing and understanding convolutional networks. In
+European conference on computer vision, pp. 818–833. Springer, 2014.
+Dinghuai Zhang, Tianyuan Zhang, Yiping Lu, Zhanxing Zhu, and Bin Dong. You only propagate
+once: Accelerating adversarial training via maximal principle. arXiv preprint arXiv:1905.00877,
+2019.
+A
+APPENDIX
+A.1
+CONNECTION BETWEEN PONTRYAGIN MAXIMUM PRINCIPLE AND DNNS TRAINING
+Development of the optimality conditions to OCP can be dated back to 1960s, characterized by both
+the Pontryagin's Maximum Principle (PMP) and the Dynamic Programming (DP). Here we review
+Theorem of PMP and its connection to training DNNs.
+Theorem 4 (Discrete-time PMP (Pontryagin et al., 1962)). Let ¯u∗be the optimal control trajectory
+for OCP and ¯x∗be the corresponding state trajectory. Then, there exists a co-state trajectory
+¯p∗≜{p∗
+t }T
+t=1, such that
+x∗
+t+1 = ∇pHt
+ x∗
+t , p∗
+t+1, u∗
+t
+
+, x∗
+0 = x0 ,
+(19a)
+p∗
+t = ∇xHt
+ x∗
+t , p∗
+t+1, u∗
+t
+
+, p∗
+T = ∇xφ (x∗
+T ) ,
+(19b)
+u∗
+t = arg min
+v∈Rm Ht
+ x∗
+t , p∗
+t+1, v
+
+.
+(19c)
+where Ht : Rn × Rn × Rm 7→R is the discrete-time Hamiltonian given by
+Ht (xt, pt+1, ut) ≜ℓt(xt, ut) + pT
+t+1ft(xt, ut) ,
+(20)
+and Eq. 19b is called the adjoint equation.
+The discrete-time PMP theorem can be derived using KKT conditions, in which the co-state pt is
+equivalent to the Lagrange multiplier. Note that the solution to Eq. 19c admits an open-loop process
+in the sense that it does not depend on state variables. This is in contrast to the Dynamic Programming
+principle, in which a feedback policy is considered.
+It is natural to ask whether the necessary condition in the PMP theorem relates to ﬁrst-order optimiza-
+tion methods in DNN training. This is indeed the case as pointed out in Li et al. (2017):
+Lemma 5 (Li et al. (2017)). Back-propagation satisﬁes Eq. 19b and gradient descent iteratively
+solves Eq. 19c.
+Lemma 5 follows by ﬁrst expanding the derivative of Hamiltonian w.r.t. xt,
+∇xtHt(xt, pt+1, ut) = ∇xtℓt(xt, ut) + ∇xtft(xt, ut)Tpt+1 = ∇xtJ(¯u; x0) .
+(21)
+Thus, Eq. 19b is simply the chain rule used in the Back-propagation. When Ht is differentiable w.r.t.
+ut, one can attempt to solve Eq. 19c by iteratively taking the gradient descent. This will lead to
+u(k+1)
+t
+= u(k)
+t
+−η∇utHt(xt, pt+1, ut) = u(k)
+t
+−η∇utJ(¯u; x0) ,
+(22)
+where k and η denote the update iteration and step size. Thus, existing optimization methods can be
+interpreted as iterative processes to match the PMP optimality conditions.
+Inspired from Lemma 5, Li et al. (2017) proposed a PMP-inspired method, named Extended Method
+of Successive Approximations (E-MSA), which solves the following augmented Hamiltonian
+˜Ht (xt, pt+1, ut, xt+1, pt) ≜Ht (xt, pt+1, ut)
++ 1
+2ρ ∥xt+1 −ft(xt, ut)∥+ 1
+2ρ ∥pt −∇xtHt∥.
+(23)
+12
+
+Published as a conference paper at ICLR 2021
+˜Ht is the original Hamiltonian augmented with the feasibility constraints on both forward states and
+backward co-states. E-MSA solves the minimization
+u∗
+t = arg min
+ut∈Rmt
+˜Ht (xt, pt+1, ut, xt+1, pt)
+(24)
+with L-BFGS per layer and per training iteration. As a result, we consider E-MSA also as second-order
+method.
+A.2
+PROOF OF PROPOSITION 2
+Proof. We ﬁrst prove the following lemma which connects the backward pass between two frame-
+works in the degenerate case.
+Lemma 6. Assume Qt
+ux = 0 at all stages, then we have
+V t
+x = ∇xtJ , and
+V t
+xx = ∇2
+xtJ ,
+∀t .
+(25)
+Proof. It is obvious to see that Eq. 25 holds at t = T. Now, assume the relation holds at t + 1 and
+observe that at the time t, the backward passes take the form of
+V t
+x = Qt
+x −Qt T
+ux(Qt
+uu)
+−1Qt
+u = ℓt
+x + f t
+x
+T∇xt+1J = ∇xtJ ,
+V t
+xx = Qt
+xx −Qt T
+ux(Qt
+uu)
+−1Qt
+ux = ∇xt{ℓt
+x + f t
+x
+T∇xt+1J} = ∇2
+xtJ ,
+where we recall Jt = ℓt + Jt+1(ft) in Eq. 8.
+Now, Eq. 11 follows by substituting Eq. 25 to the deﬁnition of Qt
+u and Qt
+uu
+Qt
+u = ℓt
+u + f t
+u
+TV t+1
+x
+= ℓt
+u + f t
+u
+T∇xt+1J = ∇utJ ,
+Qt
+uu = ℓt
+uu + f t
+u
+TV t+1
+xx f t
+u + V t+1
+x
+· f t
+uu
+= ℓt
+uu + f t
+u
+T(∇2
+xt+1J)f t
+u + ∇xt+1J · f t
+uu
+= ∇ut{ℓt
+u + f t
+u
+T∇xt+1J} = ∇2
+utJ .
+Consequently, the DDP feedback policy degenerates to layer-wise Newton update.
+A.3
+PROOF OF PROPOSITION 3
+Proof. We will prove Proposition 3 by backward induction. Suppose at layer t + 1, we have
+V t+1
+xx
+= zt+1
+x
+⊗zt+1
+x
+and ℓt ≡ℓt(ut), then Eq. 3 becomes
+Qt
+xx = f t
+x
+TV t+1
+xx f t
+x = f t
+x
+T(zt+1
+x
+⊗zt+1
+x
+)f t
+x = (f t
+x
+Tzt+1
+x
+) ⊗(f t
+x
+Tzt+1
+x
+)
+Qt
+ux = f t
+u
+TV t+1
+xx f t
+x = f t
+u
+T(zt+1
+x
+⊗zt+1
+x
+)f t
+x = (f t
+u
+Tzt+1
+x
+) ⊗(f t
+x
+Tzt+1
+x
+) .
+Setting qt
+x := f t
+x
+Tzt+1
+x
+and qt
+u := f t
+u
+Tzt+1
+x
+will give the ﬁrst part of Proposition 3.
+Next, to show the same factorization structure preserves through the preceding layer, it is sufﬁcient to
+show V t
+xx = zt
+x ⊗zt
+x for some vector zt
+x. This is indeed the case.
+V t
+xx = Qt
+xx −Qt T
+ux(Qt
+uu)−1Qt
+ux
+= qt
+x ⊗qt
+x −(qt
+u ⊗qt
+x)T(Qt
+uu)−1(qt
+u ⊗qt
+x)
+= qt
+x ⊗qt
+x −(qt T
+u (Qt
+uu)
+−1qt
+u)(qt
+x ⊗qt
+x) ,
+where the last equality follows by observing qt T
+u (Qt
+uu)−1qt
+u is a scalar.
+Set zt
+x =
+q
+1 −qt T
+u (Qtuu)−1qtu qt
+x will give the desired factorization.
+13
+
+Published as a conference paper at ICLR 2021
+A.4
+DERIVATION OF EQ. 12
+For notational simplicity, we drop the superscript t and denote V ′
+x′ ≜∇xVt+1(xt+1) as the derivative
+of the value function at the next state.
+Qu = ℓu + f T
+uV ′
+x′ = ℓu + gT
+uσT
+hV ′
+x′ ,
+Quu = ℓuu + ∂
+∂u{gT
+uσT
+hV ′
+x′}
+= ℓuu + gT
+uσT
+h
+∂
+∂u{V ′
+x′} + gT
+u( ∂
+∂u{σh})TV ′
+x′ + ( ∂
+∂u{gu})TσT
+hV ′
+x′
+= ℓuu + gT
+uσT
+hV ′
+x′x′σhgu + gT
+u(V ′T
+x′ σhhgu) + gT
+uuσT
+hV ′
+x′
+= ℓuu + gT
+u(Vhh + V ′
+x′ · σhh)gu + Vh · guu
+The last equation follows by recalling Vh ≜σT
+hV ′
+x′ and Vhh ≜σT
+hV ′
+x′x′σh. Follow similar derivation,
+we have
+Qx = ℓx + gT
+xVh
+Qxx = ℓxx + gT
+x(Vhh + V ′
+x′ · σhh)gx + Vh · gxx
+Qux = ℓux + gT
+u(Vhh + V ′
+x′ · σhh)gx + Vh · gux
+(26)
+Remarks. For feedforward networks, the computational overhead in Eq. 12 and 26 can be mitigated
+by leveraging its afﬁne structure. Since g is bilinear in xt and ut, the terms gt
+xx and gt
+uu vanish. The
+tensor gt
+ux admits a sparse structure, whose computation can be simpliﬁed to
+[gt
+ux](i,j,k) = 1
+iff
+j = (k −1)nt+1 + i ,
+[V t
+h · gt
+ux]((k−1)nt+1:knt+1,k) = V t
+h .
+(27)
+For the coordinate-wise nonlinear transform, σt
+h and σt
+hh are diagonal matrix and tensor. In most
+learning instances, stage-wise losses typically involved with weight decay alone; thus the terms
+ℓt
+x, ℓt
+xx, ℓt
+ux also vanish.
+A.5
+DERIVATION OF EQ. 18
+Eq. 18 follows by an observation that the feedback policy Ktδxt = −(Qt
+uu)−1Qt
+uxδxt stands as
+the minimizer of the following objective
+Ktδxt =
+arg min
+δut(δxt)∈Γ′(δxt)
+∥∇utQ(xt + δxt, ut + δut(δxt)) −∇utQ(xt, ut)∥,
+(28)
+where Γ′(δxt) denotes all afﬁne mappings from δxt to δut and ∥·∥can be any proper norm in the
+Euclidean space. Eq. 28 follows by the Taylor expansion of Q(xt + δxt, ut + δut) to its ﬁrst order,
+∇utQ(xt + δxt, ut + δut) = ∇utQ(xt, ut) + Qt
+uxδxt + Qt
+uuδut .
+When Q = J, we will arrive at Eq. 18. From Proposition 2, we know the equality holds when all Qs
+xu
+vanish for s > t. In other words, the approximation in Eq. 18 becomes equality when all aferward
+layer-wise objectives s > t are expanded only w.r.t. us.
+A.6
+EXPERIMENT DETAIL
+A.6.1
+SETUP
+Clariﬁcation Dataset. All networks in the classiﬁcation
+experiments are composed of 5-6 layers. For the inter-
+mediate layers, we use ReLU activation on all dataset,
+except Tanh on WINE and DIGITS. We use identity
+mapping at the last prediction layer on all dataset except
+WINE, where we use sigmoid instead to help distinguish
+the performance among optimizers. For feedforward net-
+works, the dimension of the hidden state is set to 10-32.
+On the other hand, we use standard 3 × 3 convolution
+Table 5: Hyper-parameter search
+Methods
+Learning Rate
+SGD
+(7e-2, 5e-1)
+Adam & RMSprop
+(7e-4, 1e-2)
+EKFAC
+(1e-2, 3e-1)
+kernels for all CNNs. The batch size is set 8-32 for dataset trained with feedforward networks,
+14
+
+Published as a conference paper at ICLR 2021
+and 128 for dataset trained with convolution networks. For each baseline we select its own hyper-
+parameter from an appropriate search space, which we detail in Table 5. We use the implementation in
+https://github.com/Thrandis/EKFAC-pytorch for EKFAC and implement our own
+E-MSA in PyTorch since the ofﬁcial code released from Li et al. (2017) does not support GPU
+implementation. We impose the GN factorization presented in Proposition 3 for all CNN training.
+Regarding the machine information, we conduct our experiments on GTX 1080 TI, RTX TITAN, and
+four Tesla V100 SXM2 16GB.
+Procedure to Generate Fig. 5. First, we perform standard DDPNOpt steps to compute layer-wise
+policies. Next, we conduct singular-value decomposition on the feedback matrix (kt, Kt). In this
+way, the leading right-singular vector corresponding to the dominating that the feedback policy shall
+respond with. Since this vector is with the same dimension as the hidden state, which is most likely
+not the same as the image space, we project the vector back to image space using the techniques
+proposed in (Zeiler & Fergus, 2014). The pseudo code and computation diagram are included in
+Alg. 4 and Fig. 7.
+Algorithm 4 Visualizing the Feedback Policies
+1: Input: Image x (we drop the time subscript for nota-
+tional simplicity, i.e.x ≡x0)
+2: Perform backward pass of DDPNOpt.
+Compute
+(kt, Kt) backward
+3: Perform SVD on Kt
+4: Extract the right-singular vector corresponding to the
+largest singular value, denoted vmax ∈Rnt
+5: Project vmax back to the image space using decon-
+volution procedures introduced in (Zeiler & Fergus,
+2014)
+Figure 7: Pictorial illustration for Alg. 4.
+A.6.2
+ADDITIONAL EXPERIMENT AND DISCUSSION
+Batch trajectory optimization on synthetic dataset. One of the difference between DNN training
+and trajectory optimization is that for the former, we aim to ﬁnd an ultimate control law that can drive
+every data point in the training set, or sampled batch, to its designed target. Despite seemly trivial
+from the ML perspective, this is a distinct formulation to OCP since the optimal policy typically
+varies at different initial state. As such, we validate performance of DDPNOpt in batch trajectories
+optimization on a synthetic dataset, where we sample data from k ∈{5, 8, 12, 15} Gaussian clusters
+in R30. Since conceptually a DNN classiﬁer can be thought of as a dynamical system guiding
+trajectories of samples toward the target regions belong to their classes, we hypothesize that for the
+DDPNOpt to show its effectiveness on batch training, the feedback policy must act as an ensemble
+policy that combines the locally optimal policy of each class. Fig. 8 shows the spectrum distribution,
+sorted in a descending order, of the feedback policy in the prediction layer. The result shows that the
+number of nontrivial eigenvalues matches exactly the number of classes in each setup (indicated by
+the vertical dashed line). As the distribution in the prediction layer concentrates to k bulks through
+training, the eigenvalues also increase, providing stronger feedback to the weight update.
+0
+10
+20
+0.0
+0.5
+1.0
+1e
+5
+5 Clusters
+50
+100
+250
+0
+10
+20
+0.0
+0.5
+1.0
+1e
+5
+8 Clusters
+50
+100
+250
+0
+10
+20
+0.0
+0.5
+1.0
+1.5
+1e
+5
+12 Clusters
+100
+150
+250
+0
+10
+20
+0
+1
+2
+1e
+5
+15 Clusters
+100
+150
+250
+Eigenvalues
+Order of Largest Eigenvalues
+Figure 8: Spectrum distribution on synthetic dataset.
+Ablation analysis on Adam. Fig. 9 reports the ablation analysis on Adam using the same setup as
+in Fig. 4a, i.e. we keep all hyper-parameters the same for each experiment so that the performance
+15
+
+Published as a conference paper at ICLR 2021
+difference only comes from the existence of feedback policies. It is clear that the improvements from
+the feedback policies remain consistent for Adam optimizer.
+1e-09
+1e-08
+1e-07
+1e-06
+0.015
+0.025
+0.03
+0.045
+DDPNOpt vs Adam (training loss)
+0.1
+0.0
+0.1
+1e-09
+1e-08
+1e-07
+1e-06
+0.015
+0.025
+0.03
+0.045
+DDPNOpt vs Adam (accuracy)
+0.04
+0.00
+0.04
+Learning Rate
+Vxx regularization
+Figure 9: Additional experiment for Fig. 4a where we compare the performance difference between
+DDPNOpt and Adam. Again, all grids report values averaged over 10 random seeds.
+Ablation analysis on DIGITS compared with best-tuned baselines. Fig. 4 reports the performance
+difference between baselines and DDPNOpt under different hyperparameter setupts. Here, we report
+the numerical values when each baseline uses its best-tuned learning rate (which is the values we
+report in Table 3) and compare with its DDPNOpt counterpart using the same learning rate. As
+shown in Tables 6, 7, and 8, for most cases extending the baseline to accept the Bellman framework
+improves the performance.
+Table 6: Learning rate = 0.1
+SGD
+DDPNOpt with Mt = It
+Train Loss
+0.035
+0.032
+Accuracy (%)
+95.36
+95.52
+Table 7: Learning rate = 0.001
+RMSprop
+DDPNOpt with Mt = diag(
+p
+E[Qtu ⊙Qtu] + ϵ)
+Train Loss
+0.058
+0.052
+Accuracy (%)
+94.33
+94.63
+Table 8: Learning rate = 0.03
+EKFAC
+DDPNOpt with Mt = E[xtxT
+t ] ⊗E[V t
+hV t T
+h ]
+Train Loss
+0.074
+0.067
+Accuracy (%)
+95.24
+95.19
+Numerical absolute values in ablation analysis (DIGITS). Fig. 4a reports the relative performance
+between each baseline and its DDPNOpt counterpart under different learning rate and regularization
+setups. In Table 9 and 10, we report the absolute numerical values of this experiment. For instance,
+the most left-upper grid in Fig. 4a, i.e.the training loss difference between DDPNOpt and SGD with
+learning rate 0.4 and Vxx regularization 5 × 10−5, corresponds to 0.1974 −0.1662 in Table 9. All
+values in these tables are averaged over 10 seeds.
+Table 9: Training Loss. (ϵVxx denotes the Tikhonov regularization on Vxx.)
+SGD
+DDPNOpt with Mt = It
+ϵVxx = 5 × 10−5
+1 × 10−4
+5 × 10−4
+1 × 10−3
+Learn Rate
+0.4
+0.1974
+0.1662
+0.1444
+0.1322
+0.1067
+0.6
+0.5809
+0.4989
+0.4867
+0.3263
+0.2764
+0.7
+1.0493
+0.9034
+0.8240
+0.6592
+0.5381
+0.8
+1.7801
+1.6898
+1.4597
+1.1784
+1.3166
+16
+
+Published as a conference paper at ICLR 2021
+RMSprop
+DDPNOpt with Mt = diag(
+p
+E[Qtu ⊙Qtu] + ϵ)
+ϵVxx = 1 × 10−9
+1 × 10−8
+5 × 10−6
+1 × 10−5
+Learn Rate
+0.01
+0.1949
+0.1638
+0.1714
+0.1746
+0.1588
+0.02
+0.4691
+0.4559
+0.4489
+0.4390
+0.4773
+0.03
+0.8156
+0.7675
+0.7736
+0.7790
+0.7893
+0.045
+1.3103
+1.2740
+1.2956
+1.2568
+1.2758
+EKFAC
+DDPNOpt with Mt = E[xtxT
+t ] ⊗E[V t
+hV t T
+h ]
+ϵVxx = 1 × 10−7
+5 × 10−7
+5 × 10−6
+1 × 10−5
+Learn Rate
+0.05
+0.0757
+0.0636
+0.0659
+0.0691
+0.0717
+0.09
+0.2274
+0.2087
+0.2164
+0.2091
+0.2223
+0.1
+0.3260
+0.2771
+0.3003
+0.2543
+0.2510
+0.3
+0.5959
+0.5462
+0.5282
+0.5299
+0.5858
+Table 10: Accuracy (%). (ϵVxx denotes the Vxx regularization.)
+SGD
+DDPNOpt with Mt = It
+ϵVxx = 5 × 10−5
+1 × 10−4
+5 × 10−4
+1 × 10−3
+Learn Rate
+0.4
+91.46
+91.98
+92.71
+92.90
+93.12
+0.6
+81.73
+83.64
+84.09
+88.39
+89.39
+0.7
+70.48
+73.42
+75.44
+80.62
+82.87
+0.8
+55.76
+57.70
+62.82
+70.23
+65.01
+RMSprop
+DDPNOpt with Mt = diag(
+p
+E[Qtu ⊙Qtu] + ϵ)
+ϵVxx = 1 × 10−9
+1 × 10−8
+5 × 10−6
+1 × 10−5
+Learn Rate
+0.01
+91.48
+92.14
+91.80
+91.73
+92.52
+0.02
+84.15
+84.82
+85.02
+85.23
+83.00
+0.03
+73.07
+75.24
+75.73
+74.29
+74.16
+0.045
+59.80
+59.16
+60.98
+61.75
+59.87
+EKFAC
+DDPNOpt with Mt = E[xtxT
+t ] ⊗E[V t
+hV t T
+h ]
+ϵVxx = 1 × 10−7
+5 × 10−7
+5 × 10−6
+1 × 10−5
+Learn Rate
+0.05
+93.70
+93.84
+93.88
+94.31
+94.06
+0.09
+90.84
+91.13
+91.45
+91.23
+91.24
+0.1
+88.88
+89.69
+89.89
+90.18
+90.94
+0.3
+81.82
+83.79
+84.09
+84.15
+82.55
+More experiments on vanishing gradient. Recall that Fig. 6 reports the training performance using
+MMC loss on Sigmoid-activated networks. In Fig. 10a, we report the result when training the same
+networks but using CE loss (notice the numerical differences in the y axis for different objectives).
+None of the presented optimizers were able to escape from vanishing gradient, as evidenced by the
+vanishing update magnitude. On the other hands, changing the networks to ReLU-activated networks
+eliminates the vanishing gradient, as shown in Fig. 10b.
+Fig. 11 reports the performance with other ﬁrst-order adaptive optimizers including Adam and
+RMSprop. In general, adaptive ﬁrst-order optimizers are more likely to escape from vanishing
+gradient since the diagonal precondition matrix (recall Mt = E[Jut ⊙Jut] in Table 2) rescales
+the vanishing update to a ﬁxed norm. However, as shown in Fig. 11, DDPNOpt* (the variant of
+DDPNOpt that utilizes similar adaptive ﬁrst-order precondition matrix) converges faster compared
+with these adaptive baselines.
+Fig. 12 illustrates the selecting process on the learing-rate tuning when we report Fig. 6. The training
+performance for both SGD-VGR and EKFAC remains unchanged when tuning the learning rate. In
+17
+
+Published as a conference paper at ICLR 2021
+practice, we observe unstable training with SGD-VGR when the learing rate goes too large. On the
+other hands, DDPNOpt and DDPNOpt2nd are able to escape from VG with all tested learning rates.
+Hence, Fig. 6 combines Fig. 12a (SGD-VGR-lr0.1) and Fig. 12c (EKFAC-lr0.03, DDPNOpt-lr0.03,
+DDPNOpt2nd-lr0.03) for best visualization.
+0
+500
+1000 1500 2000 2500 3000 3500 4000
+Iterations
+2.250
+2.275
+2.300
+2.325
+2.350
+2.375
+2.400
+Training Loss
+CE Loss + Sigmoid-Activated Nets
+SGD-VGR
+EKFAC
+DDPNOpt
+DDPNOpt2nd
+1
+3
+5
+7
+9
+Layer
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+Update Norm
+CE Loss + Sigmoid-Activated Nets
+SGD-VGR
+EKFAC
+DDPNOpt
+DDPNOpt2nd
+0
+500
+1000 1500 2000 2500 3000 3500 4000
+Iterations
+0
+2
+4
+6
+8
+10
+Training Loss
+MMC Loss + ReLU-Activated Nets
+SGD-VGR
+EKFAC
+DDPNOpt
+1
+3
+5
+7
+9
+Layer
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+Update Norm
+MMC Loss + ReLU-Activated Nets
+SGD-VGR
+EKFAC
+DDPNOpt
+(a)
+(b)
+Figure 10: Vanishing gradient experiment for different losses and nonlinear activation functions.
+0
+1000
+2000
+3000
+4000
+Iterations
+2.5
+5.0
+7.5
+10.0
+12.5
+15.0
+Training Loss
+MMC Loss + Sigmoid-Activated Nets
+SGD
+Adam
+RMSprop
+DDPNOpt*
+1
+3
+5
+7
+9
+Layer
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+Update Norm
+MMC Loss + Sigmoid-Activated Nets
+SGD
+Adam
+RMSprop
+DDPNOpt*
+Figure 11: Vanishing gradient experiment for other optimizers. The legend “DDPNOpt*” denotes
+DDPNOpt with adaptive diagonal matrix.
+0
+1000
+2000
+3000
+4000
+Iterations
+6
+7
+8
+9
+10
+Training Loss
+SGD-VGR-lr0.5
+SGD-VGR-lr0.3
+SGD-VGR-lr0.1
+SGD-VGR-lr0.05
+0
+1000
+2000
+3000
+4000
+Iterations
+6
+7
+8
+9
+10
+Training Loss
+EKFAC-lr0.05
+DDPNOpt-lr0.05
+DDPNOpt2nd-lr0.05
+0
+1000
+2000
+3000
+4000
+Iterations
+6
+7
+8
+9
+10
+Training Loss
+EKFAC-lr0.03
+DDPNOpt-lr0.03
+DDPNOpt2nd-lr0.03
+0
+1000
+2000
+3000
+4000
+Iterations
+6
+7
+8
+9
+10
+Training Loss
+EKFAC-lr0.01
+DDPNOpt-lr0.01
+DDPNOpt2nd-lr0.01
+(a)
+(c)
+(b)
+(d)
+Figure 12: Vanishing gradient experiment for different learning rate setups.
+18
+

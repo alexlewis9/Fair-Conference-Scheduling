@@ -1,0 +1,2995 @@
+Published as a conference paper at ICLR 2024
+STATISTICALLY OPTIMAL K-MEANS CLUSTERING VIA
+NONNEGATIVE LOW-RANK SEMIDEFINITE PROGRAM-
+MING
+Yubo Zhuang*, Xiaohui Chen†*, Yun Yang*, Richard Y. Zhang*
+University of Illinois at Urbana-Champaign*
+University of Southern California†
+{yubo2, yy84, ryz}@illinois.edu, xiaohuic@usc.edu
+ABSTRACT
+K-means clustering is a widely used machine learning method for identifying pat-
+terns in large datasets. Recently, semidefinite programming (SDP) relaxations have
+been proposed for solving the K-means optimization problem, which enjoy strong
+statistical optimality guarantees. However, the prohibitive cost of implementing an
+SDP solver renders these guarantees inaccessible to practical datasets. In contrast,
+nonnegative matrix factorization (NMF) is a simple clustering algorithm widely
+used by machine learning practitioners, but it lacks a solid statistical underpinning
+and theoretical guarantees. In this paper, we consider an NMF-like algorithm that
+solves a nonnegative low-rank restriction of the SDP-relaxed K-means formulation
+using a nonconvex Burer–Monteiro factorization approach. The resulting algorithm
+is as simple and scalable as state-of-the-art NMF algorithms while also enjoying
+the same strong statistical optimality guarantees as the SDP. In our experiments,
+we observe that our algorithm achieves significantly smaller mis-clustering errors
+compared to the existing state-of-the-art while maintaining scalability.
+1
+INTRODUCTION
+Clustering remains a common unsupervised learning technique, for which the basic objective is
+to assign similar data points to the same group. Given data in the Euclidean space, a widely used
+clustering method is K-means clustering, which quantifies “similarity” in terms of distances between
+the given data and learned clustering centers, known as centroids (MacQueen, 1967). In order to
+divide the data points X1, . . . , Xn ∈Rp into K groups, K-means clustering aims to minimize the
+following cost function:
+min
+β1,...,βK∈Rp
+n
+X
+i=1
+min
+k∈[K] ∥Xi −βk∥2
+2,
+(1)
+where βk is the centroid of the k-th cluster for k ∈[K] := {1, . . . , K}. It is well-known that exactly
+solving problem (1) is NP-hard in the worst-case (Dasgupta, 2007; Aloise et al., 2009), so computa-
+tionally tractable approximation algorithms and relaxed formulations have been extensively studied
+in the literature. Notable examples include Lloyd’s algorithm (Lloyd, 1982), spectral clustering (von
+Luxburg, 2007; Ng et al., 2001), nonnegative matrix factorization (NMF) (He et al., 2011; Kuang
+et al., 2015; Wang and Zhang, 2012), and semidefinite programming (SDP) (Peng and Wei, 2007;
+Mixon et al., 2017; Royer, 2017; Fei and Chen, 2018; Giraud and Verzelen, 2018).
+Among those popular relaxations, the SDP approach enjoys the strongest statistical guarantees under
+the standard Gaussian mixture model in that it achieves an information-theoretic sharp threshold
+for exact recovery of the true cluster partition (Chen and Yang, 2021). Unfortunately, the SDP and
+its strong statistical guarantees remain completely inaccessible to real-world datasets, owing to the
+prohibitively high costs of solving the resulting SDP relaxation. Given n data points, the SDP is a
+matrix optimization problem, over a dense n × n membership matrix Z, that is constrained to be
+both positive semidefinite Z ⪰0 as well as elementwise nonnegative Z ≥0. Even ignoring the
+constraints, a basic but fundamental difficulty is the need to store and optimize over the n2 individual
+elements of the matrix. Even a small dataset with n ≈1000, such as the banknote authentication
+1
+
+Published as a conference paper at ICLR 2024
+10-3
+10-2
+10-1
+Mis-clustering error
+10-2
+100
+102
+CPU time [seconds]
+ 
+ 
+Computational complexity & Statistical performance trade-off
+NLR
+KM
+SC
+SDP
+NMF
+Figure 1: Log-scale trade-off plot of CPU time versus mis-clustering error, under an increasing number of
+data points n. Here, NLR corresponds to our proposed non-negative low-rank factorization method, KM
+corresponds to K-means++ (Arthur and Vassilvitskii, 2007), SC corresponds to spectral clustering (Ng et al.,
+2001), SDP (Peng and Wei, 2007) uses the SDPNAL+ solver (Yang et al., 2015), and NMF corresponds to
+non-negative factorization (Ding et al., 2005). We follow the same setting as the first experiment in Section 5,
+where the theoretically optimal mis-clustering error decays to zero as n increases to infinity.
+dataset (Dua and Graff, 2017), translates into an SDP with n2 ≈106 optimization variables, which is
+right at the very limit of state-of-the-art SDP solvers like SDPNAL+ (Yang et al., 2015).
+On the other hand, NMF remains one of the simplest and practically useful approaches to clustering
+due to its scalability (He et al., 2011; Kuang et al., 2015). When the clustering problem at hand
+exhibits an appropriate low-dimensional structure, NMF gains significant computational savings
+by imposing elementwise nonnegativity over an n × r low-rank factor matrix U ≥0, in order
+to imply positive semidefiniteness Z ⪰0 and elementwise nonnegativity Z ≥0 over the n × n
+membership matrix Z = UU T . While highly scalable, there remains unfortunately very little
+statistical underpinning behind NMF-based algorithms.
+Our contributions. In this paper, we propose an efficient, large-scale, NMF-like algorithm for the K-
+means clustering problem, that meanwhile enjoys the same sharp exact recovery guarantees provided
+by SDP relaxations. We are motivated by the fact that the three classical approaches to K-means
+clustering, namely spectral clustering, NMF, and SDP, can all be interpreted as techniques for solving
+slightly different relaxations of the same underlying K-means formulated as a mixed integer program;
+see our exposition in Section 2. This gives us hope to break the existing computational and statistical
+bottleneck by investigating the intersection of these three classical approaches.
+At its core, our proposed algorithm is a primal-dual gradient descent-ascent algorithm to optimize
+over a nonnegative factor matrix, inside an augmented Lagrangian method (ALM) solution of the SDP.
+The resulting iterations closely resemble the projected gradient descent algorithms widely used for
+NMF and spectral clustering in the existing literature; in fact, we show that the latter can be recovered
+from our algorithm by relaxing suitable constraints. We prove that the new algorithm enjoys local
+linear convergence within a primal-dual neighborhood of the SDP solution, which is unique whenever
+the centroids satisfy a well-separation condition from (Chen and Yang, 2021). In practice, we observe
+that the algorithm converges globally at a linear rate. As shown in Figure 1, our algorithm achieves
+substantially smaller mis-clustering errors compared to the existing state-of-the-art.
+The main novelty of our algorithm is the use of projected gradient descent to solve the difficult primal
+update inside the ALM. Indeed, this primal update had been the main critical challenge faced by prior
+work; while a similar nonnegative low-rank ALM was previously proposed by Kulis et al. (2007), their
+inability to solve the primal update to high accuracy resulted in a substantial slow-down to the overall
+algorithm, which behaved more like an inexact ALM. In contrast, our projected gradient descent
+method can solve the primal update at a rapid linear rate to machine precision (see Theorem 1), so
+our overall algorithm is able to enjoy the rapid primal-dual linear convergence that is predicted and
+justified by classical theory for exact ALMs. As shown in Figure 4 in Appendix B, our algorithm is
+the first ALM that can solve the SDP relaxation to arbitrarily high accuracy.
+Organization. The rest of the paper is organized as follows. In Section 2, we present some
+background on several equivalent and relaxed formulations of the K-means clustering problem. In
+2
+
+Published as a conference paper at ICLR 2024
+Section 3, we introduce a nonnegative low-rank SDP for solving the Burer–Monteiro formulation
+of K-means problem. In Section 4, we establish the linear convergence guarantee for our proposed
+primal-dual gradient descent-ascent algorithm in the exact recovery regime. Numerical experiments
+are reported in Section 5. Proof details are deferred to the Supplementary Material.
+2
+BACKGROUND ON K-MEANS AND RELATED COMPUTATIONAL METHODS
+Due to the parallelogram law in Euclidean space, the centroid-based formulation of the K-means
+clustering problem in (1) has an equivalent partition-based formulation (cf. Zhuang et al. (2022)) as
+max
+G1,...,GK
+n K
+X
+k=1
+1
+|Gk|
+X
+i,j∈Gk
+⟨Xi, Xj⟩:
+K
+G
+k=1
+Gk = [n]
+o
+,
+(2)
+where the Euclidean inner product ⟨Xi, Xj⟩= XT
+i Xj represents the similarity between the vectors
+Xi and Xj, the clusters (Gk)K
+k=1 form a partition of the data index [n], |Gk| denotes the cardinality
+of Gk and ⊔denotes disjoint union. The objective function in (2) is the log-likelihood function of the
+cluster labels (modulo constant) by profiling out the centroids in (1) as nuisance parameters under
+the standard Gaussian mixture model with a common isotropic covariance matrix across all the K
+components (Zhuang et al., 2023). Using the one-hot encoding of the partition G1, . . . , GK, we
+can uniquely associate it (up to label permutation) with a binary assignment matrix H = (hik) ∈
+{0, 1}n×K such that hik = 1 if i ∈Gk and hik = 0 otherwise. Then the K-means clustering
+problem in (2) can be written as a mixed integer program (MIP) as follows:
+min
+H
+n
+⟨A, HBHT ⟩: H ∈{0, 1}n×K, H1k = 1n
+o
+,
+(3)
+where A = −XT X is the n × n negative Gram matrix of the data Xp×n = (X1, . . . , Xn), B =
+diag(|G1|−1, . . . , |GK|−1) is a normalization matrix and the constraint H1k = 1n with 1n being
+the n-dimensional vector of all ones reflects the row sum constraint of assignment, i.e., each row of
+H contains exactly nonzero entry with value one.
+It is well-known that the problem in (3) is NP-hard in the worst-case (Dasgupta, 2007; Aloise et al.,
+2009), so various relaxations for the K-means constraint are formulated in the literature to tractably
+approach problem (3) with the same objective function. Popular methods include: (i) spectral
+clustering (von Luxburg, 2007; Ng et al., 2001) which only maintains the weakened orthonormal
+constraint ˜HT ˜H = IK for ˜H := HB1/2; (ii) nonnegative matrix factorization (NMF) (He et al.,
+2011; Kuang et al., 2015) which only enforces the elementwise nonnegativity constraint on ˜H ≥0;
+(iii) semidefinite programming (SDP) (Peng and Wei, 2007; Royer, 2017; Giraud and Verzelen, 2018)
+which reparameterizes the assignment matrix H as the positive semidefinite (psd) membership matrix
+Z := HBHT ⪰0 and additionally preserves the constraints tr(Z) = K, Z1n = 1n and Z ≥0,
+namely we solve
+min
+Z∈Sn
++
+n
+⟨A, Z⟩: tr(Z) = K, Z1n = 1n, Z ≥0
+o
+,
+(4)
+where Sn
++ stands for the convex cone of the n × n real symmetric psd matrices.
+Among those popular relaxations, the SDP approach enjoys the strongest statistical guarantees under
+the Gaussian mixture model (14). It is shown by Chen and Yang (2021) that the above SDP achieves
+an information-theoretic limit for exact recovery of the true cluster partition. Precisely, the sharp
+threshold on the centroid-separation for phase transition is given by
+Θ
+2 = 4σ2
+ 
+1 +
+s
+1 +
+Kp
+n log n
+!
+log n
+(5)
+in the sense that for any α > 0 and K = O(log(n)/ log log(n)), if the minimal centroid-separation
+Θmin := min1≤j̸=k≤K ∥µj −µk∥2 ≥(1 + α)Θ, then with high probability solution of (4) is unique
+and it perfectly recovers the cluster partition structure; while if Θ ≤(1 −α)Θ, then the maximum
+likelihood estimator (and thus any other estimator) fails to exactly recover the cluster partition.
+In simpler words, the SDP relaxed K-means optimally solves the clustering problem with zero
+mis-clustering error as soon as it is possible to do so, i.e., there is no relaxation gap.
+3
+
+Published as a conference paper at ICLR 2024
+It is important to point out that Θmin →∞is necessarily needed to achieve exact recovery with
+high probability. When the centroid-separation diverges, spectral clustering is shown to achieve the
+minimax mis-clustering error rate exp(−(1 + o(1))Θ2
+min/8) under the condition p = o(nΘmin) (or
+p = o(nΘ2
+min) with extra assumptions on singular values of the population matrix E[X]) (Löffler
+et al., 2021). This result implies that, in the low-dimensional setting, spectral clustering asymptotically
+attains the sharp threshold (5) as lim infn→∞
+Θ2
+min
+8 log n > 1. However, it remains unclear how spectral
+cluster performs in theory under the high-dimensional regime when nΘ2
+min = O(p) because running
+K-means on the eigen-embedded data would also depend on the structure of the population singular
+values (Han et al., 2023). Thus, in practice, spectral clustering is less appealing for high dimensional
+data, in view of more robust alternatives such as the SDP relaxation in (4).
+Despite the K-means clustering problem solved via SDP enjoys statistical optimality, it optimizes
+over an n × n dense psd matrix to make it completely inaccessible to practical datasets with
+even moderate size of a few thousand data points. By contrast, the NMF approach using a typical
+workstation hardware can handle much larger scale datasets as in the documents and images clustering
+applications (Cichocki and Phan, 2009; Kim et al., 2014; Xu et al., 2003). Nonetheless, little is
+known in the literature about the provable statistical guarantee for a general NMF approach. For the
+clustering problem, our goal is to break the computational and statistical bottleneck by simultaneously
+leveraging the implicit psd structure of the membership matrix and nonnegativity constraint. In
+Section 3, we propose a novel NMF-like algorithm that achieves statistical optimality by solving a
+nonnegative low-rank restricted SDP formulation.
+3
+OUR PROPOSAL: K-MEANS VIA NONNEGATIVE LOW-RANK SDP
+The non-negative low-rank (NLR) factorization is a nonconvex approach for solving SDP when its
+solution is expected to be low rank (Burer and Monteiro, 2003). Standard SDP problem with only
+equality constraints on the psd matrix variable Z ∈Sn
++ can be factorized as Z = UU T where U is
+an n × r matrix with r ≪n. In our SDP relaxed K-means formulation (4), the true membership
+matrix Z∗is a block diagonal matrix containing K blocks, where each block has size nk × nk with
+all entries equal to n−1
+k
+and nk = |G∗
+k| is the size of the true cluster G∗
+k. Thus we can exploit this
+low-rank structure and recast the SDP in (4) as a nonconvex optimization problem over U ∈Rn×r:
+min
+U∈Rn×r
+n
+⟨A, UU T ⟩: ∥U∥2
+F = K, UU T 1n = 1n, U ≥0
+o
+,
+(6)
+where we replaced the constraint UU T ≥0 with the stronger constraint U ≥0 that is easier to
+enforce (Kulis et al., 2007) as in the NMF setting. Note that the NLR reformulation (6) can be viewed
+as a restriction of the rank-constrained SDP formulation since U ≥0 implies Z = UU T ≥0. Even
+though the NLR method turns a convex SDP into a nonconvex problem, it leverages the low-rank
+structure to achieve substantial computational savings. In addition, the solution ˆU to (6) has a
+natural statistical interpretation: rows of ˆU can be interpreted as latent positions of n data points
+when projected into Rr, and thus can be used to conduct other downstream data analyses in reduced
+dimensions. Under this latent embedding perspective, formulation (6) can be viewed as a constrained
+PCA respecting the clustering structure through constraint ∥U∥2
+F = K.
+The NLR formulation (6) also has a close connection to a class of NMF-based clustering algorithms,
+which instead solve the following optimization problem
+min
+U∈Rn×r
+n
+∥A + UU T ∥2
+F : U ≥0
+o
+.
+(7)
+The NMF formulation (7) is advocated in a number of papers (Ding et al., 2005; Kuang et al., 2015;
+Zhu et al., 2018) for data clustering in the NMF literature due to its remarkable computational
+scalability, and is equivalent to a simpler version of (6) by dropping the two equality constraints.
+Our empirical results in Section 5 and Figure 1 show that keeping these two equality constraints is
+beneficial: the resulting method significantly improves the classification accuracy while maintaining
+comparable computational scalability. More importantly, we have the theoretical certification that
+the resulting method from (6) achieves the information-theoretic limit for exact recovery of the true
+cluster labels (see Section 4).
+We will now derive a simple primal-dual gradient descent-ascent algorithm to solve the NLR formu-
+lation in (6). To begin, note that we can first turn the nonsmooth inequality constraint U ≥0 together
+4
+
+Published as a conference paper at ICLR 2024
+Algorithm 1 Primal-dual algorithm for solving NLR formulation (6) of K-means clustering
+Input. Dissimilarity matrix A = −XT X, clustering parameter K ≥1, rank parameter r ≥K,
+augmentation parameter β > 0, step size α > 0.
+Output. A second-order locally optimal point U.
+Algorithm. Initialize y = 0. Do the following:
+1. (Primal descent; projected gradient descent steps) Recursively run the following until
+convergence: U 0 = U; for t ∈N,
+U t+1 = ΠΩ
+ U t−α ∇ULβ(U t, y)
+
+with ΠΩ(V ) =
+√
+K·(V )+/∥(V )+∥F , ∀V ∈Rn×r,
+where ∇ULβ(U t, y) = (2A + 2L · Id + 1nyT + y1T
+n)U t and y = y + β(U tU tT 1n −1n).
+Upon convergence at iteration count t0, set Unew = U t0.
+2. (Dual ascent; augmented Lagrangian step) Update dual variable via
+ynew = y + β(UnewU T
+new1n −1n).
+3. (Stopping criterion) If max{∥Unew −U∥F , ∥UnewU T
+new1n −1n∥F } falls below some
+tolerance threshold, then return Unew. Otherwise, set U ←Unew and y ←ynew, and repeat
+Steps 1 and 2.
+with the trace constraint to the subset
+Ω:= {U ∈Rn×r : ∥U∥2
+F = K, U ≥0}.
+(8)
+The projection operator to Ωcan be easily computed as
+ΠΩ(V ) := arg min
+U∈Ω∥U −V ∥F =
+√
+K · (V )+
+∥(V )+∥F
+,
+(9)
+where (V )+ = max{V, 0} denotes elementwise positive part of V . Then the NLR can be converted
+to the equality-constrained problem over Ω:
+min
+U∈Ω
+n
+⟨A, UU T ⟩: UU T 1n = 1n
+o
+.
+(10)
+Using the standard augmented Lagrangian method (Nocedal and Wright, 2006, Chapter 17), we see
+that the above (6) is also equivalent to
+min
+U∈Ω
+n
+⟨L · Idn + A, UU T ⟩+ β
+2 ∥UU T 1n −1n∥2
+2 : UU T 1n = 1n
+o
+,
+(11)
+where β > 0 is a penalty parameter and L ∈(0, λ) for some proper choice of λ motivated from the
+optimal dual variable for the trace constraint ∥U∥2
+F = tr(Z) = K. The augmented Lagrangian for
+problem (11) is
+Lβ(U, y) := ⟨L · Idn + A, UU T ⟩+ ⟨y, UU T 1n −1n⟩+ β
+2 ∥UU T 1n −1n∥2
+2.
+(12)
+Therefore, we consider the augmented Lagrangian iterations
+Unew = arg min
+U∈ΩLβ(U, y),
+ynew = y + β(UnewU T
+new1n −1n).
+(13)
+Now, we consider minimizing Lβ(U, y) over U, with a fixed β and y. Here, we observe that Lβ(U, y)
+is a quartic polynomial over U, and therefore its gradient can be easily derived as ∇ULβ(U, y) =
+(2A + 2L · Id + 1nyT + y1T
+n)U where y = y + β(UU T 1n −1n). Combining this with the insight
+that it is easy to project onto Ω, we can perform the following projected gradient descent iterations
+Unew = ΠΩ(U −α∇ULβ(U, y))
+until Lβ(U, y) is minimized. The complete algorithm is summarized in Algorithm 1, whose per
+iteration time and space complexity are both O(nr). We point out that the NMF formulation (7) is
+a simpler version of our NLR formulation (6), a projected gradient descent algorithm for solving
+the former corresponds to the primal decent step of Algorithm 1 with y = 0, β = 0 and a simpler
+projection operator ΠRn×r
++
+(V ) = (V )+. Upon obtaining the optimal solution U, a rounding procedure
+will be applied. More details about the rounding procedure and the choice of tuning parameters are
+mentioned in Appendix A.
+5
+
+Published as a conference paper at ICLR 2024
+4
+THEORETICAL ANALYSIS
+In this section, we establish the local linear convergence rate of the NLR algorithm (Algorithm 1) for
+solving the K-means clustering. We shall work with the standard Gaussian mixture model (GMM)
+that assumes the data X1, . . . , Xn are generated from the following mechanism: if i ∈G∗
+k, then
+Xi = µk + εi,
+(14)
+where G∗
+1, . . . , G∗
+K is a true (unknown) partition of [n] we wish to recover, µ1, . . . , µK ∈Rp are the
+cluster centers and εi ∼N(0, σ2Ip) are i.i.d. Gaussian noises. Let nk = |G∗
+k| denote the size of
+G∗
+k and by convention n0 = 0. Since in the exact recovery regime (Assumption A below), there is
+no relaxation gap — any global optimum U ∗of the NLR problem (4) at r = K corresponds to the
+unique global optimum Z∗of the SDP problem (6) through the relation Z∗= U ∗U ∗T , it is sufficient
+to focus our analysis on the r = K case. We note that the r = K case corresponds to an exact
+parameterization of the matrix rank, which is standard in the analysis of algorithms based on the
+NLR formulation (Ge et al., 2017; Chi et al., 2019).
+Algorithm 1 is formulated as an exact augmented Lagrangian method, in which the primal subproblem
+minU∈ΩLβ(U, y) in Step 1 is solved to sufficiently high accuracy (i.e., machine precision) as to
+be viewed as an exact solution for Step 2.1 This contrasts with inexact methods, in which the
+primal subproblem over U is only solved to coarse accuracy (i.e., 1-2 digits), usually owing to slow
+convergence in Step 1. We will soon prove in this section that projected gradient descent enjoys rapid
+linear convergence within a local neighborhood of the primal-dual solution, and it is therefore very
+reasonable to run Step 1 until it reaches the numerical floor.
+Under exact minimization in Step 1, it is a standard result that the dual multipliers converge at a linear
+rate in Step 2 under second-order sufficiency conditions. This, in turn, implies the linear convergence
+of the primal minimizers in Step 1 towards the true solution. The wording for the following is taken
+directly from Proposition 1 and 2 of Bertsekas (1976), though a more modern proof without constraint
+qualification assumptions is given in Fernández and Solodov (2012). (See also Bertsekas (2014,
+Proposition 2.7)) More details and explanations can be found in Appendix A.
+Proposition 1 (Existence and quality of primal minimizer). Let U ∗denote a local minimizing
+point that satisfies the second-order sufficient conditions for an isolated local minimum with respect
+to multipliers y∗. Then, there exists a scalar β∗≥0 such that, for every β > β∗the augmented
+Lagrangian Lβ(U, y) has a unique minimizing point U(y, β) within an open ball centered at U ∗.
+Furthermore, there exists some scalar M > 0 such that ∥U(y, β) −U ∗∥F ≤(M/β)∥y −y∗∥.
+Proposition 2 (Linear convergence of dual multipliers). Under the same assumptions as Proposi-
+tion 1, define the sequence
+yk+1 = yk + β(UkU T
+k 1n −1n)
+where Uk = U(yk, β) ≡arg min
+U Lβ(U, yk).
+Then, there exists a radius R > 0 such that, if ∥y0 −y∗∥≤R, then yk →y∗converges linearly
+lim sup
+k→∞
+∥yk+1 −y∗∥
+∥yk −y∗∥
+≤M
+β .
+Propositions 1 and 2 are directly applicable to Algorithm 1 when r = K, because the global minimum
+U ∗is made isolated by the nonnegativity constraint U ≥0. In fact, it is possible to generalize both
+results to all r ≥K, even when the global minimum U ∗is no longer isolated, although this would
+require further specializing Propositions 1 and 2 to our specific problem. The key insight is that, in
+the r > K case, the closest global minimum U ∗to the current iterate U continues to satisfy all the
+properties satisfied by the isolated global minimum when r = K. This is essentially the same idea as
+(Ge et al., 2017, Definition 6) and (Chi et al., 2019, Lemma 4). Nevertheless, we leave the extension
+to the r > K case as future work and focus on the r = K case in this paper.
+In view of Propositions 1 and 2, all of the difficulty that remains is to show that projected gradient
+descent is able to solve the primal subproblem minU∈ΩLβ(U, y) efficiently. Below is our main
+theorem for establishing the local linear rate of convergence of the proposed NLR solution for
+K-means clustering under GMM. In fact, this local linear convergence result holds for all r ≥K.
+1Note that with finite precision arithmetic, any “exact solution” is exact only up to numerical precision. Our
+use of “exact” in this context is consistent with the classical literature, e.g., Bertsekas (1976).
+6
+
+Published as a conference paper at ICLR 2024
+Assumption A (Exact recovery regime). For notation simplicity, we consider the equal cluster size
+case, where the minimal separation Θmin := min1≤j̸=k≤K ∥µj −µk∥2 satisfies Θmin ≥(1 + ˜α)Θ
+for some ˜α > 0, where Θ is the information-theoretic optimal threshold given in (5).
+In Appendix C, we provide the theorem (Theorem 9 in Appendix C.4) for the general case where
+the cluster sizes are unbalanced (Assumption 1 in Appendix C.3). Analogous to the minimal
+separation, we define the maximal separation Θmax := max1≤j̸=k≤K ∥µj −µk∥2. For any block
+partition sizes m = (m1, m2, . . . , mK) satisfying mk ≥1, P
+k mk = r, we let Gm denote the
+set of all m-block diagonal matrices with nonnegative entries (see Appendix C.1 for a precise
+definition). For any within block weights ak = (ak,1, ak,2, . . . , ak,mk), we also let U a,∗denote the
+associated optimal solution, defined as (17) in Appendix C.1. Let a = mink∈[K] minℓ∈[mk]{ak,ℓ},
+¯a = maxk∈[K] maxℓ∈[mk]{ak,ℓ}, and Or be the orthogonal transformation group on Rr. We will
+consider a fixed dual variable ˜y that is close to y∗. Let U 0 denote the initialization of the algorithm,
+and ˜U denote the unique stationary point2 of the projected gradient descent updating formula under
+this dual value ˜y, i.e., ˜U satisfies ˜U = ΠΩ
+  ˜U −α∇ULβ( ˜U, ˜y)
+
+.
+Theorem 1 (Local convergence of projected gradient descent). Suppose y∗is the optimum
+dual for the SDP problem (see Assumption 2 in Appendix C.3) and Assumption A holds. Assume
+p = O(√n log n), Θmax ≤CΘmin, for some C > 0, and there exists some block partition sizes m
+and an associated optimal solution U a,∗satisfying ¯a ≤ca, c > 0. Moreover, assume that the tuning
+parameters (L, β) in augmented Lagrangian (12) satisfy β = O(Θ2
+min/K3), L = O(nΘ2
+min/K)
+and step size α of the projected gradient descent satisfies α−1 = O(K2nΘ2
+min). If ∥˜y −y∗∥≤δ for
+some δ > 0, and the initialization discrepancy ∆0 = U 0 −U a,∗satisfies
+∥∆0
+S(a)c∥∞= O(K/√nr)
+and
+∥∆0∥F = O
+ r−0.5K−5.5 min{1, K−2.5Θ2
+min/ log n)}
+
+,
+then it holds with probability at least 1 −c1n−c2 that for any t ≥I = O(K3),
+U t ∈Gm
+and
+inf
+Q∈Or; ˜UQ∈Gm
+∥U t+1 −˜UQ∥F ≤γ
+inf
+Q∈Or; ˜UQ∈Gm
+∥U t −˜UQ∥F ,
+for γ = 1 −O(K−6). Here, c1 and c2 are some constants.
+Proof sketches. The proof strategy is to divide the convergence of the projected gradient descent for
+solving the primal subproblem into two phases. In phase one, we show that after at most I iterations,
+the iterates will become block diagonal, that is, fall into set Gm provided that the initialization is
+close to certain optimum point with some block diagonal form in Gm. We then show that once
+the iterate becomes m-block diagonal, the algorithm enters phase two, where the iterate remains
+m-block diagonal. Moreover, the projected gradient descent attains a linear convergence rate, since
+the objective function L( · , ˜y) is restricted strongly convex at ˜U within Gm. More precisely, there
+exists some ˜β > 0, such that for any U ∈Gm, we have
+⟨∇2
+UL( ˜U, ˜y)[∆], ∆⟩≥˜β ∥∆∥2
+F , for ∆= UQT
+U −˜U,
+where QU = argminQ∈Or; ˜UQ∈Gm ∥U −˜UQ∥F . More details can be found in Appendix C.
+Implications of the theorem. According to Theorem 1, if we choose L = O(nΘ2
+min/K), β =
+O(Θ2
+min/K3) and α−1 = O(K2nΘ2
+min), then phase one will last at most I = O(K3) iterations; and
+after entering phase two, the contraction rate of the projected gradient descent is γ = 1 −O(K−6).
+These choices make the iteration complexity of the projected gradient descent for solving the primal
+subproblem of order O(K6) (modulo logarithmic factors), and the overall time complexity of the
+primal-dual algorithm becomes of order O(K6nr). In addition, given that the stationary point ˜U
+satisfies ∥˜U∥∞= O(
+p
+K/n) and ∥˜U∥F = O(
+√
+K), the initialization condition only demands a
+constant relative error with respect to n, making it a reasonable requirement. For example, under
+mild conditions, rapid K-means algorithms like Lloyd’s algorithm (Lloyd, 1982; Lu and Zhou, 2016)
+can be employed to construct an initialization that meets this condition with high probability.
+■
+5
+NUMERICAL EXPERIMENTS
+We present numerical results to assess the effectiveness of the proposed NLR method. We first conduct
+two simulation experiments using GMM to evaluate the convergence and compare the performance
+2Note that its existence and uniqueness is guaranteed in the proof of Theorem 1 when ˜y is close to y∗.
+7
+
+Published as a conference paper at ICLR 2024
+103
+104
+n
+10-3
+10-2
+10-1
+Mis-clustering error
+ 
+ 
+Statistical performance
+NLR
+KM
+SC
+SDP
+NMF
+103
+104
+n
+10-2
+100
+102
+CPU time [seconds]
+ 
+ 
+Computational complexity
+NLR
+KM
+SC
+SDP
+NMF
+2
+4
+6
+8
+10
+Iteration
+104
+10-6
+10-4
+10-2
+100
+Relative difference to optimal point
+ 
+ 
+Convergence of NLR
+r=K
+r=2K
+r=20K
+Figure 2: Log-scale plots with error bars of mis-clustering error (leftmost) and time cost (in the middle) as
+sample size n increases and the convergence of NLR over iterations (rightmost). The plots are partial for SC
+(SDP) due to their huge space (time) complexity when the sample size is large.
+of NLR with other methods. Then, we perform a comparison using two real datasets. One of the
+competing methods in our comparison is clustering based on solving the NMF formulation (7).
+Specifically, we employ the projected gradient descent algorithm, which is a simplified version of
+Algorithm 1 discussed in Section 3, to implement this method. We adopt random initialization and
+set the same r for both NMF and NLR to ensure a fair comparison. Finally, we conduct further
+experiments on three datasets in UCI.
+Performance for NLR for GMM. Our goal is to compare the statistical performance and time
+complexity of NLR, NMF, the SDPNAL+ solver (Yang et al., 2015) for solving SDP, spectral
+clustering (SC), and K-means++ (KM) under GMM. In our setting, we choose cluster numbers
+K = 4 and place the centers of Gaussian distributions at the vertices of a simplex such that
+Θ2
+min = γ Θ
+2 with γ = 0.64, where Θ is the sharp threshold defined in Equation (5). The sample
+size ranges from n = 400 to n = 57, 600, the dimension is p = 20, and we set the rank parameter
+of the NLR to be r = 2K. The results are summarized in the first two plots of Figure 2, with each
+case repeated 50 times. From the first plot, we observe that the mis-clustering error of SDP and
+NLR coincides; the error remains stable and decreases as the sample size n increases. However,
+NMF, KM, and SC exhibit large variances and are far from achieving exact recovery. The second
+plot indicates that SDP has super-linear time complexity, while the log-scale curves of our NLR
+approach, KM, and NMF are nearly parallel, indicating that they all achieve linear time complexity.
+In particular, SDP becomes time-consuming when n is larger than 2, 000. Further comparisons of
+statistical performance and time complexity with increasing dimension p or varying numbers of
+clusters K can be found in Appendix B.
+Linear convergence of NLR. To analyze the convergence of Algorithm 1, we maintain the same
+setting as described earlier. However, we now fix n = 1, 000 and consider minimum distance
+between centers Θ2
+min = γ Θ
+2 with γ = 1.44. We explore three cases: r = K, r = 2K, and
+r = 20K, and set the number of iterations for Step 1 (primal update) to be 100. The convergence
+of our NLR approach is shown in the third plot of Figure 2, with each result based on 30 replicates.
+We measure the relative difference of U compared to optimal solution U ∗using the Frobenius
+SC
+NMF
+KM
+NLR
+SDP
+0
+0.05
+0.1
+0.15
+0.2
+0.25
+0.3
+0.35
+0.4
+Mis-clustering error
+ 
+ 
+Statistical performance for CyTOF
+n=1.8K
+n=46K
+SC
+NMF
+KM
+NLR
+SDP
+0
+0.1
+0.2
+0.3
+0.4
+0.5
+Mis-clustering error
+ 
+ 
+Statistical performance for CIFAR-10
+n=1.8K
+n=4K
+Figure 3: Boxplots of mis-clustering error (with means) for CyTOF dataset (on the left) and CIFAR-10 (on the
+right) among five different methods. The plots are partial for SC (SDP) due to their huge space (time) complexity
+when the sample size is large.
+8
+
+Published as a conference paper at ICLR 2024
+Table 1: Mis-clustering error (SD) for clustering three datasets in UCI: Msplice, Heart and DNA. We
+randomly sample n = 1, 000 (n = 300 for Heart) many data points for 10 replicates. DNA1 (DNA2)
+stands for the perturbation with t-distribution (skewed normal distribution) random noise.
+NMF
+KM
+NLR
+SC
+SDP
+Msplice
+0.372 (0.073)
+0.283 (0.112)
+0.161 (0.034)
+0.288 (0.024)
+0.194 (0.091)
+Heart
+0.470 (0.024)
+0.348 (0.057)
+0.230 (0.014)
+0.472 (0.011)
+0.248 (0.007)
+DNA
+0.449 (0.063)
+0.294 (0.082)
+0.188 (0.020)
+0.291 (0.014)
+0.196 (0.022)
+DNA1
+0.416 (0.048)
+0.337 (0.084)
+0.243 (0.055)
+0.326 (0.039)
+0.263 (0.044)
+DNA2
+0.435 (0.061)
+0.268 (0.035)
+0.235 (0.031)
+0.317 (0.025)
+0.252 (0.040)
+norm ∥UU T −U ∗(U ∗)T ∥F /∥U ∗(U ∗)T ∥F . From the third plot, we observe that our NLR approach
+achieves linear convergence in this setting. The curves overlap closely, indicating that the choice of r
+does not significantly affect the convergence rate. Additional experiments for the comparison of the
+convergence rate between our algorithm (based on projected gradient descent) and the conventional
+algorithm (which lifts all constraints into the Lagrangian function) can be found in Appendix B.
+CyTOF dataset. This mass cytometry (CyTOF) dataset consists of protein expression levels for
+N = 265, 627 cells with p = 32 protein markers. The dataset contains 14 clusters or gated cell
+populations. In our experiment, we select the labeled data for individual H1. From these labeled data,
+we uniformly sample n data points from K = 4 unbalanced clusters, specifically clusters 2, 7, 8, and
+9, which together contain a total of 46, 258 samples. The results are presented in Figure 3, where we
+conduct all methods for 100 replicates for each value of n. We consider two cases: case 1 corresponds
+to n = 1800 and case 2 corresponds to n = 46, 258. From the plot, we observe that NLR and SDP
+remain stable, while KM exhibits significant variance, and NMF produces many outliers. In case
+1, the mis-clustering error of NLR is comparable to that of SDP, indicating that the performance of
+NLR can be as good as SDP. However, when n is on the order of 1, 000, the time complexity of SDP
+becomes dramatically high, which is at least O(n3.5).
+CIFAR-10 dataset. We conduct a comparison of all methods on the CIFAR-10 dataset, which
+comprises 60,000 colored images of size 32 × 32 × 3, divided into 10 clusters. Firstly, we apply the
+Inception v3 model with default settings and perform PCA to reduce the dimensionality to p = 50.
+The test set consists of 10,000 samples with 10 equal-size clusters. In our experiment, we focus on
+four clusters ("bird", "deer", "ship", and "truck") with K = 4. We consider two cases: case 1 involves
+random sub-sampling with n = 1, 800 to compare NLR with SDP, and case 2 uses n = 4, 000. The
+results are displayed in the second plot of Figure 3, based on 100 replicates. Similar to the previous
+experiment, we observe that NLR and SDP exhibit similar behavior and achieve superior and more
+consistent performance compared to KM, SC, and NMF. NMF displays significant variance, while
+KM, SC produce many outliers.
+UCI datasets. To empirically illustrate the advantages and robustness of our method against the
+GMM assumption, we conduct further experiments on three datasets in UCI: Msplice, Heart and
+DNA. The results of mis-clustering errors (with standard deviation) are summarized in Table 1,
+where we randomly sample n = 1, 000 (n = 300 for Heart dataset) many data points for a total 10
+replicates. From the table we can observe the superior behavior of NLR (our algorithm) and SDP
+over the rest competitors. DNA1 (DNA2) stands for the results of DNA dataset after perturbation
+with t-distribution (skewed normal distribution) random noise. In both experiments, each data point
+xi is perturbed with xi + 0.2ϵi. In the first experiment (DNA1), the injected noise ϵi is i.i.d. random
+vector with i.i.d. entries following t-distribution with 5 degree of freedom, which has a much heavier
+tail than the normal. In the other experiment (DNA2), the injected noise follows a skewed normal
+distribution with variance 1 and skewness 0.2. From the table we can observe that, compared to DNA,
+the performances of all methods for DNA1 and DNA2 are impacted; but NLR performs better around
+all cases, which is comparable with the original SDP as expected. Moreover, from the QQ-plots of
+Figure 5 in Appendix B, the GMM assumption is also clearly violated for the Heart dataset; however,
+we can still observe the superior behavior of NLR (our algorithm) and SDP over the rest competitors.
+9
+
+Published as a conference paper at ICLR 2024
+ACKNOWLEDGMENTS
+We thank the reviewers for their valuable comments. X.C. acknowledges support from NSF CAREER
+Award DMS-2347760. Y.Y was supported by NSF DMS-2210717. R.Y.Z was supported by NSF
+CAREER Award ECCS-2047462 and the C3.ai Digital Transformation Institute.
+REFERENCES
+Daniel Aloise, Amit Deshpande, Pierre Hansen, and Preyas Popat. Np-hardness of euclidean sum-of-
+squares clustering. Machine learning, 75(2):245–248, 2009.
+David Arthur and Sergei Vassilvitskii. K-means++ the advantages of careful seeding. In Proceedings
+of the eighteenth annual ACM-SIAM symposium on Discrete algorithms, pages 1027–1035, 2007.
+Dimitri P Bertsekas. Multiplier methods: A survey. Automatica, 12(2):133–145, 1976.
+Dimitri P Bertsekas. Constrained optimization and Lagrange multiplier methods. Academic press,
+2014.
+Samuel Burer and Renato D. C. Monteiro.
+A nonlinear programming algorithm for solv-
+ing semidefinite programs via low-rank factorization.
+Mathematical Programming, 95(2):
+329–357, 2003. doi: 10.1007/s10107-002-0352-8. URL https://doi.org/10.1007/
+s10107-002-0352-8.
+Xiaohui Chen and Yun Yang. Cutoff for exact recovery of gaussian mixture models. IEEE Transac-
+tions on Information Theory, 67(6):4223–4238, 2021.
+Yuejie Chi, Yue M Lu, and Yuxin Chen. Nonconvex optimization meets low-rank matrix factorization:
+An overview. IEEE Transactions on Signal Processing, 67(20):5239–5269, 2019.
+Andrzej Cichocki and Anh-Huy Phan. Fast Local Algorithms for Large Scale Nonnegative Matrix
+and Tensor Factorizations. IEICE Transactions on Fundamentals of Electronics Communications
+and Computer Sciences, 92(3):708–721, January 2009. doi: 10.1587/transfun.E92.A.708.
+Sanjoy Dasgupta. The hardness of k-means clustering. Technical Report CS2007-0890, University of
+California, San Diego, 2007.
+Chris Ding, Xiaofeng He, and Horst D Simon. On the equivalence of nonnegative matrix factorization
+and spectral clustering. In Proceedings of the 2005 SIAM international conference on data mining,
+pages 606–610. SIAM, 2005.
+Dheeru Dua and Casey Graff. UCI machine learning repository, 2017. URL http://archive.
+ics.uci.edu/ml.
+Yingjie Fei and Yudong Chen. Hidden integrality of sdp relaxations for sub-gaussian mixture models.
+In Sébastien Bubeck, Vianney Perchet, and Philippe Rigollet, editors, Proceedings of the 31st
+Conference On Learning Theory, volume 75 of Proceedings of Machine Learning Research, pages
+1931–1965. PMLR, 06–09 Jul 2018. URL https://proceedings.mlr.press/v75/
+fei18a.html.
+Damián Fernández and Mikhail V Solodov. Local convergence of exact and inexact augmented
+lagrangian methods under the second-order sufficient optimality condition. SIAM Journal on
+Optimization, 22(2):384–407, 2012.
+Rong Ge, Chi Jin, and Yi Zheng. No spurious local minima in nonconvex low rank problems: A
+unified geometric analysis. In International Conference on Machine Learning, pages 1233–1242.
+PMLR, 2017.
+Christophe Giraud and Nicolas Verzelen. Partial recovery bounds for clustering with the relaxed
+kmeans. Math. Stat. Learn., (3/4):317–374, 2018.
+10
+
+Published as a conference paper at ICLR 2024
+Xiao Han, Xin Tong, and Yingying Fan. Eigen selection in spectral clustering: A theory-guided
+practice.
+Journal of the American Statistical Association, 118(541):109–121, 2023.
+doi:
+10.1080/01621459.2021.1917418. URL https://doi.org/10.1080/01621459.2021.
+1917418.
+Zhaoshui He, Shengli Xie, Rafal Zdunek, Guoxu Zhou, and Andrzej Cichocki. Symmetric non-
+negative matrix factorization: Algorithms and applications to probabilistic clustering. IEEE
+Transactions on Neural Networks, 22(12):2117–2131, 2011. doi: 10.1109/TNN.2011.2172457.
+Jingu Kim, Yunlong He, and Haesun Park. Algorithms for nonnegative matrix and tensor fac-
+torizations: a unified view based on block coordinate descent framework. Journal of Global
+Optimization, 58(2):285–319, 2014. doi: 10.1007/s10898-013-0035-4. URL https://doi.
+org/10.1007/s10898-013-0035-4.
+Da Kuang, Sangwoon Yun, and Haesun Park. Symnmf: nonnegative low-rank approximation of a
+similarity matrix for graph clustering. Journal of Global Optimization, 62:545–574, 2015.
+Brian Kulis, Arun C. Surendran, and John C. Platt.
+Fast low-rank semidefinite programming
+for embedding and clustering. In Marina Meila and Xiaotong Shen, editors, Proceedings of the
+Eleventh International Conference on Artificial Intelligence and Statistics, volume 2 of Proceedings
+of Machine Learning Research, pages 235–242, San Juan, Puerto Rico, 21–24 Mar 2007. PMLR.
+URL https://proceedings.mlr.press/v2/kulis07a.html.
+Stuart Lloyd. Least squares quantization in pcm. IEEE Transactions on Information Theory, 28:
+129–137, 1982.
+Matthias Löffler, Anderson Y. Zhang, and Harrison H. Zhou. Optimality of spectral clustering in
+the Gaussian mixture model. The Annals of Statistics, 49(5):2506 – 2530, 2021. doi: 10.1214/
+20-AOS2044. URL https://doi.org/10.1214/20-AOS2044.
+Yu Lu and Harrison H Zhou. Statistical and computational guarantees of lloyd’s algorithm and its
+variants. arXiv preprint arXiv:1612.02099, 2016.
+J.B. MacQueen. Some methods for classification and analysis of multivariate observations. Proc.
+Fifth Berkeley Sympos. Math. Statist. and Probability, pages 281–297, 1967.
+Dustin G Mixon, Soledad Villar, and Rachel Ward. Clustering subgaussian mixtures by semidefinite
+programming. Information and Inference: A Journal of the IMA, 6(4):389–415, 03 2017. ISSN
+2049-8764. doi: 10.1093/imaiai/iax001. URL https://doi.org/10.1093/imaiai/
+iax001.
+Andrew Y. Ng, Michael I. Jordan, and Yair Weiss. On spectral clustering: Analysis and an algorithm.
+In Advances in Neural Information Processing Systems, pages 849–856. MIT Press, 2001.
+Jorge Nocedal and Stephen J. Wright. Numerical optimization. Springer series in operations
+research and financial engineering. Springer, New York, NY, 2. ed. edition, 2006. ISBN 978-0-
+387-30303-1. URL http://gso.gbv.de/DB=2.1/CMD?ACT=SRCHA&SRT=YOP&IKT=
+1016&TRM=ppn+502988711&sourceid=fbw_bibsonomy.
+Jiming Peng and Yu Wei. Approximating K-means-type clustering via semidefinite programming.
+SIAM J. OPTIM, 18(1):186–205, 2007.
+Martin Royer. Adaptive clustering through semidefinite programming. In I. Guyon, U. V. Luxburg,
+S. Bengio, H. Wallach, R. Fergus, S. Vishwanathan, and R. Garnett, editors, Advances in Neural
+Information Processing Systems 30, pages 1795–1803. Curran Associates, Inc., 2017.
+Ulrike von Luxburg. A tutorial on spectral clustering. Statistics and Computing, 17(4):395–416,
+2007.
+Yu-Xiong Wang and Yu-Jin Zhang. Nonnegative matrix factorization: A comprehensive review.
+IEEE Transactions on knowledge and data engineering, 25(6):1336–1353, 2012.
+11
+
+Published as a conference paper at ICLR 2024
+Wei Xu, Xin Liu, and Yihong Gong. Document clustering based on non-negative matrix factor-
+ization. In Proceedings of the 26th Annual International ACM SIGIR Conference on Research
+and Development in Informaion Retrieval, SIGIR ’03, page 267–273, New York, NY, USA, 2003.
+Association for Computing Machinery. ISBN 1581136463. doi: 10.1145/860435.860485. URL
+https://doi.org/10.1145/860435.860485.
+Liuqin Yang, Defeng Sun, and Kim-Chuan Toh. SDPNAL+: a majorized semismooth newton-
+cg augmented lagrangian method for semidefinite programming with nonnegative constraints.
+Mathematical Programming Computation, 7(3):331–366, 2015. doi: 10.1007/s12532-015-0082-6.
+URL https://doi.org/10.1007/s12532-015-0082-6.
+Zhihui Zhu, Xiao Li, Kai Liu, and Qiuwei Li. Dropping symmetry for fast symmetric nonnegative
+matrix factorization. Advances in Neural Information Processing Systems, 31, 2018.
+Yubo Zhuang, Xiaohui Chen, and Yun Yang. Wasserstein K-means for clustering probability
+distributions. In Advances in Neural Information Processing Systems, 2022.
+Yubo Zhuang, Xiaohui Chen, and Yun Yang. Likelihood adjusted semidefinite programs for clustering
+heterogeneous data. In International Conference on Machine Learning (ICML), 2023.
+12
+
+Published as a conference paper at ICLR 2024
+SUPPLEMENTARY MATERIAL
+This supplementary material provides additional details of the algorithm and propositions, further
+experimental results, the proof of the main theoretical result (Theorem 1) presented in the paper and
+a concluding discussion.
+A
+ADDITIONAL DETAILS OF THE ALGORITHM AND PROPOSITIONS
+Choices of tuning parameters and rounding procedure for Algorithm 1. In practice, we start
+with small step size α = 10−6 and increase α until α = 10−3. Similarly, we start with a small
+augmentation term β = 1 and increase β until β = 103. The second experiment shows that the choice
+of r does not significantly affect the convergence rate. In practice, we found that r = K will result in
+many local minima for small separations. Therefore, we slightly increase r and choose r = 2K for
+all applications, which turns out to provide desirable statistical performance that is comparable to or
+slightly better than SDP.
+After getting the second-order locally optimal point U in Algorithm 1 (NLR), a rounding procedure
+is applied, where we extract the first K eigenvectors of U as columns of new matrix V and then
+use K-means to cluster the rows of V to get the final assignments. The same rounding procedure is
+applied to the outputs from both SDP and NMF.
+Additional explanations to the propositions. Proposition 1 indicates that if U ∗is the local minimum
+of problem (6) that satisfies constraint qualification assumptions (Assumption (S) in Bertsekas (1976)),
+then we can get unique minimizing point around U ∗of augmented Lagrangian Lβ(U, y) for any
+y provided that we have large augmented coefficient β. A more modern proof without constraint
+qualification assumptions is given in Fernández and Solodov (2012). Proposition 2 indicates that the
+dual variable yk in Algorithm 1 will converge to y∗at exponential rate locally provided that Uk solves
+minU Lβ(U, yk). Therefore, Algorithm 1 can achieve a local exponential rate provided that we can
+solve the local min of Lβ(U, y) for y ≈y∗with an exponential rate, which is proved by Theorem 1.
+B
+ADDITIONAL EXPERIMENTAL RESULTS
+Comparison of different ways to solve NLR. We conduct an experiment under the same settings
+as described in Section 5’s “Linear convergence of NLR" except that here we consider a smaller
+scale with n = 300 and p = 4. We aimed to compare the convergence rate towards the optimum
+per dual update between our algorithm (based on projected gradient descent) and the conventional
+algorithm (which lifts all constraints into the Lagrangian function). As seen in Figure 4, our algorithm
+successfully converges to the SDP solution, whereas the conventional algorithm’s convergence halts
+at a specific step. Furthermore, the average time required to compute the minimum of the augmented
+Lagrangian (as denoted by (12) in the main paper) is 0.002 seconds for our algorithm. In contrast,
+the conventional algorithm takes an average of 8 seconds, even when employing the state-of-the-art
+limited memory BFGS method.
+Comparison of computational complexity w.r.t. K. Here we want to compare the time complexity
+of NLR, NMF, the SDPNAL+ solver (Yang et al., 2015) for solving SDP, spectral clustering (SC),
+and K-means++ (KM) under Gaussian mixture models (GMM) when the number of cluster K is
+moderate in practice. Under the same setting as our second experiment (“Performance for NLR for
+GMM”) in Section 5, except that now we consider fixed sample size n = 1000, dimension p = 50,
+and different number of clusters K = 5, 10, 20, 40, 50. The results are summarized in the first plot of
+Figure 6, where we can observe that the log-scale curve of NLR is nearly parallel to the log-scale
+curve of KM and NMF, indicating that the growth of CPU time cost for NLR with respect to K is
+reasonable (nearly O(K)) and would not achieve the loose upper bound O(K6) derived from the
+analysis. The curve of computational time cost for SDP is relatively stable for different K since the
+dominant term of computational complexity for SDP is the sample size n, which is of as large as
+order O(n3.5).
+Performance of NLR under different p. Our goal is to compare the statistical performance and time
+complexity of NLR, NMF, the SDPNAL+ solver (Yang et al., 2015) for solving SDP, and K-means++
+(KM) with increasing dimension p. Here we consider the same setting as our second experiment
+13
+
+Published as a conference paper at ICLR 2024
+100
+200
+300
+400
+500
+Dual update
+10-4
+10-3
+10-2
+10-1
+100
+Relative difference to optimal point
+ 
+ 
+Convergence of NLR (Regular ADMM)
+100
+200
+300
+400
+500
+Dual update
+10-8
+10-6
+10-4
+10-2
+100
+Relative difference to optimal point
+ 
+ 
+Convergence of NLR (Projected GD)
+Figure 4: Log-scale plots of the convergence of NLR algorithms over iterations per dual update.
+Left: the NLR algorithm where the Lagrangian function contains all constraints and the minimum of
+the augmented Lagrangian function is solved based on limited memory BFGS. Right: Our algorithm
+where the minimum of the augmented Lagrangian function is solved based on projected GD.
+Figure 5: QQ-plots for Heart dataset. The first (second) row corresponds to three randomly selected
+covariates for the first (second) cluster in the Heart dataset.
+“Performance for NLR for GMM” in Section 5 except that now we consider fixed sample size
+n = 2500. The dimension ranges from p = 125 to p = 1000. The results are summarized in Table 2
+and the second plot of Figure 2, with each case repeated 10 times. From Table 2 we observe that
+the mis-clustering errors for both SDP and NLR coincide and stay optimal when the dimension p
+increases, while K-means++ has large variance and NMF would fail when the dimension is as large
+as p = 1000. The second plot in Figure 2 shows that the log-scale curve for NLR is nearly parallel to
+the log-scale curves for both KM and NMF. This indicates the same order of CPU time cost with
+respect to the dimension p for NLR, KM and NMF, which are nearly of order O(p). Similar to the
+case when K changes, the curve of computational time cost for SDP is relatively stable for different
+p since the dominant term of computational complexity for SDP is the sample size n.
+14
+
+Published as a conference paper at ICLR 2024
+101
+K
+10-2
+100
+102
+CPU time [seconds]
+ 
+ 
+CPU time cost when K changes (log-scale)
+SDP
+NLR
+KM
+NMF
+200
+400
+600
+800
+1000
+p
+10-2
+100
+102
+CPU time [seconds]
+ 
+ 
+CPU time cost when p changes (log-scale)
+SDP
+NLR
+KM
+NMF
+Figure 6: Log-scale plots with error bars of computational cost with increasing number of clusters K
+(left) and computational cost with increasing dimension p (right). NLR corresponds to our proposed
+method, KM corresponds to K-means++, SDP uses the SDPNAL+ solver, and NMF corresponds to
+non-negative factorization.
+Table 2: Mis-clustering error (SD) vs dimension p for different methods.
+p
+125
+250
+500
+1000
+SDP
+0.0018 (0.0008)
+0.0024 (0.0010)
+0.0037 (0.0005)
+0.0024 (0.0009)
+NLR
+0.0018 (0.0008)
+0.0024 (0.0010)
+0.0037 (0.0005)
+0.0024 (0.0009)
+KM
+0.0754 (0.1647)
+0.0721 (0.1556)
+0.0634 (0.1332)
+0.1244 (0.1688)
+NMF
+0.0728 (0.1594)
+0.0026 (0.0010)
+0.0037 (0.0007)
+0.7496 (0)
+C
+PROOF OF THEOREM 1
+In this section, we prove the theorem for the general case with explicit constants, which extends
+Theorem 1 from the equal cluster size case to the unequal cluster size case (Theorem 9). The
+section is organized as follows. First, we will introduce the notations that will be used in the
+proof (Appendix C.1). Then, we characterize the optimum feasible solutions of the NLR algorithm
+(Theorem 2 in Appendix C.2). Next, we present the convergence results at the optimum dual
+y = y∗(Appendix C.3). After that, we extend the proof of convergence at the optimum dual to
+y ≈y∗(Appendix C.4). The proofs of all technical lemmas are placed at the end of the section
+(Appendix C.5).
+C.1
+NOTATIONS
+We shall work with the standard Gaussian mixture model (GMM) that assumes the data X1, . . . , Xn
+are generated from the following mechanism: if i ∈Gk, then
+Xi = µk + εi,
+(15)
+where G1, . . . , GK is a true (unknown) partition of [n] we wish to recover, µ1, . . . , µK ∈Rp are the
+cluster centers and εi ∼N(0, σ2Ip) are i.i.d. Gaussian noises. Let nk = |Gk| denote the size of Gk.
+Let Z∗= U ∗(U ∗)T , where
+U ∗=
+
+
+1
+√n1 1n1
+0
+· · ·
+0
+0
+· · ·
+0
+0
+1
+√n2 1n2
+· · ·
+0
+0
+· · ·
+0
+...
+...
+...
+...
+0
+...
+...
+0
+0
+· · ·
+1
+√nK 1nK
+0
+· · ·
+0
+
+
+∈Rn×r.
+(16)
+15
+
+Published as a conference paper at ICLR 2024
+Define the minimum of cluster size n
+:=
+mink∈[K]{nk}, the maximum of cluster size
+¯n := maxk∈[K]{nk} and m = mink̸=l
+2nknl
+nk+nl .
+Define the minimal separation Θmin
+:=
+min1≤j̸=k≤K ∥µj −µk∥2, and the maximal separation Θmax := max1≤j̸=k≤K ∥µj −µk∥2. For
+any block partition sizes m = (m1, m2, . . . , mK) satisfying mk ≥1, P
+k mk = r, we define the set
+Fm as consisting of all (orthogonal transformation) matrices Q such that U = U ∗Q has the form
+
+
+a1,11n1, . . . , a1,m11n1
+0
+· · ·
+0
+0
+a2,11n2, . . . , a2,m21n2
+· · ·
+0
+...
+...
+...
+...
+0
+0
+· · ·
+aK,11nK, . . . , aK,mK1nK
+
+,
+(17)
+for some P
+l a2
+k,l =
+1
+nk , ∀k ∈[K], P
+k mk = r. We will call any matrix U whose sparsity/nonzero
+pattern coincides with (17) (up to column permutations) as an m-block diagonal matrix. Let Gm
+denote the set of all m-block diagonal matrices with nonnegative entries. Note that Q exists for any
+U of the form since UU T = (U ∗)(U ∗)T . We denote the set of all such Q as Fm. Now we denote
+ak = (ak,1, ak,2, . . . , ak,mk) and U a,∗as (17). Define a := mink,l{ak,l}, ¯a := maxk,l{ak,l}. For
+any matrix A ∈Rn×r, we use AS(a) to denote the matrix of the same size as the restriction of A
+onto the support S(a) of U a,∗, that is, [AS(a)]ij = Aij if [U a,∗]ij ̸= 0 and [AS(a)]ij = 0 otherwise;
+and let AS(a)c = A −AS(a). Let Or be the orthogonal transformation group on Rr.
+Let ΠΩbe the projection map on to the set Ω. i.e.,
+v = ΠΩ(u) ⇐⇒v ∈Ω, ∥v −u∥≤∥˜u −u∥, ∀˜u ∈Ω.
+Let C(Ω) to be the convex hull of Ω. Recall that Ω:= {U ∈Rn×r : ∥U∥2
+F = K, U ≥0}. Then
+C(Ω) = {U ∈Rn×r : ∥U∥2
+F ≤K, U ≥0}. We define
+V = ΠΩ(W), W = U −α∇f(U), α > 0.
+In particular, we define Π+(U) to be the positive part of U. Let U 0 be the initialization. For t ∈N+,
+we define U t recursively by
+U t+1 = ΠΩ
+ U t −α ∇ULβ(U t, y)
+
+.
+Denote Q, Qt ∈Fm as
+Q = argmin ˜
+Q∈Fm∥U −U ∗˜Q∥F , Qt = argmin ˜
+Q∈Fm∥U t −U ∗˜Q∥F , ∀t ∈N.
+C.2
+CHARACTERIZATION OF GLOBAL OPTIMA OF NLR PROBLEM
+Theorem 2 (Feasible solutions). For any U ∈Rn×r such that UU T = Z∗and U ≥0, U must take
+the following block form (up to column permutations), due to the nonnegative constraint U ≥0:
+U =
+
+
+a1,11n1, . . . , a1,m11n1
+0
+· · ·
+0
+0
+a2,11n2, . . . , a2,m21n2
+· · ·
+0
+...
+...
+...
+...
+0
+0
+· · ·
+aK,11nK, . . . , aK,mK1nK
+
+, (18)
+for some block partition sizes m = (m1, m2, . . . , mK) satisfying mk ≥1, P
+k mk = r and within
+block weights ak = (ak,1, ak,2, . . . , ak,mk) satisfying ak,ℓ≥0, P
+ℓa2
+k,ℓ=
+1
+nk for all k ∈[K].
+Proof. Recall
+U ∗=
+
+
+1
+√n1 1n1
+0
+· · ·
+0
+0
+· · ·
+0
+0
+1
+√n2 1n2
+· · ·
+0
+0
+· · ·
+0
+...
+...
+...
+...
+0
+...
+...
+0
+0
+· · ·
+1
+√nK 1nK
+0
+· · ·
+0
+
+
+.
+Then for any Q = [q1, . . . , qr] ∈Or, the orthogonal transformation group on Rr, we have
+U := U ∗QT =
+
+1
+√n1
+q11T
+n1, . . . ,
+1
+√nK
+qK1T
+nK
+T
+.
+16
+
+Published as a conference paper at ICLR 2024
+U is feasible hence U ∗QT ≥0 =⇒qi ≥0, ∀i. Note that ⟨qi, qi⟩= 1, ⟨qi, qj⟩= 0, ∀i ̸= j, then U
+must have the form (18) (up to column permutations).
+■
+In the rest of the proof, we first show the convergence of projected gradient descent at y∗as
+Theorem 3 below, and then extend the theorem to a general dual variable ˜y in a neighborhood of y∗
+in Appendix C.4.
+C.3
+PROOF OF LINEAR CONVERGENCE WITH y = y∗
+We list below the assumption on the minimal separation for the general unequal cluster size case.
+This is a generalized version of Assumption A, where cluster sizes are equal:
+Assumption 1 (Assumptions for Theorem II.1 in (Chen and Yang, 2021)). If there exist constants
+C1 ∈(0, 1), C3 > 0 such that
+log n ≥(1 −C1)2
+C2
+1
+D1n
+m , C3 ≤
+C2
+1
+(1 −C1)2
+D2
+K , m ≥4(1 + C3)2
+C2
+3
+,
+Θ2
+min ≥Θ
+2
+a := 4σ2(1 + 2C3)
+(1 −C1)2
+
+1 +
+s
+1 + (1 −C1)2
+1 + C3
+p
+m log n + D3Rn
+
+log n,
+with
+Rn =
+(1 −C1)2
+(1 + C3) log n
+√p log n
+n
++ log n
+n
+
+,
+where n := mink∈[K]{nk} and m = mink̸=l
+2nknl
+nk+nl . Here D1, D2, D3 are universal constants.
+This assumption requires the minimum squared separation Θ2
+min to be of order O(log n). Recall that
+we use ¯n := maxk∈[K]{nk}, and Θ2
+max to denote the maximum squared separation.
+Assumption 1 will be reduced to Assumption A in the main paper when the cluster sizes are equal.
+This is due to the fact that for any ˜α > 0, we can find C1 and C3 s.t. (1+2C3)
+(1−C1)2 < (1 + ˜α). Moreover,
+m = n/K in this case.
+Assumption 2 (The optimum dual y∗). Choose (λ, y∗, B) to be the dual variables of the SDP defined
+by equations (20), (21), (22) and (25) in (Chen and Yang, 2021). In particular, λ = p + C1
+4 mΘ2
+min;
+B ≥0, BGk,Gk = 0, ∀k ∈[K], and y∗equals α in (Chen and Yang, 2021).
+Theorem 3 (Convergence of projected gradient descent at y∗). Suppose Assumption 1 & 2 hold.
+Consider the projected gradient descent updating formula at the dual y∗:
+U t = ΠΩ
+ U t−1 −α∇ULβ(U t−1, y∗)
+
+,
+t ∈Z+.
+If there exists some block partition sizes m and an associated optimal solution U a,∗with some within
+block weights ak = (ak,1, ak,2, . . . , ak,mk) satisfying ¯a ≤ca, c > 0, such that the initialization
+discrepancy ∆0 = U 0 −U a,∗satisfies
+∥∆0
+S(a)c∥∞≤
+C1an
+p/Θ2
+min + m
+and
+∥∆0∥F ≤
+C3
+[1 + C2α(L + nβ + Θ2max)]I
+· min
+n
+n,
+anΘ2
+min
+rn2¯a3(L + nβ + nΘ2max),
+(1 −γ)anΘ2
+min/K
+Θmax
+√K log n + p + log2 n), (1 −γ)a√n
+
+,
+where m = mink̸=l
+2nknl
+nk+nl , n = min{nk}, Θmax = max1≤j̸=k≤K ∥µj −µk∥2, and I = (4α)−1(p+
+C1mΘ2
+min)−1. If we take β = C1anΘ2
+min
+16rn2¯a3 , L = p + C1Θ2
+min
+4
+(m −
+an2
+8rn2¯a3 ) in (12) and choose step
+size α =
+C4an2Θ2
+min
+rn2¯a3(L+nβ)2 , then it holds with probability at least 1 −n−C5 that for any t ≥I,
+U t ∈Gm
+and
+inf
+Q∈Fm ∥U t+1 −U ∗Q∥F ≤γ
+inf
+Q∈Fm ∥U t −U ∗Q∥F ,
+where γ2 = 1 −
+C6(an2Θ2
+min)2
+(rn2¯a3)2(L+nβ)2 and C1, . . . , C6 are universal constants.
+17
+
+Published as a conference paper at ICLR 2024
+In scenarios where the dimension p is moderate (p = O(√n log n)) and the cluster sizes are equal,
+the parameters and initialization criteria can be simplified to the expression presented in Theorem 1
+once we substitute p = O(√n log n) and ¯n = n = n/K. The proof of Theorem 3 consists of four
+parts (Appendix C.3.1, C.3.2, C.3.3 and C.3.4). First, we will prove some key propositions which are
+derived from the theoretical analysis of K-means SDP (Chen and Yang, 2021) in Appendix C.3.1,
+and some important properties of the NLR formulation of the SDP in Appendix C.3.2. Then we will
+analyze the behavior of convergence in two phases. For Phase 1 (C.3.3), we will prove a constant
+speed convergence (Theorem 4) of the algorithm until it reaches the same block form as the optimum
+point, where we call it Phase 2. We then show that the algorithm converges exponentially quickly
+to the optimum solution in Phase 2 (Theorem 5, which combined with Phase 1 result leads to the
+overall convergence of Projected-GD (Theorem 3). Proofs of all intermediate lemmas are placed in
+Appendix C.5.
+C.3.1
+PROPERTIES FOR SDP
+First, we list our main assumptions and propositions from (Chen and Yang, 2021) below. We
+will assume Assumption 1 and Assumption 2 to hold throughout the rest of the proof. Recall that
+Assumption 1 (general version of Assumption A for the case of unbalanced cluster sizes) requires
+the minimal separation Θmin to be larger than a certain threshold (with order O(√log n)). The
+minimal separation can be interpreted as the signal-to-noise ratio of the clustering problem. Under
+such an assumption, the solution of SDP can achieve exact recovery under Gaussian mixture models
+(GMM) (Chen and Yang, 2021).
+The following propositions are derived from the original SDP problem (Chen and Yang, 2021), which
+characterize the bounds for eigenvalues of the matrices related to the dual construction of the original
+SDP (Proposition 3, 4 and Corollary 1) that will be used mainly to describe the smoothness of
+augmented Lagrangian function (ALF) (Lemma 1) and Hessian of the ALF (Lemma 5). Proposition
+5 will be used for characterizing the behavior of the gradient of ALF in Phase 1 at some optimum
+point (Lemma 2 and Lemma 3)
+Proposition 3. For any v ∈Rn, define S(v) := vT Av, ΓK := span{1Gk : k ∈[K]}⊥, which is the
+orthogonal complement of the linear subspace of Rn spanned by the vectors 1G1, . . . , 1GK. Then
+Lemma VI.1 (Chen and Yang, 2021) implies
+P
+
+max
+v∈ΓK, ∥v∥=1 |S(v)| ≥(√n + √p +
+√
+2t)2
+
+≤e−t, ∀t > 0.
+Proof. Refer to the argument after Lemma IV.1 in (Chen and Yang, 2021) (right below equation (26)
+in (Chen and Yang, 2021)) The exact formula is showed right above Lemma IV.2 in (Chen and Yang,
+2021).
+Proposition 4 (Theorem II.1 in (Chen and Yang, 2021)). Define
+Wn := λId + 1
+2(y∗1T
+n + 1n(y∗)T ) −B + A
+If Assumptions 1 and 2 hold, then with high probability the following equation holds:
+∥Wn∥op ≤λ + C2(n +
+p
+mp log n), Wn ≻0, Wn1Gk = 0, ∀k ∈[K]
+for some constant C2 > 0. Furthermore, SDP achieves exact recovery with a high probability at least
+1 −D4K2n−C3, for some constant D4.
+Proof. Wn ≻0, Wn1Gk = 0, ∀k ∈[K] and SDP achieves exact recovery have been shown from the
+proof of Theorem II.1 in (Chen and Yang, 2021). From the argument after Lemma IV.1 in (Chen
+and Yang, 2021) we have the upper bound vT Wnv ≤λ∥v∥2 −T(v). Then from the bound of |T(v)|
+(Lemma IV.2 in (Chen and Yang, 2021)) we have
+∥Wn∥op ≤λ + C2(n +
+p
+mp log n),
+for some constant C2 > 0 with high probability.
+■
+Proposition 5. Recall the minimal separation Θmin := min1≤j̸=k≤K ∥µj −µk∥2, and the maximal
+separation Θmax := max1≤j̸=k≤K ∥µj −µk∥2. If Assumption 1 and 2 hold, then we have ∀j ∈
+Gl, k ̸= l, (k, l) ∈[K]2,
+Dk,l(j) := [(2A + 1n(y∗)T + y∗1T
+n)Gl,Gk1nk]j ∈[C1nΘ2
+min, ¯nΘ2
+max],
+with probability at least 1 −12n−C3. In particular, Bij ≤2/C1Θ2
+max, ∀i, j ∈[n].
+18
+
+Published as a conference paper at ICLR 2024
+Proof. From equation (19) (21) (26) in (Chen and Yang, 2021), we know that
+Dk,l(j) = [BGl,Gk1nk]j ≥C1/2nk∥µl −µk∥≥C1/2nΘ2
+min.
+In particular, c(k,l)
+j
+in (Chen and Yang, 2021) is defined to be [BGl,Gk1nk]j and Bi,j
+:=
+Dk,l(j)Dl,k(i)/ P
+j∈Gl Dk,l(j), ∀i ∈Gk, j ∈Gl (refer to the paragraph right below (22) in (Chen
+and Yang, 2021)). On the other hand, from (21) in (Chen and Yang, 2021) we know
+Dk,l(j) = −nl + nk
+2nl
+λ + nk
+2 (∥¯
+Xk −Xj∥2 −∥¯
+Xl −Xj∥2),
+where ¯
+Xk = n−1
+k
+P
+i∈Gk Xi is the empirical mean of points in cluster k. From the proof of Lemma
+IV.1 in (Chen and Yang, 2021), recall Xj = µl + εj and denote θ = µl −µk we can write
+∥¯
+Xk −Xj∥2 −∥¯
+Xl −Xj∥2 = ∥θ + εj −¯εk∥2 −∥εj −¯εl∥2 ≤∥θ + ¯εl −¯εk∥2.
+Hence
+Dk,l(j) ≤nk
+2 (∥¯
+Xk −Xj∥2 −∥¯
+Xl −Xj∥2) ≤nk
+2 ∥θ + ¯εl −¯εk∥2.
+Then we can get the high dimensional upper bound nk∥θ∥2 for Dk,l(j) by bounding the Gaussian
+vectors εi using the same way as the proof of Lemma IV.1 in (Chen and Yang, 2021). Thus,
+Dk,l(j) ≤nk∥θ∥2 ≤¯nΘ2
+max,
+and Bi,j = Dk,l(j)Dl,k(i)/ P
+j∈Gl Dk,l(j) ≤2/C1nk∥µl −µk∥≤2/C1Θ2
+max.
+■
+Corollary 1. Let w ∈Rn, S to be the set of non-zero positions for w. If S ⊆Gk, for some k ∈[K],
+then
+−2λ∥w∥2 ≤⟨2A + y∗1T
+n + 1n(y∗)T , wwT ⟩≤2C2(n +
+p
+mp log n))∥w∥2.
+Furthermore, for general w ∈Rn,
+−2λ∥w∥2 ≤⟨2A + y∗1T
+n + 1n(y∗)T , wwT ⟩≤2(C2(n +
+p
+mp log n) + 1/C1Θ2
+max)∥w∥2,
+for some constants C1, C2.
+Proof. From Proposition 4 we have
+Wn := λId + 1
+2(y∗1T
+n + 1n(y∗)T ) −B + A ≻0.
+Hence
+⟨1
+2(y∗1T
+n + 1n(y∗)T ) + A, wwT ⟩≥⟨B −λId, wwT ⟩.
+Recall B ≥0, BGk,Gk = 0, ∀k ∈[K], then we have S ⊆Gk =⇒⟨B, wwT ⟩= 0. Thus,
+⟨2A + (y∗1T
+n + 1n(y∗)T ), wwT ⟩≥−2λ∥w∥2.
+On the other hand,
+⟨1
+2(y∗1T
+n + 1n(y∗)T ) + A, wwT ⟩= ⟨Wn + B −λId, wwT ⟩
+≤∥Wn∥op∥w∥2 −λ∥w∥2
+≤C2(n +
+p
+mp log n)∥w∥2
+F .
+Since ∥Wn∥op ≤2C2(n + √mp log n) from Proposition 4. Furthermore, if S ̸⊆Gk, ∀k ∈[K],
+then
+⟨1
+2(y∗1T
+n + 1n(y∗)T ) + A, wwT ⟩= ⟨Wn + B −λId, wwT ⟩
+≤C2(n +
+p
+mp log n)∥w∥2 + 1/2 max
+ij
+Bij∥w∥2.
+By Proposition 5,
+Bij ≤2/C1Θ2
+max, ∀i, j ∈[n],
+where universal constant C1 ∈(0, 1), Θmax is the maximum of separation. Thus,
+⟨1
+2(y∗1T
+n + 1n(y∗)T ) + A, wwT ⟩≤(C2(n +
+p
+mp log n) + 1/C1Θ2
+max)∥w∥2.
+■
+19
+
+Published as a conference paper at ICLR 2024
+C.3.2
+THE NLR FORMULATION AND SOME PROPERTIES
+Before diving into the proofs of Phases 1 and 2, let us recall the Augmented Lagrangian Function
+(ALF) to which we would apply Projected Gradient Descent (PGD), and present two lemmas for
+characterizing the smoothness of ALF and the properties of the projection operator.
+Consider the y = y∗defined Assumption 2. Recall the ALF is given by
+f(U) := L(U, y) = ⟨L · Idn + A, UU T ⟩+ ⟨y, UU T 1n −1n⟩+ β
+2 ∥UU T 1n −1n∥2
+F ,
+(19)
+where L ∈(0, λ), β > 0. Then we can get the gradient of f as
+∇f(U) = (2A + 2L · Id + y1T
+n + 1nyT )U + β[1n(UU T 1n −1n)T + (UU T 1n −1n)1T
+n]U.
+A direct implication from Proposition 4 is [∇f(U ∗Q))]S = −2(λ −L)[U ∗Q]S, ∀Q ∈Fm, where
+[U]S stands for the matrix that keeps positive entries of U ∗Q and set the non-positive ones to zero.
+This is due to the fact that Wn1Gk = 0, ∀k ∈[K] and Wn = λId + 1
+2(y∗1T
+n + 1n(y∗)T ) −B + A.
+Recall that Q, Qt ∈Fm are defined to be
+Q = argmin ˜
+Q∈Fm∥U −U ∗˜Q∥F , Qt = argmin ˜
+Q∈Fm∥U t −U ∗˜Q∥F , ∀t ≥0.
+Now we will consider the smoothness of the ALF. Here we consider two cases of U: the first case
+is for general U in the feasible set Ω; the second case is for the U that has the same block form as
+some optimum point U ∗˜Q. As we will see, bound of the Lipschitz constant for the latter one will be
+smaller. Recall that Ω:= {U ∈Rn×r : ∥U∥2
+F = K, U ≥0}.
+Lemma 1 (Smoothness condition). If ∥U −U ∗˜Q∥F ≤1, for some ˜Q ∈Fm, then
+∥∇f(U) −∇f(U ∗˜Q)∥F ≤R1∥U −U ∗˜Q∥F ,
+where R1 = 2C2(n + √mp log n) + 2L + 12nβ if
+U ∈Gm; R1 = 2C2(n + √mp log n) +
+2/C1Θ2
+max + 2L + 12nβ, for some constants C1, C2 and general U ∈Ω, where Θ2
+max is the
+maximum squared separation.
+The next lemma shows that locally, the projection of PGD is equivalent to the projection to a convex
+set, and therefore is a local contraction map.
+Lemma 2 (Local projection to the ball). Denote ϵc :=
+(λ−L)
+√
+K
+2[
+√
+KR1+2(λ−L)
+√
+K+nΘ2max]. Here R1 =
+2C2(n + √mp log n) + 2L + 2/C1Θ2
+max + 12nβ. Then
+∥U −U ∗Q∥F ≤ϵc =⇒⟨∇f(U), U⟩< −(λ −L)K/2 < 0.
+Furthermore, if α > 0,
+∥Π+(U −α∇f(U))∥2
+F > K, ΠΩ(U −α∇f(U)) = ΠC(Ω)(U −α∇f(U))
+for some constants C1, C2.
+C.3.3
+LINEAR CONVERGENCE NEAR OPTIMAL POINT (PHASE 1)
+Here we will prove the convergence of U t to the block form in Phase 2 (Theorem 4), which will
+be implied by Lemma 3 and Lemma 4. The first lemma shows that after at most I iterations, the
+iterate will become the block form and fall into set Gm, which then enters Phase 2. The second
+lemma controls the distance to the optimum within Phase 1, which will help us set the appropriate
+neighborhood of initialization to ensure the convergence of Phase 1.
+Lemma 3 (One-step shrinkage towards block form). Denote ∆= U −U a,∗, where U a,∗is defined
+as (17). Choose (L, β) such that:
+2(λ −L)
+n
+≤β ≤C1anΘ2
+min
+12rn2¯a3 .
+Suppose ∥∆∥F ≤ϵc, where ϵc is defined in Lemma 2. Assume
+∥∆S(a)c∥∞≤C1anΘ2
+min
+32λ
+, ∥∆∥F ≤min
+
+ϵ1, 3
+4a√n
+
+,
+(20)
+20
+
+Published as a conference paper at ICLR 2024
+where ϵ1 :=
+min
+
+
+
+C1anΘ2
+min
+64K(Θmax
+√2K log n + C5(p + log2 n)),
+s
+C1anΘ2
+min
+96βr¯a¯n , C1anΘ2
+min
+96βr¯a2¯n√n
+
+
+,
+Then we have
+[U]i,τ −α[∇f(U)]i,τ ≤[U]i,τ −αC1anΘ2
+min
+8
+, ∀i ∈Gl, s(k −1) < τ ≤sk, l ̸= k.
+Furthermore,
+[V ]i,τ ≤max{[U]i,τ −αC1anΘ2
+min
+8
+, 0}, ∀i ∈Gl, s(k −1) < τ ≤sk, l ̸= k.
+where V = ΠΩ(W), W = U −α∇f(U), for some constants C1, C5. Consequently, after at most
+I =
+1
+4αλ iterations, U t will enter Phase 2, i.e.,U I ∈Gm if for every step t, U t meets the above
+conditions (20).
+The next lemma calculates the upper bound of the Inflation of ∥U −U ∗Q∥F after Projected-GD.
+This will be used when we have the neighborhood assumptions for the initialization of Phase 2. Then
+we can trace the assumptions back to the initialization of Phase 1 as we know the inflation rate at
+each step of Phase 1.
+Lemma 4 (Inflation of distance to U a,∗for Phase 1). If ∥U −U ∗Q∥F ≤ϵc, then
+∥V −U a,∗∥F ≤η∥U −U a,∗∥F ,
+where η = 1 + αR1, R1 = 2C2(n + √mp log n) + 2/C1Θ2
+max + 2L + 12nβ, for some constants
+C1, C2.
+Now, we will establish our condition on the initialization, given our knowledge of the inflation of
+∥∆t∥F for each step t in Phase 1. This is summarized in the following theorem.
+Theorem 4 (Convergence of Phase 1). Recall that λ = p+ C1
+4 mΘ2
+min, m = mink̸=l
+2nknl
+nk+nl . Define
+U 0 to be the initialization of our NLR method and define ∆t := U t −U a,∗. Let I = 1/(4αλ), η =
+1 + αR1, where R1 = 2C2(n + √mp log n) + 2L + 2/C1Θ2
+max + 12nβ. Suppose I is an integer
+and ¯a ≤ca, for some constant c > 0. If we choose (L, β) in (19) such that:
+2(λ −L)
+n
+≤β ≤C1anΘ2
+min
+12rn2¯a3 .
+Then with probability at least 1 −C4n−C3, we have U I ∈Gm, ∥U t −U a,∗∥F ≤ϵc, ∀t ≤I,
+provided that
+∥∆0
+S(a)c∥∞≤C1anΘ2
+min
+32λ
+, ∥∆0∥F ≤1
+ηI min
+
+ϵc, ϵ1, 3
+4a√n
+
+.
+Here ϵ1 :=
+min
+
+
+
+C1anΘ2
+min
+64K(Θmax
+√2K log n + C5(p + log2 n)),
+s
+C1anΘ2
+min
+96βr¯a¯n , C1anΘ2
+min
+96βr¯a2¯n√n
+
+
+,
+ϵc :=
+(λ −L)
+√
+K
+2[(1 +
+√
+K)R1 + 2(λ −L)
+√
+K + √nr · ¯a¯nΘ2max]
+.
+Here, C1, C2, C3, C4, C5 are some constants.
+Proof. This can be implied from Lemma 3 and Lemma 4 by assuming the neighborhood requirement
+in Lemma 3 multiplied by the factor 1/ηI for the neighborhood of the initialization ∥∆0∥F . Note
+that if we know the total step of Phase 1, which is I, then we only need to assume ∥∆0∥F ≤
+1
+ηI min
+
+ϵc, ϵ1, 3
+4a√n
+	
+, if we want ∥∆t∥F ≤min
+
+ϵc, ϵ1, 3
+4a√n
+	
+, ∀t ≤I.
+■
+21
+
+Published as a conference paper at ICLR 2024
+C.3.4
+LINEAR CONVERGENCE NEAR OPTIMAL POINT (PHASE 2)
+Here our goal is to prove the linear convergence of Phase 2 when U ∈Gm (Theorem 5). The main idea
+is to show the local strong convexity at optimal points (Lemma 5) followed by a standard argument
+of linear convergence (Lemma 6). Moreover, we also need to ensure that the iterations continue in
+block form during Phase 2 (Lemma 7).
+Lemma 5 (Local strong convexity). When U ∈Gm, if we define ∆:= UQT −U ∗, then
+⟨∇2f(U ∗)[∆], ∆⟩≥˜β∥∆∥2
+F ,
+where ˜β = min{2[L −(√n + √p + √2 log n)2], −2(λ −L) + βn} > 0, provided that L ∈
+((√n+√p+√2 log n)2, λ), β > 2(λ−L)/n. Furthermore, for every U satisfying ∥U −U ∗∥F < ϵs,
+we have
+⟨∇2f(U)[∆], ∆⟩≥˜β/2∥∆∥2
+F ,
+where ϵs =
+˜β
+36βn.
+After establishing the local strong convexity, we can prove the linear (exponential) convergence of
+the algorithm through a standard analysis for the projected gradient descent (PGD) as below.
+Lemma 6 (Local exponential convergence). When U ∈Gm, if we define ∆:= UQT −U ∗, then
+there exists γ ∈(0, 1), ϵ > 0, s.t.,
+∥V −U ∗Q∥F ≤γ∥U −U ∗Q∥F ,
+where
+Q = argmin ˜
+Q∈Fm∥U −U ∗˜Q∥F ,
+provided that ∥U −U ∗Q∥F < ϵ, where ϵ = min{ϵc, ϵs}. Recall that ϵc is defined in Lemma 2,
+ϵs is defined in Lemma 5. In particular, if we we choose the step size α ≤˜β/(2R2
+2), where
+R2 = 2C2(n + √mp log n) + 2L + 12nβ, for some constant C2. Then the contraction factor would
+be γ2 = (1 −α˜β/2).
+The convergence for Phase 2 has not yet been proved since the above lemma only demonstrates the
+convergence of PGD once U t has reached Phase 2. However, the subsequent update U t+1 might not
+remain in Phase 2. The following lemma ensures that U t stays in Phase 2, provided that the initial
+point U 0 in Phase 2 is located within some neighborhood of an optimum point.
+Lemma 7 (Iterations remain staying in Phase 2). Suppose Lemma 6 holds and U 0 ∈Gm. Let
+¯ϵ := min
+
+ϵ1, 3
+4a√n
+	
+. Then we have
+U t ∈Gm, ∀t ≥1,
+where
+U t+1 = ΠΩ(U t −α∇f(U t)), ∀t ≥1,
+as long as ∥U 0 −U a,∗∥F ≤min{(1 −γ)/2¯ϵ, ϵ}, where recall that ϵ = min{ϵc, ϵs}.
+Now, we can ensure the overall exponential convergence in Phase 2 by combining the above lemmas.
+Theorem 5 (Linear convergence in Phase 2). Suppose U 0 ∈Gm. Let the step size: α <
+˜β
+2(2C2(n+√mp log n)+2L+12nβ)2 , ˜β = min{2[L −(√n + √p + √2 log n)2], −2(λ −L) + βn}.
+Then with probability at least 1 −C4n−C3, we have
+∥U t+1 −U ∗Qt+1∥F ≤γ∥U t −U ∗Qt∥F , ∀k,
+given ∥U 0 −U 0Q0∥F ≤ϵ, ∥U 0 −U a,∗∥F ≤ϵ0, where γ2 = (1 −α˜β/2),
+ϵ = min
+(
+˜β
+36βn,
+(λ −L)
+√
+K
+2[
+√
+KR1 + 2(λ −L)
+√
+K + nΘ2max]
+)
+, ϵ0 := 1 −γ
+2
+min
+
+ϵ1, 3
+4a√n
+
+,
+for some constants C2, C3, C4.
+22
+
+Published as a conference paper at ICLR 2024
+Proof. This can be implied from Lemma 6 and Lemma 7. Lemma 6 indicates linear convergence if
+the former step is in Phase 2. Lemma 7 guarantees that every step of Projected-GD will stay in Phase
+2. Therefore we only need to combine the conditions for both lemmas.
+■
+Combining Phase 1 and Phase 2 (Theorem 4 and Theorem 5) and lifting the assumptions of initial-
+ization for Phase 2 to the initialization of Phase 1 (by multiplying the factor 1/ηI), we obtain the
+following theorem. This theorem represents a stronger version of Theorem 3, presented at the begin-
+ning of Appendix C.3. This theorem is stronger in the sense that we can get the exact relationships
+between parameters. However, the presentation of the theorem would sacrifice the conciseness of the
+statement. Hence we present the simpler version as Theorem 3 at the beginning of Appendix C.3.
+Theorem 6 (Local linear rate of convergence). Recall ∆t := U t −U a,∗. Suppose ¯a ≤ca, c > 0.
+Let I = (4αλ)−1, η = 1 + αR1, R1 = 2C2(n + √mp log n) + 2L + 2/C1Θ2
+max + 12nβ. Choose
+(L, β) such that:
+L > (√n + √p +
+p
+2 log n)2, 2(λ −L)
+n
+≤β ≤C1anΘ2
+min
+12rn2¯a3 ,
+and the step size α
+<
+˜β
+2(2C2(n+√mp log n)+2L+12nβ)2 ,
+˜β
+=
+min{2[L −(√n + √p +
+√2 log n)2], −2(λ −L) + βn}. Then with probability at least 1 −C4n−C3, we have that for any
+t ⩾I,
+U t ∈Gm, and ∥U t+1 −U ∗Qt+1∥F ≤γ∥U t −U ∗Qt∥F ,
+provided that
+∥∆0
+S(a)c∥∞≤C1anΘ2
+min
+32λ
+, ∥∆0∥F ≤1
+ηI min
+
+ϵ, 1 −γ
+2
+ϵ1, 1 −γ
+2
+3
+4a√n
+
+,
+where γ2 = (1 −α˜β/2), ϵ = min
+n
+˜β
+36βn,
+(λ−L)
+√
+K
+2[
+√
+KR1+2(λ−L)
+√
+K+nΘ2
+max]
+o
+, ϵ1 :=
+min
+
+
+
+C1anΘ2
+min
+64K(Θmax
+√2K log n + C5(p + log2 n)),
+s
+C1anΘ2
+min
+96βr¯a¯n , C1anΘ2
+min
+96βr¯a2¯n√n
+
+
+.
+Here, C1, C2, C3, C4, C5 are some constants.
+C.4
+PROOF OF LINEAR CONVERGENCE WITH y ≈y∗
+The following theorem extends the results of Theorem 3 from dual variable y = y∗to any value in a
+neighborhood of the optimum dual y∗, which completes the primal-dual local convergence analysis
+by demonstrating that the primal subproblem minU∈ΩLβ(U, y) can be efficiently solved around the
+optimum.
+Theorem 1 (Convergence of projected gradient descent). Suppose y∗is the optimum dual for the
+SDP problem (Assumption 2 in Appendix C.3) and Assumption A holds. Assume p = O(n log n),
+Θmax ≤CΘmin for some C > 0, and there exists some block partition sizes m and an associated
+optimal solution U a,∗with some within block weights ak = (ak,1, ak,2, . . . , ak,mk) satisfying
+¯a ≤ca, c > 0 and a = mink∈[K] minℓ∈[mk]{ak,ℓ} and ¯a = maxk∈[K] maxℓ∈[mk]{ak,ℓ}. We denote
+the initialization of the algorithm as U 0; let ˜U denote the unique (whose existence is also guaranteed)
+stationary point of the projected gradient descent updating formula under dual value ˜y close to y∗,
+i.e. ˜U satisfies
+˜U = ΠΩ
+  ˜U −α∇ULβ( ˜U, ˜y)
+
+.
+If ∥˜y −y∗∥≤δ for some δ > 0, and the initialization discrepancy ∆0 = U 0 −U a,∗satisfies
+∥∆0
+S(a)c∥∞≤O(K/√nr)
+and
+∥∆0∥F ≤O
+ r−0.5K−5.5 min{1, K−2.5Θ2
+min/ log n)}
+
+,
+then it holds with probability at least 1 −c1n−c2 that, for any t ≥I = O(K3),
+U t ∈Gm
+and
+inf
+Q∈Or; ˜UQ∈Gm
+∥U t+1 −˜UQ∥F ≤γ
+inf
+Q∈Or; ˜UQ∈Gm
+∥U t −˜UQ∥F ,
+23
+
+Published as a conference paper at ICLR 2024
+where γ = 1 −O(K−6), provided that β = O(Θ2
+min/K3), L = O(nΘ2
+min/K) in (12) and step size
+α is chosen such that α−1 = O(K2nΘ2
+min). Here, c1 and c2 are some constants.
+Proof sketches. The proof slightly modifies that of Theorem 3, where we divide the convergence of
+the projected gradient descent for solving the primal subproblem into two phases. In phase one, we
+demonstrate that, for the same reason as in the previous proof, the iterate will become block diagonal
+Gm after at most I iterations. In phase two, due to the strong convexity of L( · , ˜y) around any ˜U
+within Gm, the projected gradient descent will achieve a linear convergence rate. Here, the strong
+convexity is implied by the strong convexity of L( · , y∗) at U ∗within Gm and the continuity of the
+Hessian (with respect to U) of the Augmented Lagrangian function L(U, y) with respect to U and y.
+Precise statements regarding the two phases are provided below.
+■
+By employing the same argument used for Phase 1 and Phase 2 regarding convergence at the optimum
+dual y∗(as per Theorem 4 and 5), we derive the following analogs for ˜y.
+Theorem 7 (Convergence of Phase 1). Recall that λ = p+ C1
+4 mΘ2
+min, m = mink̸=l
+2nknl
+nk+nl . Define
+U 0 to be the initialization of our NLR method and define ∆t := U t −U a,∗. Let I = 1/(4αλ), η =
+1 + αR1, where R1 = 2C2(n + √mp log n) + 2L + 2/C1Θ2
+max + 12nβ. Suppose I is an integer
+and ¯a ≤ca, c > 0. If we choose (L, β) in (19) such that:
+2(λ −L)
+n
+≤β ≤C1anΘ2
+min
+12rn2¯a3 ,
+then with probability at least 1 −C4n−C3 (the high probability argument comes from Assumption 1),
+we have U I ∈Gm; ∥U t −U a,∗∥F ≤ϵc, ∀t ≤I, provided that
+∥∆0
+S(a)c∥∞≤C1anΘ2
+min
+32λ
+, ∥∆0∥F ≤1
+ηI min
+
+ϵc, ϵ1, 3
+4a√n
+
+, ∥y∗−˜y∥≤δ,
+for some small δ > 0, where ϵ1 :=
+min
+
+
+
+C1anΘ2
+min
+64K(Θmax
+√2K log n + C5(p + log2 n)),
+s
+C1anΘ2
+min
+96βr¯a¯n , C1anΘ2
+min
+96βr¯a2¯n√n
+
+
+,
+ϵc :=
+(λ −L)
+√
+K
+2[(1 +
+√
+K)R1 + 2(λ −L)
+√
+K + √nr · ¯a¯nΘ2max]
+.
+Here, C1, C2, C3, C4, C5 are some constants.
+Theorem 8 (Linear convergence of Phase 2). Suppose U 0 ∈Gm, then there exists a unique ˜U,
+such that it is the stationary point of the projected gradient descent updating the formula for any dual
+˜y close to y∗, that is,
+˜U = ΠΩ
+  ˜U −α∇ULβ( ˜U, ˜y)
+
+.
+Furthermore, we define
+Qt = argminQ∈Or; ˜UQ∈Gm ∥U t −˜UQ∥F , ∀t ≥0.
+If ∥y∗−˜y∥≤δ, for some δ > 0; the step size α <
+˜β
+2(2C2(n+√p log n)+2L+12nβ)2 , ˜β = min{2[L −
+(√n + √p + √2 log n)2], −2(λ −L) + βn}, then with probability at least 1 −C4n−C3, we have
+∥U t+1 −˜UQt+1∥F ≤γ∥U t −˜UQt∥F , ∀k,
+given ∥U 0 −U 0Q0∥F ≤ϵ, ∥U 0 −U a,∗∥F ≤ϵ0, where γ2 = (1 −α˜β/2),
+ϵ = min
+(
+˜β
+36βn,
+(λ −L)
+√
+K
+2[
+√
+KR1 + 2(λ −L)
+√
+K + nΘ2max]
+)
+, ϵ0 := 1 −γ
+2
+min
+
+ϵ1, 3
+4a√n
+
+,
+for some constants C2, C3, C4.
+24
+
+Published as a conference paper at ICLR 2024
+Proof sketches. Lemma 5 indicates that ⟨∇2f(U ∗)[∆], ∆⟩≥˜β∥∆∥2
+F , for some ˜β > 0, where
+∆= U −V, ∀U, V ∈Gm. This is due to the fact that ∆= U −V = (U −V −U ∗Q)+U ∗Q, (U −
+V −U ∗Q) ∈Gm. Hence under the condition of the local projection lemma (Lemma 2) we have
+∥ΠΩ(U −α∇f(U)) −ΠΩ(U −α∇f(U))∥2
+≤∥(U −α∇f(U)) −(U −α∇f(U))∥2
+≤∥U −V ∥2 −2α⟨∇f(U) −∇f(V ), U −V ⟩+ α2∥∇f(U) −∇f(V )∥2
+≤∥U −V ∥2 −α˜β/2∥U −V ∥2
+= (1 −α˜β/2)∥U −V ∥2.
+Therefore the map U 7→ΠΩ(U −α∇f(U)) is a (strict) contraction map. Hence there exists a unique
+stationary point ˜U within Gm by the contraction mapping theorem. Rest of the proof is the same as
+the proof of linear convergence in Phase 2 at optimum dual y∗(Theorem 5).
+■
+If we combine Phase 1 and Phase 2 together (Theorem 7 and Theorem 8) and lift the assumptions of
+initialization for Phase 2 to the initialization of Phase 1 (by multiplying the factor 1/ηI), we will get
+the following theorem, which is a stronger version of Theorem 1 in the sense that we do not require
+moderate p = O(√n log n) and the constraint on the maximal separation Θmax ≤CΘmin. What
+is more, we can get the exact relationships between parameters from this theorem. However, the
+presentation of the theorem would sacrifice the conciseness of the statement. Hence we present the
+simpler version as Theorem 1 in the main paper.
+Theorem 9 (Local convergence of projected gradient descent). Recall ∆t := U t −U a,∗. Suppose
+Assumption 1 and 2 hold, and assume ∥˜y −y∗∥≤δ for some δ > 0. Let I = (4αλ)−1, η =
+1 + αR1, R1 = 2C2(n + √mp log n) + 2L + 2/C1Θ2
+max + 12nβ. Choose (L, β) such that:
+L > (√n + √p +
+p
+2 log n)2, 2(λ −L)
+n
+≤β ≤C1anΘ2
+min
+12rn2¯a3 ,
+and the step size α
+<
+˜β
+2(2C2(n+√mp log n)+2L+12nβ)2 ,
+˜β
+=
+min{2[L −(√n + √p +
+√2 log n)2], −2(λ −L) + βn}. If ¯a ≤ca, c > 0, then with probability at least 1 −C4n−C3,
+we have that for any t ≥I,
+U t ∈Gm and ∥U t+1 −˜UQt+1∥F ≤γ∥U t −˜UQt∥F ,
+provided that
+∥∆0
+S(a)c∥∞≤C1anΘ2
+min
+32λ
+, ∥∆0∥F ≤1
+ηI min
+
+ϵ, 1 −γ
+2
+ϵ1, 1 −γ
+2
+3
+4a√n
+
+,
+where γ2 = (1 −α˜β/2), ϵ = min
+n
+˜β
+36βn,
+(λ−L)
+√
+K
+2[
+√
+KR1+2(λ−L)
+√
+K+nΘ2max]
+o
+, ϵ1 :=
+min
+
+
+
+C1anΘ2
+min
+64K(Θmax
+√2K log n + C5(p + log2 n)),
+s
+C1anΘ2
+min
+96βr¯a¯n , C1anΘ2
+min
+96βr¯a2¯n√n
+
+
+.
+Here, C1, C2, C3, C4, C5 are some constants.
+C.5
+PROOF OF LEMMAS
+Lemma 1 (Smoothness condition).
+If ∥U −U ∗˜Q∥F ≤1, for some ˜Q ∈Fm, then
+∥∇f(U) −∇f(U ∗˜Q)∥F ≤R1∥U −U ∗˜Q∥F ,
+where R1 = 2C2(n + √mp log n) + 2L + 12nβ if
+U ∈Gm; R1 = 2C2(n + √mp log n) +
+2/C1Θ2
+max + 2L + 12nβ, for some constants C1, C2 and general U ∈Ω, where Θ2
+max is the
+maximum squared separation.
+25
+
+Published as a conference paper at ICLR 2024
+Proof. By definition we have ∇f(U) −∇f(U ∗˜Q) =
+(2A+2L·Id+y1T
+n+1nyT )(U−U ∗˜Q)+β[1n1T
+n(UU T −U ∗˜Q(U ∗˜Q)T )+(UU T −U ∗˜Q(U ∗˜Q)T )1n1T
+n]U.
+Note that
+∥U∥op ≤∥U −U ∗˜Q∥op + ∥U ∗˜Q∥op
+≤∥U −U ∗˜Q∥F + ∥U ∗˜Q∥op
+≤1 + 1
+= 2.
+Hence
+∥(UU T −U ∗˜Q(U ∗˜Q)T )1n1T
+nU∥F ≤∥(UU T −U ∗˜Q(U ∗˜Q)T )∥op∥U∥op∥1n1T
+n∥F
+≤2n∥U(U −U ∗˜Q)T + (U −U ∗˜Q)(U ∗˜Q)T ∥F
+≤6n∥U −U ∗˜Q∥F .
+From Corollary 1 we have for U ∈Ω,
+∥∇f(U) −∇f(U ∗˜Q)∥F
+≤(∥(2A + y1T
+n + 1nyT )∥F + 2L)∥(U −U ∗˜Q)∥F + 2β∥(UU T −U ∗˜Q(U ∗˜Q)T )∥op∥U∥op∥1n1T
+n∥F
+≤(2C2(n +
+p
+mp log n) + 2/C1Θ2
+max + 2L)∥U −U ∗˜Q∥F + 12nβ∥U −U ∗˜Q∥F
+≤(2C2(n +
+p
+mp log n) + 2/C1Θ2
+max + 2L + 12nβ)∥U −U ∗˜Q∥F .
+For U ∈Gm,
+∥∇f(U) −∇f(U ∗˜Q)∥F
+≤(∥(2A + y1T
+n + 1nyT )∥F + 2L)∥(U −U ∗˜Q)∥F + 2β∥(UU T −U ∗˜Q(U ∗˜Q)T )∥op∥U∥op∥1n1T
+n∥F
+≤(2C2(n +
+p
+mp log n) + 2L)∥U −U ∗˜Q∥F + 12nβ∥U −U ∗˜Q∥F
+≤(2C2(n +
+p
+mp log n) + 2L + 12nβ)∥U −U ∗˜Q∥F .
+■
+Lemma 2 (Local contraction to the ball). Denote ϵc :=
+(λ−L)
+√
+K
+2[
+√
+KR1+2(λ−L)
+√
+K+nΘ2max]. Here R1 =
+2C2(n + √p log n) + 2L + 2/C1Θ2
+max + 12nβ. Then
+∥U −U ∗Q∥F ≤ϵc =⇒⟨∇f(U), U⟩< −(λ −L)K/2 < 0.
+Furthermore, if α > 0,
+∥Π+(U −α∇f(U))∥2
+F > K, ΠΩ(U −α∇f(U)) = ΠC(Ω)(U −α∇f(U)),
+for some constants C1, C2.
+Proof. Let [U]S to be the matrix that keeps positive entries of U and set the nonpositive ones to zero,
+i.e.,
+∇f(U) = [∇f(U)]S + [∇f(U)]Sc.
+Note that
+∥[∇f(U ∗))]S∥F = ∥−2(λ −L)[U ∗]S∥F = 2(λ −L)
+√
+K, ⟨∇f(U ∗Q), U ∗Q⟩= −2(λ −L)K.
+From Proposition 5, we have
+∥[∇f(U ∗))]Sc∥F ≤nΘ2
+max.
+Then by Lemma 1 we have
+|⟨∇f(U), U⟩−⟨∇f(U ∗Q), U ∗Q⟩| = |⟨∇f(U) −∇f(U ∗Q), U⟩+ ⟨∇f(U ∗Q), U −U ∗Q⟩|
+≤∥∇f(U) −∇f(U ∗Q)∥F ∥U∥F + ∥∇f(U ∗Q)∥F ∥U −U ∗Q∥F
+= ∥∇f(U) −∇f(U ∗Q)∥F ∥U∥F + ∥∇f(U ∗)Q∥F ∥U −U ∗Q∥F
+≤[
+√
+KR1 + 2(λ −L)
+√
+K + nΘ2
+max]∥U −U ∗Q∥F .
+26
+
+Published as a conference paper at ICLR 2024
+Finally we have
+⟨∇f(U), U⟩< −(λ −L)K < 0,
+given ϵc ≤
+(λ−L)
+√
+K
+2[
+√
+KR1+2(λ−L)
+√
+K+nΘ2max]. Here R1 = 2C2(n+√p log n)+2L+2/C1Θ2
+max +12nβ.
+Note the fact
+ΠΩ(U) = ΠSnr−1(
+√
+K)(Π+(U)), ΠC(Ω)(U) = ΠBnr(
+√
+K)(Π+(U)),
+where Π+(U) stands for the projection of U on to the space of matrices with positive entries,
+Snr−1(
+√
+K) stands for the sphere with radius
+√
+K, Bnr(
+√
+K) stands for the ball with radius
+√
+K.
+Thus we only need to show that
+∥Π+(U −α∇f(U))∥2
+F ≥K.
+Define ˜Ui,j = α[∇f(U)]i,j, if [U −α∇f(U)]i,j > 0. And ˜Ui,j = Ui,j otherwise. Then we have
+U −˜U = Π+(U −˜U) = Π+(U −α∇f(U)).
+Moreover, if [U −α∇f(U)]i,j ≤0, then
+[α∇f(U)]i,j ≥Ui,j ≥0.
+Hence
+⟨U, ˜U⟩≤α⟨∇f(U), U⟩< 0,
+which implies that
+∥Π+(U −α∇f(U))∥2
+F = ∥U −˜U∥2
+F > ∥U∥2
+F = K.
+■
+Lemma 3 (One-step shrinkage towards block form). Denote ∆= U −U a,∗, where U a,∗is defined
+as (17). Choose (L, β) such that:
+2(λ −L)
+n
+≤β ≤C1anΘ2
+min
+12rn2¯a3 .
+Suppose ∥∆∥F ≤ϵc, where ϵc is defined in Lemma 2. Assume
+∥∆S(a)c∥∞≤C1anΘ2
+min
+32λ
+, ∥∆∥F ≤min
+
+ϵ1, 3
+4a√n
+
+,
+(21)
+where ϵ1 :=
+min
+
+
+
+C1anΘ2
+min
+64K(Θmax
+√2K log n + C5(p + log2 n)),
+s
+C1anΘ2
+min
+96βr¯a¯n , C1anΘ2
+min
+96βr¯a2¯n√n
+
+
+,
+Then we have
+[U]i,τ −α[∇f(U)]i,τ ≤[U]i,τ −αC1anΘ2
+min
+8
+, ∀i ∈Gl, s(k −1) < τ ≤sk, l ̸= k.
+Furthermore,
+[V ]i,τ ≤max{[U]i,τ −αC1anΘ2
+min
+8
+, 0}, ∀i ∈Gl, s(k −1) < τ ≤sk, l ̸= k.
+where V = ΠΩ(W), W = U −α∇f(U), for some constants C1, C5. Consequently, after at most
+I =
+1
+4αλ iterations, U t will enter Phase 2, i.e.,U I ∈Gm if for every step t, U t meets the above
+conditions (21).
+Proof. Without loss of generality and for notation simplicity, we assume m1 = · · · = mK = s =
+r/K, ak,1 = · · · = ak,mk = ak, ∀k. By definition we have
+∇f(U) = (2A + 2L · Id + y1T
+n + 1nyT )U + β[1n(UU T 1n −1n)T + (UU T 1n −1n)1T
+n]U.
+27
+
+Published as a conference paper at ICLR 2024
+Now suppose ∆= U −U a,∗, ∆= [d1, . . . dr]. Then ∀i ∈Gl, l ̸= 1.
+[∇f(U)]i,1 = 2L · (d1)i + eT
+i (2A + y1T
+n + 1nyT )a1,11G1 + eT
+i (2A + y1T
+n + 1nyT )d1.
+From Proposition 5 we know
+eT
+i (2A + y1T
+n + 1nyT )a1,11G1 = a1,1D1,l(i) ≥C1a1,1nΘ2
+min.
+The goal of the rest of the proof is to show that eT
+i (2A + y1T
+n + 1nyT )a1,11G1 is the dominant term
+in [∇f(U)]i,1; the rest of the terms can be absorbed given that U is located within some neighborhood
+of the optimum point U a,∗. From calculation we have
+[∇f(U)]i,1 = 2L · (d1)i + eT
+i (2A + y1T
+n + 1nyT )a1,11G1 + eT
+i (2A + y1T
+n + 1nyT )d1
++ βeT
+i [1n(UU T 1n −1n)T + (UU T 1n −1n)1T
+n]a1,11G1 + r1
+= 2L · (d1)i + a1,1D1,l(i) + eT
+i (2A + y1T
+n + 1nyT )d1
++ βeT
+i [1n(UU T 1n −1n)T + (UU T 1n −1n)1T
+n]a1,11G1 + r1,
+where
+r1 = βeT
+i [1n(UU T 1n −1n)T + (UU T 1n −1n)1T
+n]d1.
+Further orthogonally decompose dτ = P
+k xk,τ1Gk + wτ, for xk,τ ∈R, τ = 1, . . . , r, wτ ∈Γ⊥
+K.
+Then we have
+eT
+i (2A + y1T
+n + 1nyT )d1 =
+X
+k
+xk,1Dk,l(i) + eT
+i (2A + y1T
+n + 1nyT )w1
+≥x1,1D1,l(i) −2λ · xl,1 + eT
+i (2A + y1T
+n + 1nyT )w1,
+since xk,1 ≥0, ∀k ̸= 1, Dl,l = −2λnl. Recall X = [X1, . . . , Xn], Xi = εi + µl, ∀i ∈Gl. Then
+from high dimensional bound of Gaussian distributions we have
+|eT
+i (2A + y1T
+n + 1nyT )w1| = |2[Aw1]i −
+X
+k
+2
+nk
+1T
+nkAGk,GkwGk|
+=
+
+2
+X
+k
+[(µl −µk) + (εi −¯εk)]T
+
+X
+j∈Gk
+εj(w1)j
+
+
+
+≤2K(Θmax
+p
+2K log n + C5(p + log2 n))∥w1∥,
+with probability ≥1 −C4/n, for some constants C4, C5 > 0. On the other hand,
+βeT
+i [1n(UU T 1n −1n)T + (UU T 1n −1n)1T
+n]a11G1
+= βa1eT
+i [1n1T
+n((U a,∗)∆T + ∆(U a,∗)T ) + ((U a,∗)∆T + ∆(U a,∗)T )1n1T
+n]1G1
+= βa1[1T
+n(U a,∗∆T + ∆(U a,∗)T )1G1 + n1eT
+i (U a,∗∆T + ∆(U a,∗)T )1n]
+= βa1
+r
+X
+τ=1
+[1T
+n(u0
+τdT
+τ + dτ(u0
+τ)T )1G1 + n1eT
+i (u0
+τdT
+τ + dτ(u0
+τ)T )1n]
+= βa1[(
+K
+X
+g=1
+ng
+sg
+X
+τ=s(g−1)+1
+agdT
+τ 1G1) + a1n1
+s
+X
+τ=1
+1T
+ndτ
++ n1
+sl
+X
+τ=s(l−1)+1
+al1T
+ndτ + n1(
+K
+X
+g=1
+ng
+sg
+X
+τ=s(g−1)+1
+ag(dτ)i)]
+≥βa1[2ra1n1
+√n(−∥∆∥F ) + rn1¯a√nl(−∥∆∥F )
++ n1(a1n1(d1)i + ¯anl
+sl
+X
+τ=s(l−1)+1
+(dτ)i))]
+≥βa1,1[3r¯an1
+√n(−∥∆∥F ) + a1n2
+1(d1)i −¯an1nlr¯a].
+28
+
+Published as a conference paper at ICLR 2024
+Similarly we can show that |r1| ≤βr¯a(3n2¯a2 + ¯n∥∆∥2
+F ). Hence
+[∇f(U)]i,1 ≥2L · (d1)i + (a1,1 + x1,1)D1,l(i) −2λ∥∆Sc∥∞
+−2K(Θmax
+p
+2K log n + C5(p + log2 n))∥w1∥
++ βa1,1[3r¯an1
+√n(−∥∆∥F ) + a1,1n2
+1(d1)i −¯an1nlr¯a] + r1
+≥(2L + βa2
+1,1n2
+1)(d1)i + C1anΘ2
+min
+8
+,
+provided that ∆:
+x1,1 ≥−3/4a1,
+∥∆S(a)c∥∞≤C1anΘ2
+min
+32λ
+:= ϵf1, ∥∆∥F ≤ϵ1.
+Here ϵ1 :=
+min
+
+
+
+C1anΘ2
+min
+64K(Θmax
+√2K log n + C5(p + log2 n)),
+s
+C1anΘ2
+min
+96βr¯a¯n , C1anΘ2
+min
+96βr¯a2¯n√n
+
+
+.
+It is also sufficient to assume
+∥∆S(a)c∥∞≤ϵf1, ∥∆∥F ≤min
+
+ϵ1, 3
+4a√n
+
+.
+The (L, β) pair need to satisfy:
+2(λ −L)
+n
+≤β ≤C1anΘ2
+min
+12rn2¯a3 .
+Thus,
+[U]i,1 −α[∇f(U)]i,1 ≤[U]i,1 −αC1anΘ2
+min
+8
+, ∀i ∈Gl, l ̸= 1.
+From Lemma 2 we know that ∥W∥= ∥U −α∇f(U)∥≥
+√
+K. Hence ∀i ∈Gl, s(k −1) < τ ≤
+sk, l ̸= k,
+[V ]i,1 =
+√
+K
+∥W∥Π+([U]i,1 −α[∇f(U)]i,1) ≤max{[U]i,τ −αC1anΘ2
+min
+8
+, 0}.
+Note that the initialization U 0 needs to satisfy ∥∆0
+S(a)c∥∞≤C1anΘ2
+min
+32λ
+from the above argument,
+where ∆0 = U 0 −U a,∗. Then it takes at most I total steps for U t to converge to the block form Gm,
+where
+I = (C1anΘ2
+min
+32λ
+)/(αC1anΘ2
+min
+8
+) = 1/(4αλ).
+■
+Lemma 4 (Inflation of distance to U a,∗for Phase 1). If ∥U −U ∗Q∥F ≤ϵc, then
+∥V −U a,∗∥F ≤η∥U −U a,∗∥F ,
+where η = 1 + αR1, R1 = 2C2(n + √mp log n) + 2/C1Θ2
+max + 2L + 12nβ, for some constants
+C1, C2.
+Proof. Suppose ∥U −U ∗Q∥F ≤ϵc, then from Lemma 2 we have
+∥V −U a,∗∥F = ∥ΠΩ(U −α∇f(U)) −ΠΩ(U a,∗−α∇f(U a,∗))∥F
+= ∥ΠC(Ω)(U −α∇f(U)) −ΠC(Ω)(U a,∗−α∇f(U a,∗))∥F
+≤∥(U −α∇f(U)) −(U a,∗−α∇f(U a,∗))∥F
+≤(1 + αR1)∥U −U a,∗∥F ,
+29
+
+Published as a conference paper at ICLR 2024
+where R1 = 2C2(n + √mp log n) + 2/C1Θ2
+max + 2L + 12nβ.
+■
+Lemma 5 (Local strong convexity).
+If U ∈Gm, define ∆:= UQT −U ∗, then
+⟨∇2f(U ∗)[∆], ∆⟩≥˜β∥∆∥2
+F ,
+where ˜β = min{2[L −(√n + √p + √2 log n)2], −2(λ −L) + βn} > 0, provided that L ∈
+((√n + √p + √2 log n)2, λ), β > 2(λ −L)/n. Furthermore, ∀U s.t. ∥U −U ∗∥F < ϵs, we have
+⟨∇2f(U)[∆], ∆⟩≥˜β/2∥∆∥2
+F ,
+where ϵs =
+˜β
+36βn.
+Proof. U ∈Gm, Q ∈Fm =⇒U = W1 + W2, with
+W1 :=
+
+
+d1,11n1, . . . , d1,s1n1
+0
+· · ·
+0
+0
+d2,11n2, . . . , d2,s1n2
+· · ·
+0
+...
+...
+...
+...
+0
+0
+· · ·
+dK,11nK, . . . , dK,s1nK
+
+,
+W2 :=
+
+
+w1,1, . . . , w1,s
+0
+· · ·
+0
+0
+w2,1, . . . , w2,s
+· · ·
+0
+...
+...
+...
+...
+0
+0
+· · ·
+wK,1, . . . , wK,s
+
+,
+for some dk,i ∈R, wk,i ∈Rnk, ⟨wk,i, 1nk⟩= 0, ∀k ∈[K], i ∈[s]. Note that
+U ∗Q :=
+
+
+˜a1,11n1, . . . , ˜a1,s1n1
+0
+· · ·
+0
+0
+˜a2,11n2, . . . , ˜a2,s1n2
+· · ·
+0
+...
+...
+...
+...
+0
+0
+· · ·
+˜aK,11nK, . . . , ˜aK,s1nK
+
+,
+for some ˜ak,i ∈R, k ∈[K], i ∈[s]. Recall
+Q = argmin ˜
+Q∈Fm∥U −U ∗˜Q∥F ,
+then there exist ck > 0, k ∈[K], s.t.
+dk,i = ck˜ak,i, ∀k ∈[K], i ∈[s].
+Hence W1QT = [W 1
+1 |On×(r−K)], where
+W 1
+1 :=
+
+
+c1
+√n1 1n1
+0
+· · ·
+0
+0
+c2
+√n2 1n2
+· · ·
+0
+...
+...
+...
+...
+0
+0
+· · ·
+cK
+√nK 1nK
+
+.
+And W2QT = [W 1
+2 |W 2
+2 ], where
+W 1
+2 :=
+
+
+w1
+0
+· · ·
+0
+0
+w2
+· · ·
+0
+...
+...
+...
+...
+0
+0
+· · ·
+wK
+
+,
+for some wk ∈Rnk, k ∈[K]. And every column of W 2
+2 belongs to the space ΓK := span{1Gk :
+k ∈[K]}⊥, which is the orthogonal complement of the linear subspace of Rn spanned by the vectors
+1G1, . . . , 1GK. i.e.,
+UQT −U ∗= [W 1
+1 + W 1
+2 −U ∗|W 2
+2 ].
+30
+
+Published as a conference paper at ICLR 2024
+Denote ∆1 = W 1
+1 + W 1
+2 −U ∗, ∆2 = W 2
+2 , ∆= [∆1|∆2]. First we will show that
+∥∆1(U ∗)T 1n + U ∗∆T
+1 1n∥2
+F ≥n∥∆1∥2
+F .
+Denote
+U ∗
+1 =
+
+
+1
+√n1 1n1
+0
+· · ·
+0
+0
+1
+√n2 1n2
+· · ·
+0
+...
+...
+...
+...
+0
+0
+· · ·
+1
+√nK 1nK
+
+
+, ∆1 =
+
+
+d1
+0
+· · ·
+0
+0
+d2
+· · ·
+0
+...
+...
+...
+...
+0
+0
+· · ·
+dK
+
+,
+where dk ∈Rnk. Then we have
+∆1(U ∗
+1 )T 1n + U ∗
+1 ∆T
+1 1n =
+
+
+˜d1
+˜d2
+...
+˜dK
+
+,
+where
+˜dk = √nkdk +
+1
+√nk
+1nk1T
+nkdk.
+Note that
+∥˜dk∥2 ≥λ2
+min
+√nkIdnk +
+1
+√nk
+1nk1T
+nk
+
+∥dk∥2 ≥nk∥dk∥2.
+Hence
+∥∆1(U ∗
+1 )T 1n + U ∗
+1 ∆T
+1 1n∥2
+F =
+X
+k
+∥˜dk∥2
+≥min
+k {nk}
+X
+k
+∥dk∥2.
+By calculating the Hessian at U ∗we get
+⟨∇2f(U ∗)[∆], ∆⟩= ⟨2(L · Idn + A) + y1T
+n + 1nyT , ∆∆T ⟩+ β∥∆(U ∗)T 1n + U ∗∆T 1n∥2
+F
+= ⟨2(L · Idn + A) + y1T
+n + 1nyT , ∆2∆T
+2 ⟩
++ ⟨2(L · Idn + A) + y1T
+n + 1nyT , ∆1∆T
+1 ⟩+ β∥∆1(U ∗
+1 )T 1n + U ∗
+1 ∆T
+1 1n∥2
+F
+= 2⟨(L · Idn + A), ∆2∆T
+2 ⟩+ ⟨2(L · Idn + A) + y1T
+n + 1nyT , ∆1∆T
+1 ⟩
++ β∥∆1(U ∗)T 1n + U ∗∆T
+1 1n∥2
+F
+≥2[L −(√n + √p +
+p
+2 log n)2]∥∆2∥2
+F + R2∥∆1∥2
+F + βn∥∆1∥2
+F
+≥min{2[L −(√n + √p +
+p
+2 log n)2], R2 + βn}∥∆∥2
+F
+= ˜β∥∆∥2
+F ,
+with probability ≥1−1/n, where ⟨A, ∆2∆T
+2 ⟩≥−(√n+√p+√2 log n)2∥∆2∥2
+F by Proposition 3;
+R2 = −2(λ−L) by Proposition 1. In particular, by choosing L ∈((√n+√p+√2 log n)2, λ), β >
+−R2/n, we have ˜β > 0. Recall the Hessian of f at U ∗and U
+⟨∇2f(U ∗)[∆], ∆⟩= ⟨2(L · Idn + A) + y1T
+n + 1nyT , ∆∆T ⟩+ β∥∆(U ∗)T 1n + U ∗∆T 1n∥2
+F ,
+⟨∇2f(U)[∆], ∆⟩= ⟨2(L · Idn + A) + y1T
+n + 1nyT , ∆∆T ⟩+ β∥∆(U)T 1n + U∆T 1n∥2
+F
++ β⟨1n1T
+n(UU T −(U ∗)(U ∗)T ) + (UU T −(U ∗)(U ∗)T )1n1T
+n, ∆∆T ⟩.
+Then we have
+|⟨∇2f(U ∗)[∆], ∆⟩−⟨∇2f(U)[∆], ∆⟩|
+≤β(∥∆(U)T 1n + U∆T 1n∥2
+F −∥∆(U ∗)T 1n + U ∗∆T 1n∥2
+F )
++ β|⟨1n1T
+n(UU T −(U ∗)(U ∗)T ) + (UU T −(U ∗)(U ∗)T )1n1T
+n, ∆∆T ⟩|
+≤β(12n∥U −U ∗∥F + 6n∥U −U ∗∥F )
+= 18βn∥U −U ∗∥F .
+31
+
+Published as a conference paper at ICLR 2024
+Hence
+⟨∇2f(U)[∆], ∆⟩≥˜β/2∥∆∥2
+F ,
+provided that ∥U −U ∗∥F ≤
+˜β
+36βn.
+■
+Lemma 6 (Local exponential convergence).
+If U ∈Gm, define ∆:= UQT −U ∗, Then ∃γ ∈(0, 1), ϵ > 0, s.t.,
+∥V −U ∗Q∥F ≤γ∥U −U ∗Q∥F ,
+where
+Q = argmin ˜
+Q∈Fm∥U −U ∗˜Q∥F ,
+provided that ∥U −U ∗Q∥F < ϵ, where ϵ = min{ϵc, ϵs}. Recall that ϵc is defined in Lemma 2,
+ϵs is defined in Lemma 5. In particular, if we we choose the step size α ≤˜β/(2R2
+2),, where
+R2 = 2C2(n + √mp log n) + 2L + 12nβ for some constant C2. Then the contraction factor would
+be γ2 = (1 −α˜β/2).
+Proof. By Lemma 2 we have
+ΠΩ(U −α∇f(U)) = ΠC(Ω)(U −α∇f(U)),
+where C(Ω) stands for the convex hall of Ω. It is known that
+∥ΠC(v) −ΠC(u)∥≤∥v −u∥,
+for any convex set C. Note ∀˜Q ∈Fm, U ∗˜Q is a stationary point for ΠΩ. Then we have
+∥V −U ∗Q∥2
+F = ∥ΠΩ(U −α∇f(U)) −ΠΩ(U ∗Q −α∇f(U ∗Q))∥2
+F
+= ∥ΠC(Ω)(U −α∇f(U)) −ΠC(Ω)(U ∗Q −α∇f(U ∗Q))∥2
+F
+≤∥(U −α∇f(U)) −(U ∗Q −α∇f(U ∗Q))∥2
+F
+= ∥(UQT −α∇f(UQT )) −(U ∗−α∇f(U ∗))∥2
+F
+= ∥UQT −U ∗∥2
+F + α2∥∇f(UQT )) −∇f(U ∗))∥2
+F
+−2α⟨∇f(UQT ) −∇f(U ∗), UQT −U ∗⟩,
+since ∇f( ˜U ˜Q) = ∇f( ˜U) ˜Q, ∀˜Q ∈Or×r, ˜U ∈Rn×r. Note that ∥UQT −U ∗∥2
+F = ∥U −
+U ∗Q∥2
+F , ∥∇f(UQT ) −∇f(U ∗))∥F ≤R2∥UQT −U ∗∥F , for some constant R2, so we only
+need to analyze the last term. And by MVT we have
+⟨∇f(UQT )−∇f(U ∗), UQT −U ∗⟩=
+Z 1
+0
+⟨∇2f(U ∗+τ(UQT −U ∗))[UQT −U ∗], UQT −U ∗⟩dτ.
+Notice ∥UQT −U ∗∥F < ϵs, from Lemma 5 we have ∀τ ∈(0, 1),
+⟨∇2f(U ∗+ τ(UQT −U ∗))[∆], ∆⟩≥˜β/2∥∆∥2
+F .
+Hence
+⟨∇f(UQT ) −∇f(U ∗), UQT −U ∗⟩
+=
+Z 1
+0
+⟨∇2f(U ∗+ τ(UQT −U ∗))[UQT −U ∗], UQT −U ∗⟩dτ
+≥˜β/2∥UQT −U ∗∥2
+F .
+Then we have
+∥V −U ∗Q∥2
+F = ∥UQT −U ∗∥2
+F + α2∥∇f(UQT )) −∇f(U ∗))∥2
+F
+−2α⟨∇f(UQT ) −∇f(U ∗), UQT −U ∗⟩
+≤∥UQT −U ∗∥2
+F + R2
+2α2∥UQT −U ∗∥2
+F −2α˜β/2∥UQT −U ∗∥2
+F
+≤(1 −α˜β/2)∥UQT −U ∗∥2
+F
+= γ2∥U −U ∗Q∥2
+F ,
+32
+
+Published as a conference paper at ICLR 2024
+by choosing α ≤˜β/(2R2
+2), γ2 = (1 −α˜β/2).
+■
+Lemma 7 (Iterations remain staying in Phase 2). Suppose Lemma 6 holds and U 0 ∈Gm. Denote
+¯ϵ := min
+
+ϵ1, 3
+4a√n
+	
+, we have
+U t ∈Gm, ∀t ≥1,
+where
+U t+1 = ΠΩ(U t −α∇f(U t)), ∀t ≥1,
+given ∥U 0 −U a,∗∥F ≤min{(1 −γ)/2¯ϵ, ϵ}, recall ϵ = min{ϵc, ϵs}.
+Proof. From the convergence of Phase 1 (Theorem 4) we know U t+1 ∈Gm if U t ∈Gm and
+∥U t −U a,∗∥F ≤¯ϵ. Thus from definition we know U 1 ∈Gm. Recall that we define Qt ∈Fm as
+Qt = argminQ∈Fm∥U t −U ∗Q∥F .
+Define ϵ0 := (1 −γ)/2 · ¯ϵ. Note that U 0 ∈Gm, ∥U 0 −U a,∗∥F ≤min{(1 −γ)/2 · ¯ϵ, ϵ}, then from
+the previous lemma (Lemma 6) we have
+∥U 1 −U ∗Q0∥F ≤γ∥U 0 −U ∗Q0∥F .
+Note U ∗Q0 is the projection of U 0 on to Fm that located on a sphere, which implies that
+∥U ∗Q0 −U a,∗∥F < 2∥U 0 −U a,∗∥F ,
+given ∥U 0 −U a,∗∥F < 1/2∥U a,∗∥F . Thus,
+∥U 1 −U a,∗∥F ≤∥U 1 −U ∗Q0∥F + ∥U ∗Q0 −U a,∗∥F
+≤γ∥U 0 −U ∗Q0∥F + 2∥U 0 −U a,∗∥F
+≤γ∥U 0 −U a,∗∥F + 2∥U 0 −U a,∗∥F
+≤γϵ0 + 2ϵ0
+≤¯ϵ.
+Then we will finish the proof by induction. Suppose U l ∈Gm, ∥U l−1 −U a,∗∥F ≤¯ϵ, ∀l ≤t, we
+are going to show that U t+1 ∈Gm. By assumption we only need to show ∥U t −U a,∗∥F ≤¯ϵ. From
+Lemma 6 we have
+∥U l −U ∗Ql∥F ≤∥U l −U ∗Ql−1∥F ≤γ∥U l−1 −U ∗Ql−1∥F ≤ϵ, ∀l ≤t.
+Hence
+∥U t −U a,∗∥F ≤∥U t −U ∗Qt∥F + ∥U ∗Qt −U ∗Qt−1∥F + · · · + ∥U ∗Q0 −U a,∗∥F
+≤2
+t
+X
+l=0
+∥U l −U ∗Ql−1∥F + 2∥U 0 −U a,∗∥F
+≤2
+t
+X
+l=0
+γl−1∥U 0 −U a,∗∥F
+≤¯ϵ.
+■
+D
+DISCUSSION
+One limitation of our derivation in Theorem 1 is the separation assumption. Theorem 1 is based
+on the fact that the optimum solutions of SDP and NLR coincide, where the separation assumption
+serves as the sufficient condition. In practice, we can observe linear convergence of NLR for small
+separation as well. Therefore, we anticipate a similar derivation of convergence analysis for weak
+separation assumption, which will be our future research. On the other hand, in practice, if we
+apply our algorithm to the datasets where the separations (signal-to-noise ratio) are very small, our
+algorithm would fail to provide informative clustering results, and similar issues occur for both SDP
+and NMF. We expect that this problem can be solved if different rounding procedures are applied. In
+other words, for the small separation cases where the solutions to NLR, SDP and NMF no longer
+represent exact membership assignments, it would be important to consider and compare different
+rounding processes to extract informative membership assignments.
+33
+

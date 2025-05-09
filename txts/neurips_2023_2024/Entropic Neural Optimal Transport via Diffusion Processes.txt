@@ -1,0 +1,2591 @@
+Entropic Neural Optimal Transport
+via Diffusion Processes
+Nikita Gushchin
+Skoltech∗
+Moscow, Russia
+n.gushchin@skoltech.ru
+Alexander Kolesov
+Skoltech∗
+Moscow, Russia
+a.kolesov@skoltech.ru
+Alexander Korotin
+Skoltech∗, AIRI†
+Moscow, Russia
+a.korotin@skoltech.ru
+Dmitry Vetrov
+HSE University‡, AIRI†
+Moscow, Russia
+vetrovd@yandex.ru
+Evgeny Burnaev
+Skoltech∗, AIRI†
+Moscow, Russia
+e.burnaev@skoltech.ru
+Abstract
+We propose a novel neural algorithm for the fundamental problem of com-
+puting the entropic optimal transport (EOT) plan between continuous proba-
+bility distributions which are accessible by samples. Our algorithm is based
+on the saddle point reformulation of the dynamic version of EOT which is
+known as the Schrödinger Bridge problem. In contrast to the prior methods
+for large-scale EOT, our algorithm is end-to-end and consists of a single learn-
+ing step, has fast inference procedure, and allows handling small values of the
+entropy regularization coefficient which is of particular importance in some ap-
+plied problems. Empirically, we show the performance of the method on sev-
+eral large-scale EOT tasks. The code for the ENOT solver can be found at
+https://github.com/ngushchin/EntropicNeuralOptimalTransport.
+Figure 1: Trajectories of samples learned by our Algorithm 1 for Celeba deblurring with ϵ = 0, 1, 10.
+1
+Introduction
+Optimal transport (OT) plans are a fundamental family of alignments between probability distributions.
+The majority of scalable neural algorithms to compute OT are based on the dual formulations of
+OT, see [28] for a survey. Despite the success of such formulations in generative modeling [42, 31],
+these dual form approaches can hardly be generalized to the popular entropic OT [12]. This is due
+to the numerical instability of the dual entropic OT problem [14] which appears for small entropy
+∗Skolkovo Institute of Science and Technology
+†Artificial Intelligence Research Institute
+‡HSE University
+37th Conference on Neural Information Processing Systems (NeurIPS 2023).
+
+regularization values which are suitable for downstream generative modeling tasks. At the same time,
+entropic OT is useful as it allows to learn one-to-many stochastic mappings with tunable level of
+sample diversity. This is particularly important for ill-posed problems such as super-resolution [37].
+Contributions. We propose a saddle-point reformulation of the Entropic OT problem via using
+its dynamic counterpart known as the Schrödinger Bridge problem (M4.1). Based on our new
+reformulation, we propose a novel end-to-end neural algorithm to solve the related entropic OT
+problem for a pair of continuous distributions accessible by samples (M4.2). Unlike many predecessors,
+our method allows handling small entropy coefficients. This enables practical applications to
+data →data mapping tasks that require slight variability in the learned maps. Furthermore, we
+provide an error analysis for solving the suggested saddle point optimization problem through duality
+gaps which are the errors of solving the inner and outer optimization problems (M4.3). Empirically,
+we illustrate the performance of the method on several toy and large-scale EOT tasks (M5).
+2
+Background
+Optimal Transport (OT) and Schrödinger Bridge (SB) problems imply finding an efficient way to
+transform some initial distribution P0 to target distribution P1. While the solution of OT only gives
+the information about which part of P0 is transformed to which part of P1, SB implies finding a
+stochastic process that describes the entire evolution from P0 to P1. Below we give an introduction
+to OT and SB problems and show how they are related. For a detailed overview of OT, we refer to
+[49, 41] and of SB – to [32, 11].
+2.1
+Optimal Transport (OT)
+Kantorovich’s OT formulation (with the quadratic cost). We consider D-dimensional Euclidean
+spaces X, Y and use P2(X) = P2(Y) to denote the respective sets of Borel probability distributions
+on them which have finite second moment. For two distributions P0 ∈P2(X), P1 ∈P2(Y), consider
+the following minimization problem:
+inf
+π∈Π(P0,P1)
+Z
+X×Y
+||x −y||2
+2
+dπ(x, y),
+(1)
+where Π(P0, P1) ⊂P2(X × Y) is the set of probability distributions on X × Y with marginals P0
+and P1. Such distributions π ∈Π(P0, P1) are called the transport plans between P0 and P1. The
+set Π(P0, P1) is non-empty as it always contains the trivial plan P0 × P1. A minimizer π∗of (1)
+always exists and is called an OT plan. If P0 is absolutely continuous, then π∗is deterministic: its
+conditional distributions are degenerate, i.e., π∗(·|x) = δT ∗(x) for some T ∗: X →Y (OT map).
+Entropic OT formulation. We use H(π) to denote the differential entropy of distribution π and
+KL(π||π′) to denote the Kullback-Leibler divergence between distributions π and π′. Two most
+popular entropic OT formulations regularize (1) with the entropy H(π) or KL-divergence between
+plan π and the trivial plan P0 × P1, respectively (ϵ > 0):
+inf
+π∈Π(P0,P1)
+Z
+X×Y
+||x −y||2
+2
+dπ(x, y) −ϵH(π),
+(2)
+inf
+π∈Π(P0,P1)
+Z
+X×Y
+||x −y||2
+2
+dπ(x, y) + ϵKL(π||P0 × P1).
+(3)
+Since π ∈Π(P0, P1), it holds that KL(π||P0×P1)=−H(π)+H(P0)+H(P1), i.e., both formulations
+are equal up to an additive constant when P0 and P1 are absolutely continuous. The minimizer of
+(2) is unique since the functional is strictly convex in π thanks to the strict convexity of H(π). This
+unique minimizer π∗is called the entropic OT plan.
+2.2
+Schrödinger Bridge (SB)
+SB with the Wiener prior. Let Ωbe the space of RD valued functions of time t ∈[0, 1] describing
+some trajectories in RD, which start at time t = 0 and end at time t = 1. We use P(Ω) to denote the
+set of probability distributions on Ω. We use dWt to denote the differential of the standard Wiener
+process. Let W ϵ ∈P(Ω) be the Wiener process with the variance ϵ which starts at P0. This diffusion
+process can be represented via the following stochastic differential equation (SDE):
+W ϵ : dXt = √ϵdWt,
+X0 ∼P0.
+(4)
+2
+
+We use KL(T||Q) to denote the Kullback-Leibler divergence between stochastic processes T and Q.
+The Schrödinger Bridge problem was initially proposed in 1931/1932 by Erwin Schrödinger [44]. It
+can be formulated as follows [11, Problem 4.1]:
+inf
+T ∈F(P0,P1) KL(T||W ϵ),
+(5)
+where F(P0, P1) ⊂P(Ω) is the set of probability distributions on Ωhaving marginal distributions
+P0 and P1 at t = 0 and t = 1, respectively. Thus, the Schrödinger Bridge problem implies finding a
+stochastic process T with marginal distributions P0 and P1 at times t = 0 and t = 1, respectively,
+which has minimal KL divergence with the prior process W ϵ.
+Link to OT problem. Here we recall how Scrödinger Bridge problem (5) relates to entropic OT
+problem (2). This relation is well known (see, e.g., [32] or [11, Problem 4.2]), and we discuss it in
+detail because our proposed approach (M4) is based on it. Let πT denote the joint distribution of a
+stochastic process T at time moments t = 0, 1 and πT
+0 , πT
+1 denote its marginal distributions at time
+moments t = 0, 1, respectively. Let T|x,y denote the stochastic processes T conditioned on values
+x, y at times t = 0, 1, respectively. One may decompose KL(T||W ϵ) as [48, Appendix C]:
+KL(T||W ϵ) = KL(πT ||πW ϵ) +
+Z
+X×Y
+KL(T|x,y||W ϵ
+|x,y)dπT (x, y),
+(6)
+i.e., KL divergence between T and W ϵ is a sum of two terms: the first represents the similarity of the
+processes at start and finish times t = 0 and t = 1, while the second term represents the similarity
+of the processes for intermediate times t ∈(0, 1) conditioned on the values at t = 0, 1. For the first
+term, it holds (see Appendix A or [11, Eqs 4.7-4.9]):
+KL(πT ||πW ϵ) =
+Z
+X×Y
+||x −y||2
+2ϵ
+dπT (x, y) −H(πT ) + C,
+(7)
+where C is a constant which depends only on P0 and ϵ. In [32, Proposition 2.3], the authors show
+that if T ∗is the solution to (5), then T ∗
+|x,y = W ∗
+|x,y. Hence, one may optimize (5) over processes T
+for which T|x,y = W ϵ
+|x,y for every x, y and set the last term in (6) to zero. In this case:
+inf
+T ∈F(P0,P1) KL(T||W ϵ) =
+inf
+T ∈F(P0,P1)KL(πT ||πW ϵ) =
+inf
+πT ∈Π(P0,P1)KL(πT ||πW ϵ).
+(8)
+i.e., it suffices to optimize only over joint distributions πT at time moments t = 0, 1. Hence,
+minimizing (8) is equivalent (up to an additive constant C) to solving EOT (2) divided by ϵ, and their
+respective solutions πT ∗and π∗coincide. Thus, SB problem (5) can be simplified to the entropic OT
+problem (2) with entropy coefficient ϵ.
+Dual form of EOT. Entropic OT problem (8) has several dual formulations. Here we recall the one
+which is particularly useful to derive our algorithm. The dual formulation follows from the weak OT
+theory [7, Theorem 1.3] and we explain it in detail in the proof of Lemma B.3:
+inf
+π∈Π(P0,P1)KL(π||πW ϵ) = sup
+β
+ Z
+X
+βC(x)dP0(x) +
+Z
+Y
+β(y)dP1(y)
+	
+,
+where βC(x)
+def
+= infν∈P2(Y)
+
+KL
+ ν||πW ϵ(·|x)
+
+−
+R
+Y β(y)dν(y)
+	
+. The sup here is taken over β
+belonging to the set of functions
+Cb,2(Y)
+def
+= {β : Y →R continuous s.t. ∃u, v, w ∈R : u∥· ∥2 + v ≤β(·) ≤w},
+i.e., β should be continuous with mild boundness assumptions.
+Dynamic SB problem (DSB). It is known that the solution to the SB problem (5) belongs to the class
+D(P0) of finite-energy diffusions Tf [32, Proposition 4.1] which are given by:
+Tf : dXt = f(Xt, t)dt + √ϵdWt,
+X0 ∼P0,
+ETf [
+Z 1
+0
+||f(Xt, t)||2dt] < ∞,
+(9)
+where f : RD × [0, 1] →RD is the drift function. The last inequality in (9) means that Tf is a
+finite-energy diffusion. Hence, optimizing only over finite-energy diffusions rather than all possible
+3
+
+processes is enough to solve SB problem (5). For finite-energy diffusions, it is possible to rewrite the
+optimization objective. One can show that KL(Tf||W ϵ) between processes Tf and W ϵ is [40]:
+KL(Tf||W ϵ) = 1
+2ϵETf [
+Z 1
+0
+||f(Xt, t)||2dt].
+(10)
+By substituting (10) in (5), SB problem reduces to the following problem [11, Problem 4.3]:
+inf
+Tf ∈D(P0,P1) KL(Tf||W ϵ) =
+inf
+Tf ∈D(P0,P1)
+1
+2ϵETf [
+Z 1
+0
+||f(Xt, t)||2dt],
+(11)
+where D(P0, P1) ⊂P(Ω) is the set of finite-energy diffusion on Ωhaving marginal distributions P0
+and P1 at t = 0 and t = 1, respectively. Note that D(P0, P1) ⊂F(P0, P1). Since the problem (11) is
+the equivalent reformulation of (5), its optimal value also equals (8). However, solving this problem,
+as well as (8) is challenging as it is still hard to satisfy the boundary constraints.
+3
+Related Work
+In this section, we overview the existing methods to compute the OT plan or map. To avoid any
+confusion, we emphasize that popular Wasserstein GANs [5] compute only the OT cost but not the
+OT plan and, consequently, are out of scope of the discussion.
+Discrete OT. The majority of algorithms in computational OT are designed for the discrete setting
+where the inputs P0, P1 have finite supports. In particular, the usage of entropic regularization
+(2) allows to establish efficient methods [13] to compute the entropic OT plan between discrete
+distributions with the support size up to 105-106 points, see [41] for a survey. For larger support
+sizes, such methods are typically computationally intractable.
+Continuous OT. Continuous methods imply computing the OT plan between distributions P0, P1
+which are accessible by empirical samples. Discrete methods "as-is" are not applicable to the
+continuous setup in high dimensions because they only do a stochastic matching between the train
+samples and do not provide out-of-sample estimation. In contrast, continuous methods employ neural
+networks to explicitly or implicitly learn the OT plan or map. As a result, these methods can map
+unseen samples from P0 to P1 according to the learned OT plan or map.
+There exists many methods to compute OT plans [51, 36, 38, 26, 28, 27, 42, 16, 19, 18] but they
+consider only unregularized OT (1) rather than the entropic one (2). In particular, they mostly focus
+on computing the deterministic OT plan (map) which may not exist. Recent works [31, 30] design
+algorithms to compute OT plans for weak OT [20, 7]. Although weak OT technically subsumes
+entropic OT , these works do not cover the entropic OT (2) because there is no simple way to estimate
+the entropy from samples. Below we discuss methods specifically for EOT (2) and DSB (11).
+3.1
+Continuous Entropic OT
+In LSOT [45], the authors solve the dual problem to entropic OT (2). The dual potentials are then
+used to compute the barycentric projection x 7→
+R
+Y y dπ∗(y|x), i.e., the first conditional moment of
+the entropic OT plan. This strategy may yield a deterministic approximation of π∗for small ϵ but
+does not recover the entire plan itself.
+In [14, Figure 3], the authors show that the barycentric projection leads to the averaging artifacts
+which make it impractical in downstream tasks such as the unpaired image super-resolution. To
+solve these issues, the authors propose a method called SCONES. It recovers the entire conditional
+distribution π∗(y|x) of the OT plan π∗from the dual potentials. Unfortunately, this is costly. During
+the training phase, the method requires learning a score-based model for the distribution P1. More
+importantly, during the inference phase, one has to run the Langevin dynamic to sample from π∗(y|x).
+The optimization of the above-mentioned entropic approaches requires evaluating the exponent of
+large values which are proportional to ϵ−1 [45, Eq. 7]. Due to this fact, those methods are unstable
+for small values ϵ in (2). In contrast, our proposed method (M4) resolves this issue: technically, it
+works even for ϵ = 0.
+3.2
+Approaches to Compute Schrödinger Bridges
+Existing approaches to solve DSB mainly focus on generative modeling applications (noise →data).
+For example, FB-SDE [10] utilizes data likelihood maximization to optimize the parameters of
+4
+
+forward and backward SDEs for learning the bridge. On the other hand, MLE-SB [48] and DiffSB
+[15] employ the iterative proportional fitting technique to learn the DSB. Another method proposed
+by [50] involves solving the Schrodinger Bridge only between the Dirac delta distribution and real
+data to solve the data generation problem.
+Recent studies [34, 33] have indicated that the Schrödinger Bridge can be considered as a specific
+instance of a more general problem known as the Mean-Field Game [1]. These studies have also
+suggested novel algorithms for resolving the Mean-Field Game problem. However, the approach
+presented by [33] cannot be directly applied to address the hard distribution constraints imposed on
+the start and final probability distribution as in the Schrödinger Bridge problem (see Appendix H).
+The approach suggested by [34] coincides with that proposed in FB-SDE [10] for the SB problem.
+4
+The Algorithm
+This section presents our novel neural network-based algorithm to recover the solution Tf ∗of the DSB
+problem (11) and the solution π∗of the related EOT problem (8). In M4.1, we theoretically derive the
+proposed saddle point optimization objective. In M4.2 we provide and describe the practical learning
+procedure to optimize it. In M4.3, we perform the error analysis via duality gaps. In Appendix B, we
+provide proofs of all theorems and lemmas.
+4.1
+Saddle Point Reformulation of EOT via DSB
+For two distributions P0 and P1 accessible by finite empirical samples, solving entropic OT (2) "as-is"
+is non-trivial. Indeed, one has to (a) enforce the marginal constraints π ∈Π(P0, P1) and (b) estimate
+the entropy H(π) from empirical samples which is challenging. Our idea below is to employ the
+relation of EOT with DSB to derive an optimization objective which in practice can recover the
+entropic plan avoiding the above-mentioned issues. First, we introduce the functional
+L(β, Tf)
+def
+=
+n
+=KL(Tf ||W ϵ)
+z
+}|
+{
+ETf
+ 1
+2ϵ
+Z 1
+0
+||f(Xt, t)||2dt
+
+−
+Z
+Y
+β(y)dπTf
+1 (y) +
+Z
+Y
+β(y)dP1(y)
+o
+.
+(12)
+This functional can be viewed as the Lagrangian for DSB (11) with the relaxed constraint dπTf
+1 (y) =
+dP1(y), and function β : Y →R (potential) playing the role of the Langrange multiplier.
+Theorem 4.1 (Relaxed DSB formulation). Consider the following saddle point optimization problem:
+sup
+β
+inf
+Tf L(β, Tf)
+(13)
+where sup is taken over potentials β ∈Cb,2(Y) and inf is taken over diffusion processes Tf ∈D(P0).
+Then for every optimal pair (β∗, Tf ∗) for (13), i.e.,
+β∗∈argsup
+β
+inf
+Tf L(β, Tf)
+and
+Tf ∗∈arginf
+Tf
+L(β∗, Tf),
+it holds that the process T ∗
+f is the solution to SB (11).
+Corollary 4.2 (Entropic OT as relaxed DSB). If (β∗,Tf ∗) solves (13), then πTf∗is the EOT plan (2).
+Our results above show that by solving (13), one immediately recovers the optimal process Tf ∗in
+DSB (11) and the optimal EOT plan π∗= πT ∗
+f . The notable benefits of considering (13) instead
+of (2), (3) and (11) is that (a) it is as an optimization problem over (β, Tf) without the constraint
+dπTf
+1 (y) = dP1(y), and (b) objective (12) admits Monte-Carlo estimates by using random samples
+from P0, Tf, P1. In M4.2 below, we describe the straightforward practical procedure to optimize (13)
+with stochastic gradient methods and neural nets.
+Relation to prior works. In the field of neural OT, there exist so many maximin reformulations of
+OT (classic [28, 42, 16, 19, 22], weak [31, 30], general [6]) resembling our (13) that a reader may
+naturally wonder (1) why not to apply them to solve entropic OT? (2) how does our reformulation
+differ from all of them? It is indeed true that, e.g., algorithm from [31, 6] mathematically covers the
+entropic case (2). Yet in practice it requires estimation of entropy from samples for which there is no
+easy way and the authors do not consider this case. These methods can be hardly applied to EOT.
+In contrast to the prior works, we deal with entropic OT through its connection with the Schrödinger
+Bridge. Our max-min reformulation is for DSB and it avoids computing the entropy term H(π)
+5
+
+in EOT. This term is replaced by the energy of the process ETf
+ R 1
+0 ||f(Xt, t)||2dt
+
+which can be
+straightforwardly estimated from the samples of Tf, allowing to establish a computational algorithm.
+4.2
+Practical Optimization Procedure
+To solve (12), we parametrize drift function f(x, t) of the process Tf and potential β(y)4 by neural
+nets fθ : RD × [0, 1] →RD and βϕ : RD →R. We consider the following maximin problem:
+sup
+β
+inf
+Tfθ
+n 1
+2ϵETfθ [
+Z 1
+0
+||fθ(Xt, t)||2dt] +
+Z
+Y
+βϕ(y)dP1(y) −
+Z
+Y
+βϕ(y)dπ
+Tfθ
+1
+(y)
+o
+.
+(14)
+Algorithm 1: Entropic Neural OT (ENOT)
+Input:
+samples from distributions P0, P1;
+Wiener prior noise variance ϵ ≥0;
+drift network fθ : RD × [0, 1] →RD;
+beta network βϕ : RD →R;
+number of steps N for Eul-Mar (App C);
+number of inner iterations Kf.
+Output: drift f ∗
+θ of Tf ∗
+θ solving DSB (11).
+repeat
+Sample batches X0 ∼P0, Y ∼P1;
+{Xn, fn}N
+n=0 ←Eul-Mar(X0, Tfθ);
+Lβ ←
+1
+|XN|
+P
+x∈XN
+βϕ(x)−
+1
+|Y |
+P
+y∈Y
+βϕ(y);
+Update ϕ by using ∂Lβ
+∂ϕ ;
+for k = 1 to Kf do
+Sample batches X0 ∼P0, Y ∼P1;
+{Xn, fn}N
+n=0 ←Eul-Mar(X0, Tfθ);
+c
+KL ←1
+N
+N−1
+P
+n=0
+1
+|fn|
+|fn|
+P
+m=1
+||fn,m||2 ;
+Lf ←c
+KL −
+1
+|XN|
+P
+x∈XN
+βϕ(x);
+Update θ by using ∂Lθ
+∂θ ;
+until converged;
+We use standard Euler-Maruyama (Eul-Mar)
+simulation (Algorithm 2 in Appendix C) for
+sampling from the stochastic process Tf by
+solving its SDE (9). To estimate the value of
+ETf [
+R 1
+0 ||f(Xt, t)||2dt] in (14), we utilize the
+mean value of ||f(x, t)||2 over time t of trajec-
+tory Xt that is obtained during the simulation
+by Euler-Maruyama algorithm (Appendix C).
+We train fθ and βϕ by optimizing (12) with the
+stochastic gradient ascent-descent by sampling
+random batches from P0, P1. The optimiza-
+tion procedure is detailed in Algorithm 1. We
+use fn,m to denote the drift at time step n for
+the m-th object of the input sample batch. We
+use the averaged of the drifts as an estimate of
+R 1
+0 ||f(Xt, t)||2dt in the training objective.
+Remark.
+For the image tasks (M5.3, M5.4),
+we find out that using a slightly different
+parametrization of Tf considerably improves
+the quality of our Algorithm, see Appendix F.
+It
+should
+be
+noted
+that
+the
+term
+ETf [
+R 1
+0 ||f(Xt, t)||2dt]
+is
+not
+multiplied
+by 1
+2ϵ in the algorithm since this does not affect
+the optimal Tf ∗solving the inner optimization
+problem, see Appendix D.
+Relation to GANs. At the first glance, our method might look like a typical GAN as it solves a
+maximin problem with the "discriminator" βϕ and SDE "generator" with the drift fθ. Unlike GANs,
+in our saddle point objective (12), optimization of "generator" Tf and "discriminator" β are swapped,
+i.e., "generator" is adversarial to "discriminator", not vise versa, as in GANs. For further discussion
+of differences between saddle point objectives of neural OT/GANs, see [31, M4.3], [42, M4.3], [16].
+4.3
+Error Bounds via Duality Gaps
+Our algorithm solves a maximin optimization problem and recovers some approximate solution
+(ˆβ, T ˆ
+f). Given such a pair, it is natural to wonder how close is the recovered T ˆ
+f to the optimal Tf ∗.
+Our next result sheds light on this question via bounding the error with the duality gaps.
+Theorem 4.3 (Error analysis via duality gaps). Consider a pair (ˆβ, T ˆ
+f). Define the duality gaps, i.e.,
+errors of solving inner and outer optimization problems by:
+ϵ1
+def
+= L(ˆβ, T ˆ
+f) −inf
+Tf L(ˆβ, Tf),
+and
+ϵ2
+def
+= sup
+β
+inf
+Tf ∈D(P0) L(β, Tf) −inf
+Tf L(ˆβ, Tf).
+(15)
+Then it holds that
+ρTV(T ˆ
+f, Tf ∗) ≤√ϵ1 + ϵ2,
+and
+ρTV(πT ˆ
+f , πTf∗) ≤√ϵ1 + ϵ2,
+(16)
+where we use ρTV(·, ·) to denote the total variation norm (between the processes or plans).
+4In practice, βϕ ∈Cb,2(Y) since we can choose u = 0, v = min(float32), w = max(float32).
+6
+
+(a) x ∼P0, y ∼P1
+(b) ENOT (ours), ϵ = 0
+(c) ENOT (ours), ϵ = 0.01 (d) ENOT (ours), ϵ = 0.1
+Figure 2: Gaussian→Mix of 8 Gaussians. The process learned with ENOT (ours) for ϵ=0, 0.01, 0.1.
+Relation to prior works. There exist deceptively similar results, see [38, Theorem 3.6], [42, Theorem
+4.3], [16, Theorem 4], [6, Theorem 3]. None of them are relevant to our EOT/DSB case.
+In [38], [42], [16], the authors consider maximin reformulations of unregularized OT (1), i.e., non-
+entropic. Their result requires the potential β (f, ψ in their notation) to be a convex function which in
+practice means that one has to employ ICNNs [4] which have poor expressiveness [29, 17, 26]. Our
+result is free from such assumptions on β. In [6], the authors consider general OT problem [39] and
+require the general cost functional to be strongly convex (in some norm). Their results also do not
+apply to our case as the (negative) entropy which we consider is not strongly convex.
+5
+Experimental Illustrations
+In this section, we qualitatively and quantitatively illustrate the performance of our algorithm in
+several entropic OT tasks. Our proofs apply only to EOT (ϵ > 0), but for completeness, we also
+present results ϵ = 0, i.e., unregularized case (1). Furthermore, we test our algorithm with ϵ = 0 on
+the Wasserstein-2 Benchmark [28], see Appendix J. We also demonstrate the extension of our algo-
+rithm to costs other than the squared Euclidean distance in Appendix I. The implementation details
+are given in Appendices E, F and G. The code is written in PyTorch and is publicly available at
+https://github.com/ngushchin/EntropicNeuralOptimalTransport
+5.1
+Toy 2D experiments
+Here we give qualitative examples of our algorithm’s performance on toy 2D pairs of distributions.
+We consider two pairs P0, P1: Gaussian →Swiss Roll, Gaussian →Mixture of 8 Gaussians. We
+provide qualitative results in Figure 2 and Figure 5 (Appendix E), respectively. In both cases, we
+provide solutions of the problem for ϵ = 0, 0.01, 0.1 and sample trajectories. For ϵ = 0, all the
+trajectories are straight lines as they represent solutions for non-regularized OT (1), see [43, M5.4].
+For bigger ϵ, trajectories, as expected, become more noisy and less straight.
+5.2
+High-dimensional Gaussians
+For general continuous distributions P0, P1, the ground truth solution of entropic OT (2) and DSB
+(11) is unknown. This makes it challenging to assess how well does our algorithm solve these
+problems. Fortunately, when P0 and P1 are Gaussians, there exist closed form solutions of these
+related problems, see [25] and [9]. Thus, to quantify the performance of our algorithm, we consider
+entropic OT problems in dimensions D ∈{2, 16, 64, 128} with ϵ = 1 for Gaussian P0 = N(0, Σ0),
+P1 = N(0, Σ1). We pick Σ0, Σ1 at random: their eigenvectors are uniformly distributed on the unit
+sphere and eigenvalues are sampled from the loguniform distribution on [−log 2, log 2].
+7
+
+Dim
+2
+16
+64
+128
+ENOT (ours)
+0.01
+(±0.006)
+0.09
+(±0.02)
+0.23
+(±0.03)
+0.50
+(±0.08)
+LSOT [45]
+1.82
+6.42
+32.18
+64.32
+SCONES [14]
+1.74
+1.87
+6.27
+6.88
+MLE-SB [48]
+0.41
+0.50
+1.16
+2.13
+DiffSB [15]
+0.7
+1.11
+1.98
+2.20
+FB-SDE-A [10]
+0.87
+0.94
+1.85
+1.95
+FB-SDE-J [10]
+0.03
+0.05
+0.19
+0.39
+Table 1: Comparisons of BW2
+2-UVP ↓(%)
+between the target P1 and learned marginal π1.
+Dim
+2
+16
+64
+128
+ENOT (ours)
+0.012
+(±0.003)
+0.05
+(±0.01)
+0.13
+(±0.014)
+0.29
+(±0.04)
+LSOT [45]
+6.77
+14.56
+25.56
+47.11
+SCONES [14]
+0.92
+1.36
+4.62
+5.33
+MLE-SB [48]
+0.3
+0.9
+1.34
+1.8
+DiffSB [15]
+0.88
+1.7
+2.32
+2.43
+FB-SDE-A [10]
+0.75
+1.36
+2.45
+2.64
+FB-SDE-J [10]
+0.07
+0.22
+0.34
+0.58
+Table 2: Comparisons of BW2
+2-UVP ↓(%)
+between the the EOT plan π∗and learned plan π .
+t, time
+0
+0.2
+0.4
+0.6
+0.8
+1
+ENOT (ours)
+0
+0.01
+(±0.001)
+0.023
+(±0.005)
+0.042
+(±0.007)
+0.067
+(±0.015)
+0.096
+(±0.019)
+LSOT [45]
+0
+N/A
+N/A
+N/A
+N/A
+6.42
+SCONES [14]
+0
+N/A
+N/A
+N/A
+N/A
+6.88
+MLE-SB [48]
+0
+0.10
+0.23
+0.30
+0.36
+0.50
+DiffSB [15]
+0
+0.19
+0.48
+0.68
+0.91
+1.11
+FB-SDE-A [10]
+0
+0.17
+0.45
+0.61
+0.77
+0.94
+FB-SDE-J [10]
+0
+0.18
+0.32
+0.31
+0.17
+0.05
+Table 3: Comparisons of BW2
+2-UVP ↓(%) between the learned marginal distributions and the ground
+truth marginal distributions at the intermediate time moments t = 0, 2
+10, . . . , 1 in dimension D = 16.
+Metrics. We evaluate (a) how precisely our algorithm fits the target distribution P1 on RD; (b) how
+well it recovers the entropic OT plan π∗which is a Gaussian distribution on RD × RD; (c) how
+accurate are the learned marginal distributions at intermediate times t = 0, 1
+10, . . . , 1.
+In each of the above-mentioned cases, we compute the BW2
+2-UVP [29, M5] between the learned and
+the ground truth distributions. For two distributions bχ and χ, it is the Wasserstein-2 distance between
+their Gaussian approximations which is further normalized by the variance of the distribution χ:
+BW2
+2-UVP
+ bχ, χ
+
+=
+100%
+1
+2Var(χ)W2
+2(N(µbχ, Σbχ), N(µχ, Σχ)).
+(17)
+We estimate the metric by using 105 samples.
+Baselines.
+We compare our method ENOT with LSOT [45], SCONES [14], MLE-SB [48],
+DiffSB[15], FB-SDE [10] (two algorithms, A and J). Results are given in Tables 1, 2 and 3. LSOT
+and SCONES solve EOT without solving SB, hence there are no results in Table 3 for these methods.
+Our method achieves low BW2
+2-UVP values indicating that it recovers the ground truth process and
+entropic plan fairly well. The competitive methods have good results in low dimensions, however
+they perform worse in high dimensions. Importantly, our methods scores the best results in recovering
+the OT plan (Table 2) and the marginal distributions of the Schrodinger bridge (Table 3). To illustrate
+the stable convergence of ENOT, we provide the plot of BW2
+2-UVP between the learned plan and the
+ground truth plan for ENOT during training in Figure 6 (Appendix E).
+5.3
+Colored MNIST
+In this section, we test how the entropy parameter ϵ affects the stochasticity of the learned plan in
+higher dimensions. For this, we consider the entropic OT problem between colorized MNIST digits
+of classes "2" (P0) and "3" (P1).
+Effect of parameter ϵ. For ϵ = 0, 1, 10, we learn our Algorithm 1 on the train sets of digits "2"
+and "3". We show the translated test images in Figures 3a, 3b and 3c, respectively. When ϵ = 0,
+there is no diversity in generated "3" samples (Figure 3a), the color remains since the map tried to
+minimally change the image in the RGB pixel space. When ϵ = 1, some slight diversity in the shape
+of "3" appears but the color of the input "2" is still roughly preserved (Figure 3c). For higher ϵ, the
+diversity of generated samples becomes clear (Figure 3c). In particular, the color of "3" starts to
+slightly deviate from the input "2". That is, increasing the value ϵ of the entropy term in (2) expectedly
+leads to bigger stochasticity in the plan. We add the conditional LPIPS variance [24, Table 1] of
+generated samples for test datasets by ENOT to show how diversity changes for different ϵ (Table 4).
+We provide examples of trajectories learned by ENOT in Figure 7 (Appendix F).
+Metrics and baselines. We compare our method ENOT with SCONES [14], and DiffSB [15] as
+these are the only methods which the respective authors applied for data→data tasks. To evaluate the
+results, we use the FID metric [23] which is the Bures-Wasserstein (Freschet) distance between the
+8
+
+(a) ENOT (ours) samples,
+ϵ = 0, FID:6.0
+(b) ENOT (ours) samples,
+ϵ = 1, FID:6.28
+(c) ENOT (ours) samples,
+ϵ=10, FID:6.9
+(d) DiffSB [15] samples,
+ϵ = 1, FID:93
+(e) DiffSB [15] samples,
+ϵ = 10, FID:105
+(f) DOT samples,
+ϵ = 0, FID:N/A
+(g) DOT samples,
+ϵ = 1, FID:N/A
+(h) DOT samples,
+ϵ = 10, FID:N/A
+(i) SCONES [14] samples
+ϵ = 25, FID:14.73
+(j) SCONES [14] samples
+ϵ = 100, FID:14.22
+Figure 3: Samples of colored MNIST obtained by ENOT (ours) and DOT for different ϵ.
+distributions after extracting features using the InceptionV3 model [47]. We measure test FID for
+every method and present the results and qualitative examples in Figure 3. There are no results for
+SCONES with ϵ = 0, 1, 10, since it is not applicable for such reasonably small ϵ due to computational
+instabilities, see [14, M5.1]. DiffSB [15] can be applied for small regularization ϵ, so we test ϵ = 1, 10.
+By the construction, this algorithm is not suitable for ϵ = 0.
+Our ENOT method outperforms the baselines in FID. DiffSB [15] yield very high FID. This is
+presumably due to instabilities of DiffSB which the authors report in their sequel paper [46]. SCONES
+yields reasonable quality but due to high ϵ = 25, 100 the shape and color of the generated images "3"
+starts to deviate from those of their respective inputs "2".
+For completeness, we provide the results of the stochastic matching of the test parts of the datasets
+by the discrete OT for ϵ = 0 and EOT [12] for ϵ = 1, 10 (Figures 3f, 3g, 3h). This is not the
+out-of-sample estimation, obtained samples "3" are just test samples of "3" (this setup is unfair).
+Discrete OT is not a competitor here as it does not generate new samples and uses target test samples.
+Still it gives a rough estimate what to expect from the learned plans for increasing ϵ.
+5.4
+Unpaired Super-resolution of Celeba Faces
+ϵ
+0
+1
+10
+Colored MNIST
+0
+5.3 · 10−3
+2.0 · 10−2
+Celeba
+0
+3.4 · 10−2
+5.1 · 10−2
+Table 4: LPIPS variability of ENOT samples.
+For the large-scale evaluation, we adopt the exper-
+imental setup of SCONES [14]. We consider the
+problem of unpaired image super-resolution for the
+64 × 64 aligned faces of CelebA dataset [35].
+We do the unpaired train-test split as follows: we split the dataset into 3 parts: 90k (train A1), 90k
+(train B1), 20k (test C1) samples. For each part we do 2× bilinear downsample and then 2× bilinear
+upsample to degrade images but keep the original size. As a result, we obtain degraded parts A0, B0,
+C0. For training in the unpaired setup, we use parts A0 (degraded faces, P0) and B1 (clean faces, P1).
+For testing, we use the hold-out part C0 (unseen samples) with C1 considered as the reference.
+We train our model with ϵ=0, 1, 10 to and test how it restores C1 (Figure 4a) from C0 images (Figure
+4b) and present the qualitative results in Figures 4f, 4g, 4h. We provide examples of trajectories
+learned by ENOT in Figure 1.
+Metrics and baselines. To quantify the results, as in [14], we compute the FID score [23] between
+the sets of mapped C0 images and C1 images (Table 5). The FID of ENOT is better than FID values
+of the other methods, but increases with ϵ probably due to the increasing variance of gradients during
+training . As in M5.1 and M5.3, the diversity of samples increases with ϵ. Our method works with
+small values of ϵ and provides reasonable amount of diversity in the mapped samples which grows
+with ϵ (Table 4). As the baseline among other methods for EOT we consider only SCONES, as it is
+the only EOT/DSB algorithm which has been applied to data→data task at 64 × 64 resolution. At
+the same time, we emphasize that SCONES is not applicable for small ϵ due to instabilities, see [14,
+M5.1]. This makes it impractical, as due to high ϵ, its produces up-scaled images (Figures 4c) are
+9
+
+(a)
+(b)
+(c) SCONES, ϵ = 100
+(d) ICNN
+(e) AugCycleGAN
+(f) ENOT (ours), ϵ = 0
+(g) ENOT (ours), ϵ = 1
+(h) ENOT (ours), ϵ = 10
+Figure 4: Faces produced by ENOT (ours) and SCONEs for various ϵ.
+Figure 4a shows test degraded images (C0), 4b – their original high-resolution counterparts (C1).
+Method
+ENOT, ϵ = 0
+ENOT, ϵ = 1
+ENOT, ϵ = 10
+SCONES [14], ϵ = 100
+AugCycleGAN [2]
+ICNN [38]
+FID
+3.78
+7.63
+14.8
+18.88
+15.2
+22.2
+Table 5: Test FID values of various methods in unpaired super-resolution of faces experiment.
+nearly random and do not reflect the attributes of the input images (Figure 4a). We do not provide
+results for DiffSB [15] since it already performs bad on Colored MNIST (M5.3) and the authors also
+did not consider any image-to-image apart of grayscale 28x28 images.
+For completeness, we present results on this setup for other methods, which do not solve EOT: ICNN-
+based OT [38] and AugCycleGAN [2]. ICNN (4d) learns a deterministic map. AugCycleGAN (4e)
+learns a stochastic map, but the generated samples differ only by brightness.
+6
+Discussion
+Potential impact. There is a lack of scalable algorithms for learning continuous entropic OT plans
+which may be used in data→data practical tasks requiring control of the diversity of generated
+samples. We hope that our results provide a new direction for research towards establishing scalable
+and efficient methods for entropic OT by using its connection with SB.
+Potential social impact. Like other popular methods for generating images, our method can be used
+to simplify the work of designers with digital images and create new products based on it. At the
+same time, our method may be used for creating fake images just like the other generative models.
+Limitations. To simulate the trajectories following SDE (9), we use the Euler-Maruyama scheme. It
+is straightforward but may be imprecise when the number of steps is small or the noise variance ϵ is
+high. As a result, for large ϵ, our Algorithm 1 may be computationally heavy due to the necessity to
+backpropagate through a large computational graph obtained via the simulation. Employing time and
+memory efficient SDE integration schemes is a promising avenue for the future work.
+ACKNOWLEDGEMENTS. This work was partially supported by Skoltech NGP program (Skoltech-
+MIT joint project).
+10
+
+References
+[1] Yves Achdou, Pierre Cardaliaguet, François Delarue, Alessio Porretta, and Filippo Santambro-
+gio. Mean Field Games: Cetraro, Italy 2019, volume 2281. Springer Nature, 2021.
+[2] Amjad Almahairi, Sai Rajeshwar, Alessandro Sordoni, Philip Bachman, and Aaron Courville.
+Augmented cyclegan: Learning many-to-many mappings from unpaired data. In International
+Conference on Machine Learning, pages 195–204. PMLR, 2018.
+[3] Brandon Amos. On amortizing convex conjugates for optimal transport. In The Eleventh
+International Conference on Learning Representations, 2022.
+[4] Brandon Amos, Lei Xu, and J Zico Kolter. Input convex neural networks. In Proceedings of the
+34th International Conference on Machine Learning-Volume 70, pages 146–155. JMLR. org,
+2017.
+[5] Martin Arjovsky and Leon Bottou. Towards principled methods for training generative adver-
+sarial networks. In International Conference on Learning Representations, 2017.
+[6] Arip Asadulaev, Alexander Korotin, Vage Egiazarian, and Evgeny Burnaev. Neural optimal
+transport with general cost functionals. arXiv preprint arXiv:2205.15403, 2022.
+[7] Julio Backhoff-Veraguas, Mathias Beiglböck, and Gudmun Pammer. Existence, duality, and
+cyclical monotonicity for weak transport costs. Calculus of Variations and Partial Differential
+Equations, 58(6):1–28, 2019.
+[8] Jean-David Benamou and Yann Brenier. A computational fluid mechanics solution to the
+monge-kantorovich mass transfer problem. Numerische Mathematik, 84(3):375–393, 2000.
+[9] Charlotte Bunne, Ya-Ping Hsieh, Marco Cuturi, and Andreas Krause. The schrödinger bridge
+between gaussian measures has a closed form. In International Conference on Artificial
+Intelligence and Statistics, pages 5802–5833. PMLR, 2023.
+[10] Tianrong Chen, Guan-Horng Liu, and Evangelos Theodorou. Likelihood training of schrödinger
+bridge using forward-backward sdes theory. In International Conference on Learning Represen-
+tations, 2021.
+[11] Yongxin Chen, Tryphon T Georgiou, and Michele Pavon. Stochastic control liaisons: Richard
+sinkhorn meets gaspard monge on a schrodinger bridge. SIAM Review, 63(2):249–313, 2021.
+[12] Marco Cuturi. Sinkhorn distances: Lightspeed computation of optimal transport. Advances in
+neural information processing systems, 26, 2013.
+[13] Marco Cuturi and Arnaud Doucet. Fast computation of wasserstein barycenters. In International
+conference on machine learning, pages 685–693. PMLR, 2014.
+[14] Max Daniels, Tyler Maunu, and Paul Hand. Score-based generative neural networks for large-
+scale optimal transport. Advances in neural information processing systems, 34:12955–12965,
+2021.
+[15] Valentin De Bortoli, James Thornton, Jeremy Heng, and Arnaud Doucet. Diffusion schrödinger
+bridge with applications to score-based generative modeling. Advances in Neural Information
+Processing Systems, 34:17695–17709, 2021.
+[16] Jiaojiao Fan, Shu Liu, Shaojun Ma, Hao-Min Zhou, and Yongxin Chen. Neural monge map
+estimation and its applications. Transactions on Machine Learning Research, 2023. Featured
+Certification.
+[17] Jiaojiao Fan, Qinsheng Zhang, Amirhossein Taghvaei, and Yongxin Chen. Variational wasser-
+stein gradient flow. In International Conference on Machine Learning, pages 6185–6215.
+PMLR, 2022.
+[18] Milena Gazdieva, Alexander Korotin, Daniil Selikhanovych, and Evgeny Burnaev. Extremal
+domain translation with neural optimal transport. In Advances in Neural Information Processing
+Systems, 2023.
+[19] Milena Gazdieva, Litu Rout, Alexander Korotin, Alexander Filippov, and Evgeny Burnaev.
+Unpaired image super-resolution with optimal transport maps. arXiv preprint arXiv:2202.01116,
+2022.
+11
+
+[20] Nathael Gozlan, Cyril Roberto, Paul-Marie Samson, and Prasad Tetali. Kantorovich duality for
+general transport costs and applications. Journal of Functional Analysis, 273(11):3327–3405,
+2017.
+[21] A Hitchhiker’s Guide. Infinite dimensional analysis. Springer, 2006.
+[22] Pierre Henry-Labordere. (martingale) optimal transport and anomaly detection with neural
+networks: A primal-dual algorithm. arXiv preprint arXiv:1904.04546, 2019.
+[23] Martin Heusel, Hubert Ramsauer, Thomas Unterthiner, Bernhard Nessler, and Sepp Hochreiter.
+GANs trained by a two time-scale update rule converge to a local nash equilibrium. In Advances
+in neural information processing systems, pages 6626–6637, 2017.
+[24] Xun Huang, Ming-Yu Liu, Serge Belongie, and Jan Kautz. Multimodal unsupervised image-
+to-image translation. In Proceedings of the European conference on computer vision (ECCV),
+pages 172–189, 2018.
+[25] Hicham Janati, Boris Muzellec, Gabriel Peyré, and Marco Cuturi. Entropic optimal transport
+between unbalanced gaussian measures has a closed form. Advances in neural information
+processing systems, 33:10468–10479, 2020.
+[26] Alexander Korotin, Vage Egiazarian, Arip Asadulaev, Alexander Safin, and Evgeny Burnaev.
+Wasserstein-2 generative networks. In International Conference on Learning Representations,
+2021.
+[27] Alexander Korotin, Alexander Kolesov, and Evgeny Burnaev.
+Kantorovich strikes back!
+wasserstein GANs are not optimal transport? In Thirty-sixth Conference on Neural Information
+Processing Systems Datasets and Benchmarks Track, 2022.
+[28] Alexander Korotin, Lingxiao Li, Aude Genevay, Justin M Solomon, Alexander Filippov, and
+Evgeny Burnaev. Do neural optimal transport solvers work? a continuous wasserstein-2
+benchmark. Advances in Neural Information Processing Systems, 34:14593–14605, 2021.
+[29] Alexander Korotin, Lingxiao Li, Justin Solomon, and Evgeny Burnaev. Continuous wasserstein-
+2 barycenter estimation without minimax optimization. In International Conference on Learning
+Representations, 2021.
+[30] Alexander Korotin, Daniil Selikhanovych, and Evgeny Burnaev. Kernel neural optimal transport.
+In The Eleventh International Conference on Learning Representations, 2023.
+[31] Alexander Korotin, Daniil Selikhanovych, and Evgeny Burnaev. Neural optimal transport. In
+The Eleventh International Conference on Learning Representations, 2023.
+[32] Christian Léonard. A survey of the schrödinger problem and some of its connections with
+optimal transport. arXiv preprint arXiv:1308.0215, 2013.
+[33] Alex Tong Lin, Samy Wu Fung, Wuchen Li, Levon Nurbekyan, and Stanley J Osher. Alternating
+the population and control neural networks to solve high-dimensional stochastic mean-field
+games. Proceedings of the National Academy of Sciences, 118(31):e2024713118, 2021.
+[34] Guan-Horng Liu, Tianrong Chen, Oswin So, and Evangelos Theodorou. Deep generalized
+schrödinger bridge. Advances in Neural Information Processing Systems, 35:9374–9388, 2022.
+[35] Ziwei Liu, Ping Luo, Xiaogang Wang, and Xiaoou Tang. Deep learning face attributes in the
+wild. In Proceedings of International Conference on Computer Vision (ICCV), December 2015.
+[36] Guansong Lu, Zhiming Zhou, Jian Shen, Cheng Chen, Weinan Zhang, and Yong Yu. Large-
+scale optimal transport via adversarial training with cycle-consistency.
+arXiv preprint
+arXiv:2003.06635, 2020.
+[37] Andreas Lugmayr, Martin Danelljan, and Radu Timofte. Ntire 2021 learning the super-resolution
+space challenge. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, pages 596–612, 2021.
+[38] Ashok Makkuva, Amirhossein Taghvaei, Sewoong Oh, and Jason Lee. Optimal transport
+mapping via input convex neural networks. In International Conference on Machine Learning,
+pages 6672–6681. PMLR, 2020.
+[39] François-Pierre Paty, Alexandre d’Aspremont, and Marco Cuturi. Regularity as regularization:
+Smooth and strongly convex brenier potentials in optimal transport. In International Conference
+on Artificial Intelligence and Statistics, pages 1222–1232. PMLR, 2020.
+12
+
+[40] Michele Pavon and Anton Wakolbinger. On free energy, stochastic control, and schrödinger
+processes. In Modeling, Estimation and Control of Systems with Uncertainty: Proceedings of a
+Conference held in Sopron, Hungary, September 1990, pages 334–348. Springer, 1991.
+[41] Gabriel Peyré, Marco Cuturi, et al. Computational optimal transport. Foundations and Trends®
+in Machine Learning, 11(5-6):355–607, 2019.
+[42] Litu Rout, Alexander Korotin, and Evgeny Burnaev. Generative modeling with optimal transport
+maps. In International Conference on Learning Representations, 2022.
+[43] Filippo Santambrogio. Optimal transport for applied mathematicians. Birkäuser, NY, 55(58-
+63):94, 2015.
+[44] Erwin Schrödinger. Über die umkehrung der naturgesetze. Verlag der Akademie der Wis-
+senschaften in Kommission bei Walter De Gruyter u. Company., 1931.
+[45] Vivien Seguy, Bharath Bhushan Damodaran, Remi Flamary, Nicolas Courty, Antoine Rolet,
+and Mathieu Blondel. Large scale optimal transport and mapping estimation. In International
+Conference on Learning Representations, 2018.
+[46] Yuyang Shi, Valentin De Bortoli, Andrew Campbell, and Arnaud Doucet. Diffusion schrödinger
+bridge matching. In Thirty-seventh Conference on Neural Information Processing Systems,
+2023.
+[47] Christian Szegedy, Wei Liu, Yangqing Jia, Pierre Sermanet, Scott Reed, Dragomir Anguelov,
+Dumitru Erhan, Vincent Vanhoucke, and Andrew Rabinovich. Going deeper with convolutions.
+In Proceedings of the IEEE conference on computer vision and pattern recognition, pages 1–9,
+2015.
+[48] Francisco Vargas, Pierre Thodoroff, Austen Lamacraft, and Neil Lawrence. Solving schrödinger
+bridges via maximum likelihood. Entropy, 23(9):1134, 2021.
+[49] Cédric Villani. Optimal transport: old and new, volume 338. Springer Science & Business
+Media, 2008.
+[50] Gefei Wang, Yuling Jiao, Qian Xu, Yang Wang, and Can Yang. Deep generative learning via
+schrödinger bridge. In International Conference on Machine Learning, pages 10794–10804.
+PMLR, 2021.
+[51] Yujia Xie, Minshuo Chen, Haoming Jiang, Tuo Zhao, and Hongyuan Zha. On scalable and
+efficient computation of large scale optimal transport. volume 97 of Proceedings of Machine
+Learning Research, pages 6882–6892, Long Beach, California, USA, 09–15 Jun 2019. PMLR.
+13
+
+A
+Extended background: KL divergence with the Wiener process plan
+This section illustrates that (7) holds. Consider a process T ∈F(P0), i.e., T is a probability
+distribution on Ωwith the marginal P0 at t = 0.
+Let W ϵ be the Wiener process with variance ϵ starting at P0, i.e., it satisfies dXt = √ϵdWt with
+X0 ∼P0. Hence, πW ϵ(y|x) is the normal distribution dπW ϵ(y|x)
+dy
+= N(y|x, ϵI). Then KL(πT ||πW ϵ)
+between joint distributions at times t = 0 and t = 1 of these processes is given by:
+KL(πT ||πW ϵ) = −
+Z
+X×Y
+log dπW ϵ(x, y)
+d[x, y]
+dπT (x, y) +
+Z
+X×Y
+log dπT (x, y)
+d[x, y]
+dπT (x, y)
+|
+{z
+}
+=−H(πT )
+,
+(18)
+where dπ(x,y)
+d[x,y] denotes the joint density of distribution π. We derive
+−
+Z
+X×Y
+log dπW ϵ(x, y)
+d[x, y]
+dπT (x, y) = −
+Z
+X×Y
+log dπW ϵ(y|x)
+dy
+dπW ϵ(x)
+dx
+dπT (x, y) =
+−
+Z
+X×Y
+log dπW ϵ(y|x)
+dy
+dπT (x, y) −
+Z
+X
+Z
+Y
+log dπW ϵ(x)
+dx
+dπT (y|x)
+dπT
+0 (x)
+z }| {
+dP0(x) =
+−
+Z
+X×Y
+log dπW ϵ(y|x)
+dy
+dπT (x, y) −
+Z
+X
+log dπW ϵ(x)
+dx
+ Z
+Y
+1dπT (y|x)
+
+dP0(x) =
+−
+Z
+X
+Z
+Y
+log dπW ϵ(y|x)
+dy
+dπT (x, y) −
+Z
+X
+log dπW ϵ(x)
+dx
+dP0(x) =
+−
+Z
+X
+Z
+Y
+log dπW ϵ(y|x)
+dy
+dπT (x, y) −
+Z
+X
+log dP0(x)
+dx
+dP0(x) =
+−
+Z
+X×Y
+log dπW ϵ(y|x)
+dy
+dπT (x, y) + H(P0) =
+−
+Z
+X×Y
+log
+
+(2πϵ)
+−D
+2 exp
+
+−||x −y||2
+2ϵ
+
+dπT (x, y) + H(P0) =
++D
+2 log(2πϵ) +
+Z
+X×Y
+||x −y||2
+2ϵ
+dπT (x, y) + H(P0).
+After substituting this result into (18), one obtains:
+KL(πT ||πW ϵ) =
+Z
+X×Y
+||x −y||2
+2ϵ
+dπT (x, y) −H(πT ) + D
+2 log(2πϵ) + H(P0)
+|
+{z
+}
+=C in (7)
+.
+(19)
+B
+Proofs
+In this section, we provide the proof for our main theoretical results (Theorems 4.1 and 4.3). The
+proofs require several auxiliary results which we formulate and prove in MB.1 and MB.2.
+In MB.1, we show that entropic OT can be reformulated as a maximin problem. This is a technical
+intermediate result needed to derive our main maximin reformulation of SB (Theorem 4.1). More
+precisely, in MB.2, we show that these maximin problems for entropic OT and SB are actually
+equivalent. By using this observation and related facts, in MB.3, we prove our Theorems 4.1 and 4.3.
+B.1
+Relaxation of entropic OT
+To begin with, we recall some facts regarding EOT and SB. Recall the definition of EOT (2):
+inf
+π∈Π(P0,P1)
+Z
+X×Y
+||x −y||2
+2
+dπ(x, y) −ϵH(π).
+(20)
+14
+
+Henceforth, we assume that P0 and P1 are absolutely continuous. The situation when P0 or P1 is
+not absolutely continuous is not of any practical interest: there is no π ∈Π(P0, P1) for which the
+differential entropy H(π) is finite which means that (20) equals to +∞for every π ∈Π(P0, P1),
+i.e., every plan is optimal. In turn, when P0 and P1 are absolutely continuous, the OT plan is unique
+thanks to the strict convexity of entropy (on the set of absolutely continuous plans).
+Recall equation (19) for KL(π||πW ϵ):
+KL(π||πW ϵ) =
+Z
+X×Y
+||x −y||2
+2ϵ
+dπ(x, y) −H(π) + C.
+(21)
+We again note that
+inf
+π∈Π(P0,P1) KL(π||πW ϵ) = 1
+ϵ
+inf
+π∈Π(P0,P1)
+n Z
+X×Y
+||x −y||2
+2
+dπ(x, y) −ϵH(π)
+o
++ C,
+i.e., problems (20) and (21) can be viewed as equivalent as their minimizers are the same. For
+convenience, we proceed with infπ∈Π(P0,P1) KL(π||πW ϵ) and denote its optimal value by L∗, i.e.,
+L∗def
+=
+inf
+π∈Π(P0,P1) KL(π||πW ϵ).
+For a given β ∈Cb,2(Y), we define an auxiliary joint distribution dπβ(x, y) = dπβ(y|x)dP0(x),
+where dπβ(y|x) is given by
+dπβ(y|x) = 1
+Cx
+β
+exp(β(y))dπW ϵ(y|x),
+where Cx
+β(x)
+def
+=
+R
+Y exp(β(y))dπW ϵ(y|x). Note that Cx
+β < ∞since β ∈Cb,2(Y) is upper bounded.
+Before going further, we need to introduce several technical auxiliary results.
+Proposition B.1. For ν ∈P2(Y) and x ∈X it holds that
+KL(ν||πW ϵ(·|x)) −
+Z
+Y
+β(y)dν(y) = KL(ν||πβ(·|x)) −log Cx
+β.
+(22)
+Proof of Proposition B.1. We derive
+KL(ν||πW ϵ(·|x)) −
+Z
+Y
+β(y)dν(y) =
+Z
+Y
+log
+dν(y)
+dπW ϵ(y|x)dν(y) −
+Z
+Y
+β(y)dν(y) =
+Z
+Y
+log
+dν(y)
+exp(β(y))dπW ϵ(y|x)dν(y) =
+Z
+Y
+log
+Cx
+βdν(y)
+Cx
+β exp(β(y))dπW ϵ(y|x)dν(y) =
+Z
+Y
+log
+dν(y)
+dπβ(y|x)dν(y) −log Cx
+β = KL(ν||πβ(·|x)) −log Cx
+β.
+Lemma B.2. For π ∈Π(P0), i.e., probability distributions π ∈P2(X × Y) whose projection to X
+equals P0, we have
+KL(π||πW ϵ) −
+Z
+Y
+β(y)dπ(y) = KL(π||πβ) −
+Z
+X
+log Cx
+βdP0(x).
+(23)
+Proof of Lemma B.2. For each x ∈X, we substitute ν = π(·|x) to (22) and integrate over x ∼P0.
+For the left part, we obtain the following:
+Z
+X
+
+KL(π(·|x)||πW ϵ(·|x)) −
+Z
+Y
+β(y)dπ(y|x)
+
+dP0(x) =
+Z
+X
+KL(π(·|x)||πW ϵ(·|x))dP0(x) −
+Z
+X×Y
+β(y)dπ(y|x)dP0(x) =
+15
+
+Z
+X
+Z
+Y
+log
+dπ(y|x)
+dπW ϵ(y|x)dπ(y|x)dP0(x) −
+Z
+Y
+β(y)dπ1(y) =
+Z
+X
+Z
+Y
+log
+dπ(y|x)dP0(x)
+dπW ϵ(y|x)dP0(x)dπ(y|x)dP0(x) −
+Z
+Y
+β(y)dπ1(y) =
+Z
+X×Y
+log
+dπ(x, y)
+dπW ϵ(x, y)dπ(x, y) −
+Z
+Y
+β(y)dπ1(y) =
+KL(π||πW ϵ) −
+Z
+Y
+β(y)dπ1(y).
+For the right part, we obtain:
+Z
+X
+n
+KL(π(·|x)||πβ(·|x)) −log Cx
+β
+o
+dP0(x) =
+Z
+X
+KL(π(·|x)||πβ(·|x))dP0(x) −
+Z
+X
+log Cx
+βdP0(x) =
+Z
+X
+Z
+Y
+log dπ(y|x)
+dπβ(y|x)dπ(y|x)dP0(x) −
+Z
+X
+log Cx
+βdP0(x) =
+Z
+X
+Z
+Y
+log dπ(y|x)dP0(x)
+dπβ(y|x)dP0(x)dπ(y|x)dP0(x) −
+Z
+X
+log Cx
+βdP0(x) =
+Z
+X×Y
+log dπ(x, y)
+dπβ(x, y)dπ(x, y) −
+Z
+X
+log Cx
+βdP0(x) =
+KL(π||πβ) −
+Z
+X
+log Cx
+βdP0(x).
+Hence, the equality (23) holds.
+Now we introduce the following auxiliary functional eL:
+eL(β, π)
+def
+= KL(π||πW ϵ) −
+Z
+Y
+β(y)dπ1(y) +
+Z
+Y
+β(y)dP1(y).
+Recall that π1 denotes the second marginal distribution of π. We use this functional to derive the
+saddle point reformulation of EOT.
+Lemma B.3 (Relaxation of entropic optimal transport). It holds that
+L∗=
+inf
+π∈Π(P0,P1) KL(π||πW ϵ)= sup
+β
+inf
+π∈Π(P0)
+eL(β, π),
+(24)
+where sup is taken over potentials β ∈Cb,2(Y) and inf over π ∈Π(P0).
+Proof of Lemma B.3. We obtain
+inf
+π∈Π(P0,P1) KL
+ π||πW ϵ
+=
+inf
+π∈Π(P0,P1)
+n Z
+X
+KL
+ π(y|x)||πW ϵ(y|x)
+
+dP0(x)
+o
+=
+inf
+π∈Π(P0,P1)
+Z
+X
+C
+ x, π(y|x)
+
+dP0(x),
+(25)
+where C
+ x, ν
+ def
+= KL
+ ν||πW ϵ(y|x)
+
+. The last problem in (25) is known as weak OT [7, 20] with a
+weak OT cost C. For a given β ∈Cb,2(Y), consider its weak C-transform given by:
+βC(x)
+def
+=
+inf
+ν∈P2(Y)
+
+C(x, ν) −
+Z
+Y
+β(y)dν(y)
+	
+.
+(26)
+Since C : X × P2(Y) →R is lower bounded (by zero), convex in the second argument and jointly
+lower semi-continuous, the following equality holds [7, Theorem 1.3]:
+L∗=
+inf
+π∈Π(P0,P1)
+Z
+X
+C
+ x, π(y|x)
+
+dP0(x) = sup
+β
+ Z
+X
+βC(x)dP0(x) +
+Z
+Y
+β(y)dP1(y)
+	
+,
+(27)
+16
+
+where sup is taken over β ∈Cb,2(Y). We use our Proposition B.1 to note that
+βC(x) =
+inf
+ν∈P2(Y)
+
+KL
+ ν||πW ϵ(y|x)
+
+−
+Z
+Y
+β(y)dν(y)
+	
+=
+inf
+ν∈P2(Y)
+
+KL(ν||πβ(·|x)) −log Cx
+β} = −log Cx
+β.
+This allows us to derive
+Z
+X
+βC(x)dP0(x) +
+Z
+Y
+β(y)dP1(y) =
+(28)
+−
+Z
+X
+log Cx
+βdP0(x) +
+Z
+Y
+β(y)dP1(y) =
+=0
+z
+}|
+{
+
+inf
+π∈Π(P0) KL(π||πβ)
+	
+−
+Z
+X
+log Cx
+βdP0(x) +
+Z
+Y
+β(y)dP1(y) =
+inf
+π∈Π(P0)
+
+KL(π||πβ) −
+Do not depend on π
+z
+}|
+{
+Z
+X
+log Cx
+βdP0(x) +
+Z
+Y
+β(y)dP1(y)
+
+=
+inf
+π∈Π(P0)
+
+KL(π||πW ϵ) −
+Z
+Y
+β(y)dπ(y) +
+Z
+Y
+β(y)dP1(y)
+
+=
+inf
+π∈Π(P0)
+eL(β, π).
+(29)
+Here in transition to line (29), we use our Lemma B.2. It remains to take supβ in equality between
+(28) and (29) and then recall (27) to finish the proof and obtain desired (24).
+Thus, we can obtain the value L∗(8) by solving maximin problem (24) with only one constraint
+π ∈Π(P0). Moreover, our following lemma shows that in all optimal pairs (β∗, π∗) which solve
+maximin problem (24), π∗is necessary the unique entropic OT plan between P0 and P1.
+Lemma B.4 (Entropic OT plan solves the relaxed entropic OT problem). Let π∗be the entropic OT
+plan between P0 and P1. For every optimal β∗∈argsupβ infπ∈Π(P0) L(β, π), we have
+π∗= arginf
+π∈Π(P0)
+eL(β∗, π).
+(30)
+Proof of Lemma B.4. Since β∗is optimal, we know from Lemma B.3 that infπ∈Π(P0) L(β∗, π) = L∗.
+Thanks to π∗∈Π(P0, P1), we have π∗
+1 = P1. We substitute π∗to L(β∗, π) and obtain
+L(β∗, π∗) = KL(π∗||πW ϵ) +
+Z
+Y
+β(y)dP1(y) −
+Z
+Y
+β(y)
+=dP1(y)
+z }| {
+dπ∗
+1(y) = KL(π∗||πW ϵ) = L∗.
+(31)
+The functional π 7→L(β∗, π) is strictly convex (in the convex subset of Π(P0) of distributions π for
+which KL(π||πW ϵ) < ∞). Thus, it has a unique minimizer, which is π∗.
+From our Lemmas B.3 and B.4 it follows that to get the OT plan π∗one may solve the maximin
+problem (24) to obtain an optimal saddle point (β∗, π∗). Unfortunately, it is challenging to estimate
+KL(π||πW ϵ) from samples, which limits the usage of this objective in practice.
+B.2
+Equivalence of EOT and DSB relaxed problems
+Below we show how to relax SB problem (11) and link its solution to the relaxed entropic OT (24).
+For a given β ∈Cb,2(Y), we define an auxiliary process T β such that its conditional distributions are
+T β
+|x,y = W ϵ
+|x,y and its joint distribution πT β at t = 0, 1 is given by πβ.
+To simplify many of upcoming formulas, we introduce Cβ
+def
+=
+R
+X log Cx
+βdP0(x). Also, we introduce
+F(P0) to denote the set of processes starting at P0 at time t = 0.
+17
+
+Lemma B.5 (Inner objectives of relaxed EOT and SB are KL with T β and πT β). For π ∈Π(P0)
+and T ∈F(P0), the following equations hold:
+eL(β, π) = KL(π||πT β) −Cβ +
+Z
+Y
+β(y)dP1(y),
+(32)
+L(β, T) = KL(T||T β) −Cβ +
+Z
+Y
+β(y)dP1(y).
+(33)
+Note that the last two terms in each line depend only on β but not on π or T.
+Proof of Lemma B.5. The first equation (32) directly follows from Lemma B.2. Now we prove (33):
+L(β, T) −
+Z
+Y
+β(y)dP1(y) = KL(T||W ϵ) −
+Z
+β(y)dπT
+1 (y) =
+KL(πT ||πW ϵ) +
+Z
+X×Y
+KL(T|x,y||W ϵ
+|x,y)dπT (x, y) −
+Z
+β(y)dπT
+1 (y) =
+(34)
+KL(πT ||πT β) −Cβ +
+Z
+X×Y
+KL(T|x,y||W ϵ
+|x,y)dπT (x, y) =
+KL(πT ||πT β) −Cβ +
+Z
+X×Y
+KL(T|x,y||T β
+|x,y)dπT (x, y) = KL(T||T β) −Cβ.
+(35)
+In the transition to line (34), we use the disintegration formula (6). In line (35), we use the definition
+of T β, i.e., we exploit the fact that T β
+|x,y = W ϵ
+|x,y and again use (6).
+As a result of Lemma B.5, we obtain the following important corollary.
+Corollary B.6 (The solution to the inner problem of relaxed SB is a diffusion). Consider the problem
+inf
+T ∈F(P0) L(β, T).
+(36)
+Then T β is the unique optimizer of (36) and it holds that T β ∈D(P0), i.e., it is a diffusion process:
+T β = arginf
+T ∈F(P0)
+L(β, T) = arginf
+Tf ∈D(P0)
+L(β, Tf).
+(37)
+Proof. Thanks to (33), we see that T β is the unique minimizer of (36). Now let Q
+def
+= πT β
+1 . Then
+T β = arginf
+T ∈F(P0)
+L(β, T) = arginf
+T ∈F(P0)
+h
+KL(T||W ϵ) −
+Z
+Y
+β(y)dπT
+1 (y)
+i
+=
+arginf
+T ∈F(P0,Q)
+h
+KL(T||W ϵ) −
+Z
+Y
+β(y)dπT
+1 (y)
+|
+{z
+}
+=Const, since πT
+1 =πT β
+1
+=Q
+i
+=
+arginf
+T ∈F(P0,Q)
+KL(T||W ϵ) =
+arginf
+Tf ∈D(P0,Q)
+KL(Tf||W ϵ) =
+arginf
+Tf ∈D(P0,Q)
+1
+2ϵETf [
+Z 1
+0
+||f(Xt, t)||2dt].
+(38)
+In transition to (38), we use the fact that the process solving the Schrödinger Bridge (this time
+between P0 and Q) with the Wiener Prior is a diffusion process (see Dynamic SB problem in M2.2
+for details). As a result, we obtain T β ∈D(P0, Q) ⊂D(P0) and finish the proof.
+Below we show that for a given β, minimization of the SB relaxed functional L(β, Tf) over Tf is
+equivalent to the minimization of relaxed EOT functional eL(β, π) (24) with the same β.
+Lemma B.7 (Equivalence of the inf values of the relaxed functionals). It holds that
+inf
+Tf ∈D(P0) L(β, Tf) =
+inf
+π∈Π(P0)
+eL(β, π) = −Cβ +
+Z
+β(y)dP1(y).
+(39)
+Moreover, the unique minimizers are given by T β ∈D(P0) and πT β ∈Π(P0), respectively.
+18
+
+Proof of Lemma B.7. Follows from Lemma B.5 and Corollary B.6.
+Finally, we see that both the maximin problems are equivalent.
+Corollary B.8 (Equivalence of EOT and DSB maximin problems). It holds that
+L∗= sup
+β
+inf
+Tf ∈D(P0) L(β, Tf) = sup
+β
+inf
+π∈Π(P0)
+eL(β, π)
+(40)
+Proof of Corollary B.8. We take supβ of both parts in equation (39).
+Also, it follows that the maximization of infTf ∈D(P0) L(β, Tf) over β allows to solve entropic OT.
+B.3
+Proofs of main results
+Finally, after long preparations, we prove our main Theorem 4.1.
+Proof of Theorem 4.1 and Corollary 4.2. From our Lemma B.7 and Corollary B.8 it follows that
+β∗∈argsup
+β
+inf
+Tf ∈D(P0)L(β, Tf) ⇔β∗∈argsup
+β
+inf
+π∈Π(P0)
+eL(β, π),
+i.e., both maximin problems share the same optimal β∗. Thanks to our Lemma B.7, we already know
+that the process T β∗∈D(P0) and the plan πT β∗
+∈Π(P0) are the unique minimizers of problems
+inf
+Tf ∈D(P0)L(β∗, Tf) =
+inf
+π∈Π(P0)
+eL(β∗, π),
+respectively. Therefore, Tf ∗= T β∗and, in particular, πTf∗= πT β∗
+. Moreover, since (β∗, πTf∗) is
+an optimal saddle point for eL, from Lemma B.4 we conclude that πTf∗= π∗, i.e., πTf∗is the EOT
+plan between P0 and P1. In particular, πTf∗∈Π(P0, P1) which also implies that Tf ∗∈D(P0, P1).
+The last step is to derive
+L∗= L(β∗, Tf ∗) = KL(Tf ∗||W ϵ) +
+Z
+Y
+β∗(y)dP1(y) −
+Z
+Y
+β∗(y)
+=dP1(y)
+z
+}|
+{
+dπ
+Tf∗
+1
+(y)
+|
+{z
+}
+=0 since Tf∗∈D(P0,P1)
+= KL(Tf ∗||W ϵ).
+which concludes that Tf ∗is the solution to SB (5).
+Proof of Theorem 4.3. Part 1. From Lemma B.5 and Corollary B.6 it follows that that infTf L(ˆβ, Tf)
+has the unique minimizer T bβ whose conditional distributions are T
+bβ
+|x,y = W ϵ
+|x,y. Therefore,
+ϵ1 = L(ˆβ, T ˆ
+f) −inf
+Tf L(ˆβ, Tf) =
+
+KL(T ˆ
+f||T
+bβ) −C ˆβ +
+Z
+Y
+bβ(y)dP1(y)
+
+−
+
+−Cbβ +
+Z
+Y
+bβ(y)dP1(y)
+
+= KL(T ˆ
+f||T
+bβ).
+(41)
+Part 2. Now we consider ϵ2. We know that
+L∗= KL(Tf ∗||W ϵ) =
+KL(πTf∗||πW ϵ) +
+Z
+X×Y
+KL(Tf ∗|x,y||W ϵ
+|x,y)dπTf∗(x, y) = KL(πTf∗||πW ϵ).
+From Lemma B.5 and Corollary B.6, we also know that
+inf
+Tf L(ˆβ, Tf) = −C ˆβ +
+Z
+ˆβ(y)dP1(y).
+Therefore:
+ϵ2 = L∗−inf
+Tf L(ˆβ, Tf ∗) = KL(πTf∗||πW ϵ) + C ˆβ −
+Z
+ˆβ(y)dP1(y) =
+19
+
+KL(πTf∗||πWϵ) +
+Z
+X
+log Cx
+ˆβdP0(x) −
+Z
+ˆβ(y)dP1(y) =
+Z
+X
+KL(πTf∗(·|x)||πW ϵ(·|x))dP0(x) +
+Z
+X
+log Cx
+ˆβdP0(x) −
+Z
+ˆβ(y)dP1(y) =
+Z
+X
+KL(πTf∗(·|x)||πW ϵ(·|x))dP0(x) +
+Z
+X
+log Cx
+ˆβdP0(x) −
+Z
+ˆβ(y)dπTf∗(y|x)dP0(x) =
+Z
+X
+n
+KL(πTf∗(·|x)||πW ϵ(·|x)) + log Cx
+ˆβ −
+Z
+Y
+ˆβ(y)dπTf∗(y|x)
+o
+dP0(x) =
+Z
+X
+n
+KL(πTf∗(·|x)||πT
+ˆ
+β(·|x)) −log Cx
+ˆβ + log Cx
+ˆβ
+o
+dP0(x) =
+Z
+X
+KL(πTf∗(·|x)||πT
+ˆ
+β(·|x))dP0(x) = KL(πTf∗||πT
+ˆ
+β) =
+KL(πTf∗||πT
+ˆ
+β) +
+Z
+X×Y
+KL(Tf ∗|x,y||T
+ˆβ
+|x,y)dπTf∗(x, y)
+|
+{z
+}
+=0, since Tf∗|x,y=T
+ˆ
+β
+|x,y=W ϵ
+|x,y
+= KL(Tf ∗||T
+bβ).
+(42)
+Thus, we obtain ϵ2 = KL(Tf ∗||T bβ).
+Part 3. By summing (41) and (42) and using the Pinsker inequality, we obtain
+ϵ1 + ϵ2 = KL(T ˆ
+f||T
+bβ) + KL(Tf ∗||T
+bβ) ≥2ρ2
+TV(T ˆ
+f, T
+bβ) + 2ρ2
+TV(Tf ∗, T
+bβ) ≥
+
+ρTV(T ˆ
+f, T
+bβ) + ρTV(Tf ∗, T
+bβ)
+2 ≥ρ2
+TV(T ˆ
+f, Tf ∗).
+(43)
+Here we use the triangle inequality in line (43). Therefore, ρTV(T ˆ
+f, Tf ∗) ≤√ϵ1 + ϵ2.
+Part 4. By summing (41) and (42) and using the Pinsker inequality, we obtain
+ϵ1 + ϵ2 = KL(T ˆ
+f||T
+bβ) + KL(Tf ∗||T
+bβ) =
+KL(πT ˆ
+f ||πT
+b
+β) +
+Z
+X×Y
+KL(T ˆ
+f|x,y||T
+bβ
+|x,y)dπT ˆ
+f (x, y) +
+KL(πTf∗||πT
+b
+β) +
+Z
+X×Y
+KL(Tf ∗|x,y||T
+bβ
+|x,y)dπTf∗(x, y) ≥
+KL(πT ˆ
+f ||πT
+b
+β) + KL(πTf∗||πT
+b
+β) ≥2ρ2
+TV(πT ˆ
+f , πT
+b
+β) + 2ρ2
+TV(πTf∗, πT
+b
+β) ≥
+
+ρTV(πT ˆ
+f , πT
+b
+β) + ρTV(πTf∗, πT
+b
+β)
+2 ≥ρ2
+TV(πT ˆ
+f , πTf∗).
+Thus, ρTV(πTf∗, πT
+b
+β) ≤√ϵ1 + ϵ2.
+C
+Euler-Maruyama
+In our Algorithm 1, at both the training and the inference stages, we use the Euler-Maruyama
+Algorithm 2 to solve SDE.
+D
+Drift Norm Constant Multiplication Invariance
+Our Algorithm 1 aims to solve the following optimization problem:
+sup
+β
+inf
+Tf ∈D(P0)
+
+ETf [
+Z 1
+0
+C||f(Xt, t)||2dt] +
+Z
+Y
+β(y)dP1(y) −
+Z
+Y
+β(y)dPTf
+1 (y)
+
+|
+{z
+}
+def
+=LC(β,Tf )
+,
+with C = 1. At the same time, we use C =
+1
+2ϵ in our theoretical derivations (12). We emphasize that
+the actual value of C > 0 does not affect the optimal solution Tf ∗to this problem. Specifically, if
+20
+
+Algorithm 2: Euler-Maruyama algorithm
+Input
+:batch of initial states X0 at time moment t = 0;
+SDE drift network fθ : RD × [0, 1] →RD;
+number of steps for the SDE solver N ≥1;
+noise variance ϵ ≥0.
+Output :batches {Xn}N
+n=0 of intermediate states at t = n
+N simulating the proccess
+dXt =f(Xt, t)dt+√ϵdWt;
+batches {fn}N
+n=0 of drift values f(Xn, tn) at t = n−1
+N
+simulating the process;
+∆t ←1
+N ;
+for t = 1, 2, . . . , N do
+for i = 1, 2, . . . , |X0| do
+Sample noise W from N(0, I) ;
+ft−1,i ←f(Xt−1, t −1) ;
+Xt,i ←Xt−1,i + ft−1,i∆t +
+√
+ϵ∆tW ;
+(β∗, Tf ∗) is the optimal point for the problem with C = 1, then ( eCβ∗, Tf ∗) is the optimal point for
+C = eC. Indeed, for a pair (β, Tf) it holds that
+L1(β, Tf) = ETf [
+Z 1
+0
+||f(Xt, t)||2dt] +
+Z
+Y
+β(y)dP1(y) −
+Z
+Y
+β(y)dPTf
+1 (y) =
+1
+eC
+
+ETf [
+Z 1
+0
+eC||f(Xt, t)||2dt] +
+Z
+Y
+eCβ(y)dP1(y) −
+Z
+Y
+eCβ(y)dPTf
+1 (y)
+
+=
+1
+eC
+
+ETf [
+Z 1
+0
+eC||f(Xt, t)||2dt] +
+Z
+Y
+eβ(y)dP1(y) −
+Z
+Y
+eβ(y)dPTf
+1 (y)
+
+= 1
+eC
+L
+e
+C(eβ, Tf),
+(44)
+where we use eβ
+def
+= eCβ. Hence problems supβ infTf L1(β, Tf) and supeβ infTf L e
+C(eβ, Tf) can be
+viewed as equivalent in the sense that one can be derived one from the other via the change of
+variables and multiplication by eC > 0. For completeness, we also note that the change of variables
+β ↔eβ actually preserves the functional class of β, i.e., β ∈Cb,2(Y) ⇐⇒eβ ∈Cb,2(Y).
+For convenience, we get rid of dependence on ϵ in the objective (12) and consider L1 for optimization,
+i.e., use C = 1 in Algorithm 1. Still the dependence on ϵ remains in supβ infTf L1(β, Tf) as
+Tf ∈D(P0) is a diffusion process with volatility ϵ. Interestingly, this point of view (optimizing
+L1 instead of L
+1
+2ϵ ) technically allows to consider even ϵ = 0. In this case, the optimization is
+performed over deterministic trajectories Tf determined by the velocity field f(Xt, t). The problem
+supβ infTf L1(β, Tf) may be viewed as a saddle point reformulation of the unregularized OT with
+the quadratic cost in the dynamic form, also known as the Benamou-Brenier formula [43, M6.1]. This
+particular case is out of scope of our paper (it is not EOT/SB) and we do not study the properties of
+L1 in this case. However, for completeness, we provide experimental results for ϵ = 0.
+E
+ENOT for Toy Experiments and High-dimensional Gaussians
+In 2D toy experiments, we consider 2 tasks: Gaussian →8 gaussians and Gaussian →Swiss roll.
+Results for the last one (Figure 5) are qualitatively similar to results of the first one (Figure 2), which
+we discussed earlier (M5.1). For both tasks, we parametrize the SDE drift function in Algorithm 1
+by a feedforward neural network fθ with 3 inputs, 3 linear layers (100 hidden neurons and ReLU
+activations) and 2 outputs. As inputs, we use 2 coordinates and time value t (as is). Analogically,
+we parametrize the potential by a feedforward neural network βϕ with 2 inputs, 3 linear layers (100
+hidden neural and ReLU activations) and 2 outputs. In all the cases, we use N = 10 discretization
+steps for solving SDE by Euler-Maruyama Algorithm 2, Adam with lr = 10−4, batch size 512. We
+train the model for 20000 total iterations of βϕ, and on each of them, we do Kf = 10 updates for the
+SDE drift function fθ.
+21
+
+(a) Input and target samples
+(b) ENOT (ours), ϵ = 0
+(c) ENOT (ours), ϵ = 0.01
+(d) ENOT (ours), ϵ = 0.1
+Figure 5: Gaussian →Swiss roll, learned stochastic process with ENOT (ours).
+In the experiments with high-dimensional Gaussians, we use exactly the same setup as for toy 2D
+experiments but chose N = 200 discretization steps for SDE, all hidden sizes in neural networks
+are 512, and we train our model for 10000 iterations. To illustrate the stability of the algorithm, we
+provide the plot of BW2
+2-UVP (%) between the ground truth EOT plan π∗and the learned plan π of
+ENOT during training for DIM = 128 in Figure 6.
+Figure 6: BW2
+2-UVP ↓(%) between the the EOT plan π∗and the learned plan π of ENOT and
+MLE-SB during the training (DIM = 128).
+F
+ENOT for Colored MNIST and Unpaired Super-resolution of Celeba Faces
+For the image tasks (M5.3, M5.4), we find out that using the following reparametrization of Euler-
+Maruyama Algorithm 2 considerably improves the quality of our Algorithm 1. In the Euler-Maruyama
+Algorithm 2, instead of using a neural network to parametrize drift function f(Xt, t) and calculating
+the next state as Xt+1 = Xt + f(Xt, t)∆t +
+√
+ϵ∆t, we parametrize g(Xt, t) = Xt + f(Xt, t)∆t
+by a neural network gθ, and calculate the next state as Xt+1 = gθ(Xt, t) +
+√
+ϵ∆t. In turn, the drift
+function is given by f(Xt, t) =
+1
+∆tg(Xt, t) −Xt. Also, we do not add noise at the last step of the
+Euler-Maruyama simulation because we find out that it provides better empirical performance.
+22
+
+Figure 7: Trajectories from our learned ENOT (ours) for colored MNIST for different ϵ.
+We use WGAN-QC discriminator’s ResNet architecture 5 for the potential β. We use UNet 6 as
+gθ(Xt, t) of SDE in our model. To condition it on t, we first obtain the embedding of t by using
+the positional embedding 7. Then we add conditional instance normalization (CondIN) layers after
+each UNet’s upscaling block 8. We use Adam with lr = 10−4, batch size 64 and 10:1 update ratio
+for fθ/βϕ. For ϵ = 0 and ϵ = 1 our model converges in ≈20000 iterations, while for ϵ = 10 it
+takes ≈70000 iteration to convergence. The last setup takes more iterations to converge because
+adding noise with higher variance during solving SDE by Euler-Maruyama Algorithm 2 increases the
+variance of stochastic gradients.
+In the unpaired super-resolution of Celeba faces, we use the same experimental setup as for the
+colored MNIST experiment. It takes ≈40000 iterations for ϵ = 0 and ≈70000 iterations for ϵ = 1
+and ϵ = 10 to converge. In Figures 7, 1 we present trajectories provided by our algorithm for Colored
+MNIST and Celeba experiments.
+Computational complexity. In the most challenging task (M5.4), ENOT converges in one week on
+2× A100 GPUs.
+G
+Details of the baseline methods
+In this section, we discuss details of the baseline methods with which we compare our method.
+G.1
+Gaussian case (M5.2).
+SCONES [14]. We use the code from the authors’ repository
+https://github.com/mdnls/scones-synthetic
+for their evaluation in the Gaussian case. We employ their configuration blob/main/config.py.
+LSOT [45]. We use the part of the code of SCONES corresponding to learning dual OT potentials
+blob/main/cpat.py and the barycentric projection blob/main/bproj.py in the Gaussian case
+with configuration blob/main/config.py.
+FB-SDE-J [10]. We utilize the official code from
+https://github.com/ghliu/SB-FBSDE
+with their configuration blob/main/configs/default_checkerboard_config.py for the
+checkerboard-to-noise toy experiment, changing the number of steps of dynamics from 100 to
+200 steps. Since their hyper-parameters are developed for their 2-dimensional experiments, we
+increase the number of iterations for dimensions 16, 64 and 128 to 15 000.
+FB-SDE-A [10]. We also take the code from the same repository as above. We base our configura-
+tion on the authors’ one (blob/main/configs/default_moon_to_spiral_config.py) for the
+moon-to-spiral experiment. As earlier, we increase the number of steps of dynamics up to 200. Also,
+we change the number of training epochs for dimensions 16, 64 and 128 to 2,4 and 8 correspondingly.
+5github.com/harryliew/WGAN-QC
+6github.com/milesial/Pytorch-UNet
+7github.com/rosinality/denoising-diffusion-pytorch
+8github.com/kgkgzrtk/cUNet-Pytorch
+23
+
+DiffSB [15]. We utilize the official code from
+https://github.com/JTT94/diffusion_schrodinger_bridge
+with their configuration blob/main/conf/dataset/2d.yaml for toy problems. We increase the
+amount of steps of dynamics to 200 and the number of steps of IPF procedure for dimensions 16, 64
+and 128 to 30, 40 and 60, respectively.
+MLE-SB [48]. We use the official code from
+https://github.com/franciscovargas/GP_Sinkhorn
+with hyper-parameters from blob/main/notebooks/2D Toy Data/2d_examples.ipynb. We
+set the number of steps to 200. As earlier, we increase the number of steps of IPF procedure for
+dimensions 16, 64 and 128 to 1000, 3500 and 5000, respectively.
+G.2
+Colored MNIST (M5.3)
+SCONES [14]. In order to prepare a score-based model, we use the code from
+https://github.com/ermongroup/ncsnv2
+with their configuration blob/master/configs/cifar10.yml. Next, we utilize the code of
+SCONES from the official repository for their unpaired Celeba super-resolution experiment
+(blob/main/scones/configs/superres_KL_0.005.yml). We adapt it for 32×32 ColorMNIST
+images instead of 64×64 celebrity faces.
+DiffSB [15]. We use the official code with their configuration blob/main/conf/mnist.yaml
+adopting it for three-channel ColorMNIST images instead of one-channel MNIST digits.
+G.3
+CelebA (M5.4)
+SCONES [14].
+For the SCONES, we use their exact code and configuration from
+blob/main/scones/configs/superres_KL_0.005.yml.
+As for the score-based model for
+celebrity faces, we pick the pre-trained model from
+https://github.com/ermongroup/ncsnv2
+It is the one used by the authors of SCONES in their paper.
+Augmented Cycle GAN [2]. We use the official code from
+https://github.com/NathanDeMaria/AugmentedCycleGAN
+with their default hyper-parameters.
+ICNN [38]. We utilize the reworked implementation by
+https://github.com/iamalexkorotin/Wasserstein2Benchmark.
+which is a non-minimax version [26] of ICNN-based approach [38].
+That is, we use
+blob/main/notebooks/W2_test_images_benchmark.ipynb and only change the dataloaders.
+H
+Mean-Field Games
+This appendix discusses the relation between the Mean-Field Game problem and Schrödinger Brdiges.
+H.1
+Intro to the Mean-Field game.
+Consider a game with infinitely many small players. At time moment t = 0, they are distributed
+according to X0 ∼ρ0. Every player controls its behavior through drift α of the SDE:
+dXt = α(Xt, t, ρt)dt +
+√
+2νdWt
+24
+
+Here ρt is the distribution of all the players at the time moment t. When we consider a specific player,
+we consider ρt as a parameter. Each player aims to minimize the quantity:
+E[
+Z T
+0
+(L(Xt, αt, ρt) + f(Xt, ρt))dt + g(XT , ρT )].
+Here L(x, α, ρ) is similar to the Lagrange function in physics and describes the cost of moving in
+some direction given the current position and the other players’ distribution. The additional function
+f(Xt, ρt) is interpreted as the cost of the player’s interaction at coordinate x with all the others. Now
+we can introduce the value function ϕ(x, t), which for position x and start time t returns the cost in
+case of the optimal control:
+ϕ(x, t)
+def
+= inf
+α E[
+Z T
+t
+(L(Xt, αt, ρt) + f(Xt, ρt))dt + g(XT , ρT )].
+Before considering the Mean-Field game, we need to define an additional function H(x, p, ρ). It is
+similar to the Hamilton function and is defined as the Legendre transform of Lagrange function L:
+H(x, p, ρ)
+def
+= sup
+α [−αp −L(x, α, ρ)].
+Mean-Field game implies finding the Nash equilibrium for all players of such the game. It is known
+[1] that the Nash equilibrium is the solution of the system of Hamilton-Jacobi-Bellman (HJB) and
+Fokker-Planck (FP) PDE equations. For two functions H(x, p, ρ) and f(x, ρ), Mean-Field game
+formulates as a system of two PDE with two constraints:
+−∂tϕ −ν∆ϕ + H(x, ∇ϕ, ρ) = f(x, ρ) (HJB)
+−∂tρ −ν∆ρ −div(ρ∇pH(x, ∇ϕ)) = 0 (FP)
+s.t. ρ(x, 0) = ρ0 , ϕ(x, T) = g(x, ρ(·, T))
+The solution of this system is two functions ρ(x, t) and ϕ(x, t), which describe all players’ dynamics.
+Also, in Nash equilibrium, the specific player’s behavior is described by the following SDE:
+dXt = −∇pH(Xt, ∇ϕ(Xt, t), ρ)dt +
+√
+2νdWt.
+H.2
+Relation to our work.
+In recent work [34], the authors show that the Schrodinger Bridger problem could be formulated as a
+Mean-Field game with hard constraints on distribution ρ(·, T) = ρtarget(·, T) via choosing proper
+function g(x, ρ(·, T)) such as:
+g(x, ρ(·, T)) =
+∞,
+if ρ(·, T) ̸= ρtarget(·, T)
+0,
+ρ(·, T) = ρtarget(·, T)
+Also, the authors proposed an extension of DiffSB [34] algorithm for the Mean-Field game problem.
+In [33], the authors in their experiments consider only soft constraints on the target density. More
+precisely, they consider only simple constraints such as g(x, ρ) = ||x −xtarget||2, where xtarget is a
+given shared target point for every player, and every player is penalized for being far from this. Such
+soft constraint force players to have delta distribution at point xtarget.
+To solve the Mean-Field problem, the authors parameterize value function ϕ(x, t) by a neural network
+and use different neural network Nθ to sample from ρt. The authors penalize the violation of
+Mean-Field game PDEs for optimizing these networks. After the convergence, one can sample
+from the distribution ρt by using neural network Nθ. Approach [33] has the advantage that authors
+do not need to use SDE solvers, which require more steps with growing parameter ν of diffusion
+operator. However, computation of Laplacian and divergence for high-dimensional spaces (e.g.,
+space 12228-dimensional space of 3x64x64 images) at each iteration of the training step may be
+computationally hard, restricting the applicability of their method to large-scale setups.
+25
+
+In our approach, we initially work with the SDE:
+dXt = α(Xt, t, ρt)dt +
+√
+2νdWt,
+which describes the player’s behavior and use a neural network to parametrize the drift α. We consider
+only hard constraints on the target distribution, f(Xt, ρt) = 0 and L(Xt, αt, ρt) = 1
+2||αt||2 since
+this variant of Mean-Field game is also the particular case of Schrodinger Bridge problem and is
+equivalent to the entropic optimal transport. Since we do not need to compute Laplacian or divergence,
+our approach scales better with the dimension. However, for high values of diffusion parameter ν
+(which is equal to the 1
+2ϵ in our notation, where ϵ is the entropic regularization strength), our approach
+needs more steps for accurate solving of the SDE to provide samples, as we mentioned in limitations.
+I
+Extending ENOT to other costs
+In the main text, we focus only on EOT with the quadratic cost c(x, y) = 1
+2∥x −y∥2 which coincides
+with SB with the Wiener prior W ϵ. However, one could use a different prior Qv instead of W ϵ in (5):
+Qv : dXt = v(Xt, t)dt + √ϵdWt,
+and solve the problem
+inf
+Tf ∈D(P0,P1) KL(Tf||Qv) =
+inf
+Tf ∈D(P0,P1)
+1
+2ϵETf [
+Z 1
+0
+||f(Xt, t) −v(Xt, t)||2dt].
+Here we just use the known expression (6) for KL(Tf||Qv) between two diffusion processes through
+their drift functions. Using the same derivation as in the main text M2.2, it can be shown that this new
+problem is equivalent to solving the EOT with cost c(x, y) = −log πQv(y|x), where πQv(y|x) is a
+conditional distribution of the stochastic process Qv at time t = 1 given the starting point x at time
+t = 0. For example, for W ϵ (which we consider in the main text) we have
+c(x, y) = −log πW ϵ(y|x) = 1
+2ϵ(y −x)T (y −x) + Const,
+i.e., we get the quadratic cost. Thus, using different priors for the Schrodinger bridge problem makes
+it possible to solve Entropic OT for other costs. We conjecture that most of our proofs and derivations
+can be extended to arbitrary prior process Qv just by slightly changing the minimax functional (12):
+sup
+β
+inf
+Tf
+ 1
+2ϵETf [
+Z 1
+0
+||f(Xt, t) −v(Xt, t)||2dt] +
+Z
+Y
+βϕ(y)dP1(y) −
+Z
+Y
+βϕ(y)dπTf
+1 (y)
+
+.
+We conduct a toy experiment to support this claim and consider Qv with ϵ = 0.01 and v(x, t) =
+∇log p(x), where log p(x) is a 2D distribution with a wave shape, see Figure 8. Intuitively, it means
+that trajectories should be concentrated in the regions with a high density of p. In Figure e 8, there
+the grey-scale color map represents the density of p, start points (P0) are green, target points (P1) are
+red, obtained trajectories are pink and mapped points are blue.
+J
+ENOT for the unregularized OT (ϵ = 0)
+Our proposed algorithm is designed to solve entropic OT and the equivalent SB problem. This
+implies that ϵ > 0. Nevertheless, our algorithm technically allows using even ϵ = 0, in which case
+it presumably computes the unegularized OT map for the quadratic cost. Here we present some
+empirical evidence supporting this claim as well some theoretical insights.
+EMPIRICAL EVIDENCE. We consider the experimental setup with images from the continuous
+Wasserstein-2 benchmark [28, M4.4]. The images benchmark provides 3 pairs of distributions (Early,
+Mid, Late) for which the ground truth unregularized OT map for the quadratic cost is known by the
+construction. Hence, we may compare the map learned with our method (ϵ = 0) with the true one.
+We train our method with ϵ = 0 on each of 3 benchmark pairs and present the quantitative results
+in Table 6. We use the same L2-UVP metric [28, M4.2] as the authors of the benchmark. As the
+baselines, we include the results of MM:R method from [28] and the method from [3]. Both methods
+are minimax and have some similarities with our approach. As we can see, ENOT with ϵ = 0
+26
+
+Figure 8: Toy example with ENOT (ours) for the complex prior Qv : dXt = v(Xt, t)dt + √ϵdWt.
+Benchmark
+Early
+Mid
+Late
+[28]*
+1.4
+0.4
+0.22
+[3]*
+0.61
+0.20
+0.09
+ENOT (ours)
+0.77
+0.21
+0.09
+Table 6: Comparison on W2 benchmark. *Results are taken from [3, Table 2].
+works better than the MM:R solver but slightly underperforms compared to [3]. This evaluation
+demonstrates that our method recovers the unregularized OT map for the quadratic cost with the
+comparable quality to the existing saddle point OT methods.
+THEORETICAL INSIGHTS. We see that empirically our method with ϵ = 0 recovers the unregularized
+OT map. At the same time, this is not supported by our theoretical results as they work exclusively
+for ϵ > 0 and rely on the properties of the KL divergence.
+Overall, it seems like for ϵ = 0 our method yields a saddle point reformulation of the Benamou-
+Brenier (BB) [8] problem which is also known as the dynamic version of the unregularized OT
+(ϵ = 0) with the quadratic cost. This problem can be formulated as follows:
+inf
+Tf
+1
+2ETf [
+Z 1
+0
+||f(Xt, t)||2dt]
+
+s.t.
+Tf : dXt = f(Xt, t)dt,
+X0 ∼P0, X1 ∼P1,
+(45)
+i.e., the goal is to find the process Tf of the minimal energy which moves the probability mass of P0
+to P1. BB (45) is very similar to DSB (11) but there is no multiplier 1
+ϵ , and the stochastic process Tf
+is restricted to be deterministic (ϵ = 0). It is governed by a vector field f. Just like the DSB (11) is
+equivalent to EOT (2), it is known that BB (45) is equivalent to unregularized OT with the quadratic
+cost (ϵ = 0). Namely, the distribution πTf∗is the unregularized OT plan between P0 and P1.
+In turn, our Algorithm 1 for ϵ = 0 optimizes the following saddle point objective:
+sup
+β
+inf
+Tf L(β, Tf)
+def
+= sup
+β
+inf
+Tf
+1
+2ETf [
+Z 1
+0
+||f(Xt, t)||2dt]+
+Z
+Y
+β(y)dP1(y)−
+Z
+Y
+β(y)dPTf
+1 (y)
+
+, (46)
+where Tf : dXt = f(Xt, t)dt with X0 ∼P0 (the constraint X1 ∼P1 here is lifted) and β ∈C2,b(Y).
+Just like in the Entropic case, functional L can be viewed as the Lagrangian for BB (45) with β
+playing the role of the Lagrange multiplier for the constraint dπTf
+1 (y) = dP1(y). Naturally, it is
+expected that the value (45) coincides with (46), and we provide a sketch of the proof of this fact.
+Overall, the proof logic is analogous to the Entropic case but the actual proof is much more technical
+as we can not use the KL-divergence machinery which helps to avoid non-uniqueness, etc.
+Step 1 (Auxiliary functional, analog of Lemma B.3). We introduce an auxiliary functional
+eL(β, H)
+def
+=
+Z
+X
+1
+2∥x −H(x)∥2dP0(x) −
+Z
+X
+β(H(x))dP0(x) +
+Z
+Y
+β(y)dP1(y),
+27
+
+where β is a potential and H : RD →RD is a measurable map. This functional is nothing but the
+well-known max-min reformulation of static OT problem (in Monge’s form) with the quadratic cost
+[3, Eq. 4], [28, Eq.9]. Hence,
+sup
+β
+inf
+H
+eL(β, H) =
+inf
+H♯P0=P1
+Z
+X
+1
+2||x −H(x)||2dP0(x)
+|
+{z
+}
+def
+=L∗
+.
+Step 2 (Solution of the inner problem is always an OT map). An existence of some minimizer
+H = Hβ in infH eL(β, H) can be deduced from the measurable argmin selection theorem, e.g., [21,
+Theorem 18.19]. For this Hβ we consider P′ def
+= Hβ♯P0. Recall that
+Hβ ∈arginf
+H
+eL(β, H) = arginf
+H
+Z
+X
+∥x −H(x)∥2
+2
+−β(H(x))
+	
+dP0(x).
+Here we may add the fictive constraint H♯P0 = P′ which is anyway satisfied by Hβ and get
+Hβ ∈arginf
+H♯P0=P′
+Z
+X
+∥x −H(x)∥2
+2
+−β(H(x))
+	
+dP0(x) = arginf
+H♯P0=P′
+Z
+X
+∥x −H(x)∥2
+2
+dP0(x).
+The last equality holds since
+R
+β(H(x))dP0(x) =
+R
+β(y)dP′(y) does not depend on the choice of
+H due to the constraint H♯P0 = P′. The latter is the OT problem between P and P′ and we see that
+Hβ is its solution.
+Step 3 (Equivalence for inner objective values). Since Hβ is the OT map between P0, P′ (it
+is unique as P0 is absolutely continuous [43]), it can be represented as an ODE solution Tf β to
+the Benamour Brenier problem between P0, P′, i.e., Tf β : dXt = f β(Xt, t)dt and Hβ(X0) =
+X0 +
+R 1
+0 f β(Xt, t)dt. Furthermore, in this case, ∥X0 −Hβ(X0)∥2 =
+R 1
+0 ||f β(Xt, t)||2dt. Hence, it
+can be derived that
+inf
+H
+eL(β, H) = inf
+Tf L(β, Tf).
+Step 4 (Equivalence of the saddle point objective). Take sup over β ∈Cb,2(Y) and get the final
+equivalence:
+sup
+β
+inf
+H
+eL(β, H) = sup
+β
+inf
+H L(β, Tf) = L∗.
+Step 5 (Dynamic OT solutions are contained in optimal saddle points). Pick any optimal β∗∈
+argsupβ infH L(β, Tf ∗) and let Tf ∗be any solution to the Benamou-Brenier problem. Checking
+that T ∗∈infH L(β∗, Tf) can be done analogously to [31, Lemma 4], [42, Lemma 4.1].
+□
+The derivation above shows the equivalence of objective values of dynamic unregularized OT (45)
+and our saddle point reformulation of BB (45). Additionally, it shows that solutions Tf ∗can be
+recovered from some optimal saddle points (β∗, Tf ∗) of our problem. At the same time, unlike the
+EOT case (ϵ > 0), it is not guaranteed that for all the optimal saddle points (β∗, Tf ∗) it holds that
+Tf ∗is the solution to the BB problem. This aspect seems to be closely related to the fake solutions
+issue in the saddle point methods of OT [30] and may require further studies.
+28
+

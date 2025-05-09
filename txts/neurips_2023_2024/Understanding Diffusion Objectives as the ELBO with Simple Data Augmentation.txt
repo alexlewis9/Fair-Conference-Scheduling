@@ -1,0 +1,2403 @@
+Understanding Diffusion Objectives as the ELBO
+with Simple Data Augmentation
+Diederik P. Kingma
+Google DeepMind
+durk@google.com
+Ruiqi Gao
+Google DeepMind
+ruiqig@google.com
+Abstract
+To achieve the highest perceptual quality, state-of-the-art diffusion models are
+optimized with objectives that typically look very different from the maximum
+likelihood and the Evidence Lower Bound (ELBO) objectives. In this work, we
+reveal that diffusion model objectives are actually closely related to the ELBO.
+Speciﬁcally, we show that all commonly used diffusion model objectives equate
+to a weighted integral of ELBOs over different noise levels, where the weighting
+depends on the speciﬁc objective used. Under the condition of monotonic weight-
+ing, the connection is even closer: the diffusion objective then equals the ELBO,
+combined with simple data augmentation, namely Gaussian noise perturbation. We
+show that this condition holds for a number of state-of-the-art diffusion models.
+In experiments, we explore new monotonic weightings and demonstrate their
+effectiveness, achieving state-of-the-art FID scores on the high-resolution ImageNet
+benchmark.
+1
+Introduction
+Diffusion-based generative models, or diffusion models in short, were ﬁrst introduced by Sohl-
+Dickstein et al. [2015]. After years of relative obscurity, this class of models suddenly rose to
+prominence with the work of Song and Ermon [2019] and Ho et al. [2020] who demonstrated that,
+with further reﬁnements in model architectures and objective functions, diffusion models can perform
+state-of-the-art image generation.
+37th Conference on Neural Information Processing Systems (NeurIPS 2023).
+(a) 512 × 512
+(b) 256 × 256
+(c) 128 × 128
+Figure 1: Samples generated from our VDM++ diffusion models trained on the ImageNet dataset;
+see Section 5 for details and Appendix M for more samples.
+
+The diffusion model framework has since been successfully applied to text-to-image generation
+[Rombach et al., 2022b, Nichol et al., 2021, Ramesh et al., 2022, Saharia et al., 2022b, Yu et al.,
+2022, Nichol and Dhariwal, 2021, Ho et al., 2022, Dhariwal and Nichol, 2022, Ding et al., 2021],
+image-to-image generation [Saharia et al., 2022c,a, Whang et al., 2022], 3D synthesis [Poole et al.,
+2022, Watson et al., 2022], text-to-speech [Chen et al., 2021a, Kong et al., 2021, Chen et al., 2021b],
+and density estimation [Kingma et al., 2021, Song et al., 2021a].
+Diffusion models can be interpreted as a special case of deep variational autoencoders (VAEs)
+[Kingma and Welling, 2013, Rezende et al., 2014] with a particular choice of inference model and
+generative model. Just like VAEs, the original diffusion models [Sohl-Dickstein et al., 2015] were
+optimized by maximizing the variational lower bound of the log-likelihood of the data, also called
+the evidence lower bound, or ELBO for short. It was shown by Variational Diffusion Models (VDM)
+[Kingma et al., 2021] and [Song et al., 2021a] how to optimize continuous-time diffusion models with
+the ELBO objective, achieving state-of-the-art likelihoods on image density estimation benchmarks.
+However, the best results in terms of sample quality metrics such as FID scores were achieved with
+other objectives, for example a denoising score matching objective [Song and Ermon, 2019] or a
+simple noise-prediction objective [Ho et al., 2020]. These now-popular objective functions look, on
+the face of it, very different from the traditionally popular maximum likelihood and ELBO objectives.
+Through the analysis in this paper, we reveal that all training objectives used in state-of-the-art
+diffusion models are actually closely related to the ELBO objective.
+This paper is structured as follows:
+• In Section 2 we introduce the broad diffusion model family under consideration.
+• In Section 3, we show how the various diffusion model objectives in the literature can be
+understood as special cases of a weighted loss [Kingma et al., 2021, Song et al., 2021a],
+with different choices of weighting. The weighting function speciﬁes the weight per noise
+level. In Section 3.2 we show that during training, the noise schedule acts as a importance
+sampling distribution for estimating the loss, and is thus important for efﬁcient optimization.
+Based on this insight we propose a simple adaptive noise schedule.
+• In Section 4, we present our main result: that if the weighting function is a monotonic
+function of time, then the weighted loss corresponds to maximizing the ELBO with data
+augmentation, namely Gaussian noise perturbation. This holds for, for example, the v-
+prediction loss of [Salimans and Ho, 2022] and ﬂow matching with the optimal transport
+path [Lipman et al., 2022].
+• In Section 5 we perform experiments with various new monotonic weights on the ImageNet
+dataset, and ﬁnd that our proposed monotonic weighting produces models with sample
+quality that are competitive with the best published results, achieving state-of-art FID and
+IS scores on high resolution ImageNet generation.
+1.1
+Related work
+The main sections reference much of the related work. Earlier work [Kingma et al., 2021, Song et al.,
+2021a, Huang et al., 2021, Vahdat et al., 2021], including Variational Diffusion Models [Kingma
+et al., 2021], showed how to optimize continous-time diffusion models towards the ELBO objective.
+We generalize these earlier results by showing that any diffusion objective that corresponds with
+monotonic weighting corresponds to the ELBO, combined with a form of DistAug [Child et al.,
+2019]. DistAug is a method of training data distribution augmentation for generative models where
+the model is conditioned on the data augmentation parameter at training time, and conditioned on ’no
+augmentation’ at inference time. The type of data augmentation under consideration in this paper,
+namely additive Gaussian noise, is also a form of data distribution smoothing, which has been shown
+to improve sample quality in autoregressive models by Meng et al. [2021].
+Kingma et al. [2021] showed how the ELBO is invariant to the choice of noise schedule, except
+for the endpoints. We generalize this result by showing that the invariance holds for any weighting
+function.
+2
+
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+t
+5
+0
+5
+10
+t (log SNR)
+Noise schedules
+Cosine
+EDM training
+EDM sampling
+5
+0
+5
+10
+ (log SNR)
+0.000
+0.025
+0.050
+0.075
+0.100
+0.125
+0.150
+p( )
+Noise schedules
+Cosine
+EDM training
+EDM sampling
+Figure 2: Left: Noise schedules used in our experiments: cosine [Nichol and Dhariwal, 2021] and
+EDM [Karras et al., 2022] training and sampling schedules. Right: The same noise schedules,
+expressed as probability densities p(λ) = −dt/dλ. See Section 2.1 and Appendix E.3 for details.
+2
+Model
+Suppose we have a dataset of datapoints drawn from q(x). We wish to learn a generative model
+pθ(x) that approximates q(x). We’ll use shorthand notation p := pθ.
+The observed variable x might be the output of a pre-trained encoder, as in latent diffusion models
+[Vahdat et al., 2021, Rombach et al., 2022a], on which the popular Stable Diffusion model is based.
+Our theoretical analysis also applies to this type of model.
+In addition to the observed variable x, we have a series of latent variables zt for timesteps t ∈[0, 1]:
+z0,...,1 := z0, ..., z1. The model consists of two parts: a forward process forming a conditional joint
+distribution q(z0,...,1|x), and a generative model forming a joint distribution p(z0,...,1).
+2.1
+Forward process and noise schedule
+The forward process is a Gaussian diffusion process, giving rise to a conditional distribution
+q(z0,...,1|x); see Appendix E.1 for details. For every t ∈[0, 1], the marginal distribution q(zt|x) is
+given by:
+zt = αλx + σλϵ where ϵ ∼N(0, I).
+(1)
+In case of the often-used variance preserving (VP) forward process, α2
+λ = sigmoid(λt) and σ2
+λ =
+sigmoid(−λt), but other choices are possible; our results are agnostic to this choice. The log
+signal-to-noise ratio (log-SNR) for timestep t is given by λ = log(α2
+λ/σ2
+λ).
+The noise schedule is a strictly monotonically decreasing function fλ that maps from the time variable
+t ∈[0, 1] to the corresponding log-SNR λ: λ = fλ(t). We sometimes denote the log-SNR as λt to
+emphasize that it is a function of t. The endpoints of the noise schedule are given by λmax := fλ(0)
+and λmin := fλ(1). See Figure 2 for a visualization of commonly used noise schedules in the
+literature, and Appendix E.3 for more details.
+Due to its monotonicity, fλ is invertible: t = f −1
+λ (λ). Given this bijection, we can do a change of
+variables: a function of the value t can be equivalently written as a function of the corresponding
+value λ, and vice versa, which we’ll make use of in this work.
+During model training, we sample time t uniformly: t ∼U(0, 1), then compute λ = fλ(t). This
+results in a distribution over noise levels p(λ) = −dt/dλ = −1/f ′
+λ(t) (see Section E.3), which we
+also plot in Figure 2.
+Sometimes it is best to use a different noise schedule for sampling from the model than for training.
+During sampling, the density p(λ) gives the relative amount of time the sampler spends at different
+noise levels.
+3
+
+2.2
+Generative model
+The data x ∼D, with density q(x), plus the forward model deﬁnes a joint distribution q(z0, ..., z1) =
+R
+q(z0, ..., z1|x)q(x)dx, with marginals qt(z) := q(zt). The generative model deﬁnes a correspond-
+ing joint distribution over latent variables: p(z0, ..., z1).
+For large enough λmax, z0 is almost identical to x, so learning a model p(z0) is practically equivalent
+to learning a model p(x). For small enough λmin, z1 holds almost no information about x, such
+that there exists a distribution p(z1) satisfying DKL(q(z1|x)||p(z1)) ≈0. Usually we can use
+p(z1) = N(0, I).
+Let sθ(z; λ) denote a score model, which is a neural network that we let approximate ∇z log qt(z)
+through methods introduced in the next sections. If sθ(z; λ) = ∇z log qt(z), then the forward process
+can be exactly reversed; see Appendix E.4.
+If DKL(q(z1)||p(z1)) ≈0 and sθ(z; λ) ≈∇z log qt(z), then we have a good generative model in
+the sense that DKL(q(z0,...,1)||p(z0,...,1)) ≈0, which implies that DKL(q(z0)||p(z0)) ≈0 which
+achieves our goal. So, our generative modeling task is reduced to learning a score network sθ(z; λ)
+that approximates ∇z log qt(z).
+Sampling from the generative model can be performed by sampling z1 ∼p(z1), then (approximately)
+solving the reverse SDE using the estimated sθ(z; λ). Recent diffusion models have used increasingly
+sophisticated procedures for approximating the reverse SDE; see Appendix E.4. In experiments we
+use the DDPM sampler from Ho et al. [2020] and the stochastic sampler with Heun’s second order
+method proposed by Karras et al. [2022].
+3
+Diffusion Model Objectives
+Denoising score matching.
+Above, we saw that we need to learn a score network sθ(z; λt) that
+approximates ∇z log qt(z), for all noise levels λt. It was shown by [Vincent, 2011, Song and Ermon,
+2019] that this can be achieved by minimizing a denoising score matching objective over all noise
+scales and all datapoints x ∼D:
+LDSM(x) = Et∼U(0,1),ϵ∼N(0,I)
+
+˜w(t) · ||sθ(zt; λt) −∇zt log q(zt|x)||2
+2
+
+(2)
+where zt = αλx + σλϵ.
+The ϵ-prediction objective.
+Most contemporary diffusion models are optimized towards a noise-
+prediction loss introduced by [Ho et al., 2020]. In this case, the score network is typically parame-
+terized through a noise-prediction (ϵ-prediction) model: sθ(z; λ) = −ˆϵθ(z; λ)/σλ. (Other options,
+such as x-prediction, v-prediction, and EDM parameterizations, are explained in Appendix E.2.) The
+noise-prediction loss is:
+Lϵ(x) = 1
+2Et∼U(0,1),ϵ∼N(0,I)
+
+||ˆϵθ(zt; λt) −ϵ||2
+2
+
+(3)
+Since ||sθ(zt; λt) −∇xt log q(zt|x)||2
+2 = σ−2
+λ ||ˆϵθ(zt; λt) −ϵ||2
+2, this is simply a version of the
+denoising score matching objective in Equation 2, but where ˜w(t) = σ2
+t . Ho et al. [2020] showed
+that this noise-prediction objective can result in high-quality samples. Dhariwal and Nichol [2022]
+later improved upon these results by switching from a ‘linear’ to a ‘cosine’ noise schedule λt (see
+Figure 2). This noise-prediction loss with the cosine schedule is currently broadly used.
+The ELBO objective.
+It was shown by [Kingma et al., 2021, Song et al., 2021a] that the evidence
+lower bound (ELBO) of continuous-time diffusion models simpliﬁes to:
+−ELBO(x) = 1
+2Et∼U(0,1),ϵ∼N(0,I)
+
+−dλ
+dt · ||ˆϵθ(zt; λt) −ϵ||2
+2
+
++ c
+(4)
+where c is constant w.r.t. the score network parameters.
+4
+
+Loss function
+Implied weighting w(λ)
+Monotonic?
+ELBO [Kingma et al., 2021, Song et al., 2021a]
+1
+✓
+IDDPM (ϵ-prediction with ’cosine’ schedule) [Nichol and Dhariwal, 2021]
+sech(λ/2)
+EDM [Karras et al., 2022] (Appendix D.1)
+N(λ; 2.4, 2.42) · (e−λ + 0.52)
+v-prediction with ‘cosine’ schedule [Salimans and Ho, 2022] (Appendix D.2)
+e−λ/2
+✓
+Flow Matching with OT path (FM-OT) [Lipman et al., 2022] (Appendix D.3)
+e−λ/2
+✓
+InDI [Delbracio and Milanfar, 2023] (Appendix D.4)
+e−λsech2(λ/4)
+✓
+P2 weighting with ‘cosine’ schedule [Choi et al., 2022] (Appendix D.5)
+sech(λ/2)/(1 + eλ)γ, γ = 0.5 or 1
+Min-SNR-γ [Hang et al., 2023] (Appendix D.6)
+sech(λ/2) · min(1, γe−λ)
+Table 1: Diffusion model objectives in the literature are special cases of the weighted loss with a
+weighting function w(λ) given in this table. See Section 3.1 and Appendix D for more details and
+derivations. Most existing weighting functions are non-monotonic, except for the ELBO objective
+and the v-prediction objective with ‘cosine’ schedule.
+7.5
+5.0
+2.5
+0.0
+2.5
+5.0
+7.5
+10.0
+ (log SNR)
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+w( ) (normalized)
+Non-monotonic weighting functions
+IDDPM
+EDM
+P2
+min-SNR-
+7.5
+5.0
+2.5
+0.0
+2.5
+5.0
+7.5
+10.0
+ (log SNR)
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+w( ) (normalized)
+Monotonic weighting functions
+ELBO
+v-prediction and FM-OT
+EDM-monotonic (Ours)
+sigmoid(
++ 2) (Ours)
+Figure 3: Diffusion model objectives in the literature are special cases of the weighted loss with
+non-monotonic (left) or monotonic (right) weighting functions. Each weighting function is scaled
+such that the maximum is 1 over the plotted range. See Table 1 and Appendix D.
+3.1
+The weighted loss
+The different objective functions used in practice, including the ones above, can be viewed as special
+cases of the weighted loss introduced by Kingma et al. [2021]1with a different choices of weighting
+function w(λt):
+Lw(x) = 1
+2Et∼U(0,1),ϵ∼N(0,I)
+
+w(λt) · −dλ
+dt · ||ˆϵθ(zt; λt) −ϵ||2
+2
+
+(5)
+See Appendix D for a derivation of the implied weighting functions for all popular diffusion losses.
+Results are compiled in Table 1, and visualized in Figure 3.
+The ELBO objective (Equation 4) corresponds to uniform weighting, i.e. w(λt) = 1.
+The popular noise-prediction objective (Equation 3) corresponds to w(λt) = −1/(dλ/dt). This is
+more compactly expressed as w(λt) = p(λt), i.e., the PDF of the implied distribution over noise
+levels λ during training. Typically, the noise-prediction objective is used with the cosine schedule λt,
+which implies w(λt) ∝sech(λt/2). See Section E.3 for the expression of p(λt) for various noise
+schedules.
+3.2
+Invariance of the weighted loss to the noise schedule λt
+In Kingma et al. [2021], it was shown that the ELBO objective (Equation 4) is invariant to the choice
+of noise schedule, except for its endpoints λmin and λmax. This result can be extended to the much
+1More speciﬁcally, Kingma et al. [2021] expressed the weighted diffusion loss in terms of x-prediction,
+which is equivalent to the expression above due to the relationship
+R
+||ϵ −ˆϵθ(zt; λ)||2
+2 dλ =
+R
+||x −
+ˆxθ(zt; λ)||2
+2eλdλ =
+R
+||x −ˆxθ(zt; λ)||2
+2 deλ, where eλ equals the signal-to-noise ratio (SNR).
+5
+
+more general weighted diffusion loss of Equation 5, since with a change of variables from t to λ, it
+can be rewritten to:
+Lw(x) = 1
+2
+Z λmax
+λmin
+w(λ)Eϵ∼N(0,I)
+
+||ˆϵθ(zλ; λ) −ϵ||2
+2
+
+dλ
+(6)
+Note that this integral does not depend on the noise schedule fλ (the mapping between t and λ),
+except for its endpoints λmax and λmin. The shape of the function fλ between λmin and λmax does not
+affect the loss; only the weighting function w(λ) does. Given a chosen weighting function w(λ), the
+loss is invariant to the noise schedule λt between t = 0 and t = 1. This is important, since it means
+that the only real difference between diffusion objectives is their difference in weighting w(λ).
+This invariance does not hold for the Monte Carlo estimator of the loss that we use in training,
+based on random samples t ∼U(0, 1), ϵ ∼N(0, I). The noise schedule still affects the variance of
+this Monte Carlo estimator and its gradients; therefore, the noise schedule affects the efﬁciency of
+optimization. More speciﬁcally, we’ll show that the noise schedule acts as an importance sampling
+distribution for estimating the loss integral of Equation 6. Note that p(λ) = −1/(dλ/dt). We can
+therefore rewrite the weighted loss as the following, which clariﬁes the role of p(λ) as an importance
+sampling distribution:
+Lw(x) = 1
+2Eϵ∼N(0,I),λ∼p(λ)
+w(λ)
+p(λ) ||ˆϵθ(zλ; λ) −ϵ||2
+2
+
+(7)
+Using this insight, we implemented an adaptive noise schedule, detailed in Appendix F. We ﬁnd that
+by lowering the variance of the loss estimator, this often signiﬁcantly speeds op optimization.
+4
+The weighted loss as the ELBO with data augmentation
+We prove the following main result:
+Theorem 1. If the weighting w(λt) is monotonic, then the weighted diffusion objective of
+Equation 5 is equivalent to the ELBO with data augmentation (additive noise).
+With monotonic w(λt) we mean that w is a monotonically increasing function of t, and therefore a
+monotonically decreasing function of λ.
+We’ll use shorthand notation L(t; x) for the KL divergence between the joint distributions of the
+forward process q(zt,...1|x) and the reverse model p(zt,...1), for the subset of timesteps from t to 1:
+L(t; x) := DKL(q(zt,...,1|x)||p(zt,...,1))
+(8)
+In Appendix A.1, we prove that2:
+d
+dtL(t; x) = 1
+2
+dλ
+dt Eϵ∼N(0,I)
+
+||ϵ −ˆϵθ(zλ; λ)||2
+2
+
+(9)
+As shown in Appendix A.1, this allows us to rewrite the weighted loss of Equation 5 as simply:
+Lw(x) = −
+Z 1
+0
+d
+dtL(t; x) w(λt) dt
+(10)
+In Appendix A.2, we prove that using integration by parts, the weighted loss can then be rewritten as:
+Lw(x) =
+Z 1
+0
+d
+dtw(λt) L(t; x) dt + w(λmax) L(0; x) + constant
+(11)
+2Interestingly,
+this
+reveals
+a
+new
+relationship
+between
+the
+KL
+and
+Fisher
+divergences:
+d
+dλ DKL(q(zt,...,1|x)||p(zt,...,1))
+=
+1
+2σ2
+λDF (q(zt|x)||p(zt)).
+See Appendix G for a derivation, a
+discussion, and a comparison with a similar result by Lyu [2012].
+6
+
+Now, assume that w(λt) is a monotonically increasing function of t ∈[0, 1]. Also, without loss of
+generality, assume that w(λt) is normalized such that w(λ1) = 1. We can then further simplify the
+weighted loss to an expected KL divergence:
+Lw(x) = Epw(t) [L(t; x)] + constant
+(12)
+where pw(t) is a probability distribution determined by the weighting function, namely pw(t) :=
+(d/dt w(λt)), with support on t ∈[0, 1]. The probability distribution pw(t) has Dirac delta peak of
+typically very small mass w(λmax) at t = 0.
+Note that:
+L(t; x) = DKL(q(zt,...,1|x)||p(zt,...,1))
+(13)
+≥DKL(q(zt|x)||p(zt)) = −Eq(zt|x)[log p(zt)] + constant.
+(14)
+More speciﬁcally, L(t; x) equals the expected negative ELBO of noise-perturbed data, plus a constant;
+see Section C for a detailed derivation.
+This concludes our proof of Theorem 1.
+■
+This result provides us the new insight that any of the objectives with (implied) monotonic weighting,
+as listed in Table 1, can be understood as equivalent to the ELBO with simple data augmentation,
+namely additive noise. Speciﬁcally, this is a form of Distribution Augmentation (DistAug), where
+the model is conditioned on the augmentation indicator during training, and conditioned on ’no
+augmentation’ during sampling.
+Monotonicity of w(λ) holds for a number of models with state-of-the-art perceptual quality, including
+VoiceBox for speech generation [Le et al., 2023], and Simple Diffusion for image generation [Hooge-
+boom et al., 2023].
+4.1
+Understanding the effect of weighting functions on perceptual quality
+In this subsection, we propose possible explanations of the reason that the weighted objective, or
+equivalently the ELBO with data augmentation assuming monotonic weightings, can effectively
+improve perceptual quality.
+Connection to low-bit training.
+Earlier work [Kingma and Dhariwal, 2018] found that training
+on 5-bit data, removing the three least signiﬁcant bits from the original 8-bit data, can lead to higher
+ﬁdelity models. A likely reason is the more signiﬁcant bits are also more important to human
+perception, and removing the three least signiﬁcant bits from the data allows the model to spend more
+capacity on modeling the more signiﬁcant bits. In [Kingma and Dhariwal, 2018], training on 5-bit
+data was performed by adding uniform noise (with the appropriate scale) to the data before feeding it
+to the model, but it was found that adding Gaussian noise had a similar effect. Adding Gaussian noise
+with a single noise level is a special case of the weighted objective where the weighting function is a
+step function. The effect of uniform noise can be approximated with a sigmoidal weighting function;
+in Appendix I we dive into more details.
+Fourier analysis.
+To better understand why additive Gaussian noise can improve perceptual quality,
+consider the Fourier transform (FT) of a clean natural image perturbed witjh additive Gaussian noise.
+Since the FT is a linear transformation, the FT of a the sum of a natural image and Gaussian noise,
+equals the sum of the FT of the clean image and the FT of the Gaussian noise. For natural images,
+it is known that the power spectrum, i.e. the average magnitude of the FT as a function of spatial
+frequency, decreases fast as the frequency increases [Burton and Moorhead, 1987], which means that
+the lowest frequencies have by far the highest magnitudes. On the other hand, the power spectrum
+of a Gaussian white noise is roughly constant. When adding noise to a clean natural image, the
+signal-to-noise ratio (i.e. the ratio of the power spectra of the clean and Gaussian noise images) in high
+frequency regions is lower. As a result, additive Gaussian noise effectively destroys high-frequency
+information in the data more quickly than the low-frequency information, pushing the model to focus
+more on the low frequency components of the data, which often correspond to high-level content and
+global structure that is more crucial to perception. See Appendix J for a more detailed discussion.
+7
+
+DDPM sampler
+EDM sampler
+Model parameterization
+Training noise schedule Weighting function
+Monotonic? FID ↓
+IS ↑
+FID ↓
+IS ↑
+ϵ-parametrization
+Cosine
+sech(λ/2) (Baseline)
+1.85
+54.1 ± 0.79
+1.55
+59.2 ± 0.78
+"
+Cosine
+sigmoid(−λ + 1)
+✓
+1.75
+55.3 ± 1.23
+"
+Cosine
+sigmoid(−λ + 2)
+✓
+1.68
+56.8 ± 0.85
+1.46
+60.4 ± 0.86
+"
+Cosine
+sigmoid(−λ + 3)
+✓
+1.73
+56.1 ± 1.36
+"
+Cosine
+sigmoid(−λ + 4)
+✓
+1.80
+55.1 ± 1.65
+"
+Cosine
+sigmoid(−λ + 5)
+✓
+1.94
+53.5 ± 1.12
+"
+Adaptive
+sigmoid(−λ + 2)
+✓
+1.70
+54.8 ± 1.20
+1.44
+60.6 ± 1.44
+"
+Adaptive
+EDM-monotonic
+✓
+1.67
+56.8 ± 0.90
+1.44
+61.1 ± 1.80
+EDM [Karras et al., 2022] EDM (training)
+EDM (Baseline)
+1.36
+EDM (our reproduction)
+EDM (training)
+EDM (Baseline)
+1.45
+60.7 ± 1.19
+"
+Adaptive
+EDM
+1.43
+63.2 ± 1.76
+"
+Adaptive
+sigmoid(−λ + 2)
+✓
+1.55
+63.7 ± 1.14
+"
+Adaptive
+EDM-monotonic
+✓
+1.43
+63.7 ± 1.48
+v-parametrization
+Adaptive
+exp(−λ/2) (Baseline)
+✓
+1.62
+58.0 ± 1.56
+"
+Adaptive
+sigmoid(−λ + 2)
+✓
+1.51
+64.4 ± 1.28
+"
+Adaptive
+EDM-monotonic
+✓
+1.45
+64.6 ± 1.35
+Table 2: ImageNet 64x64 results. See Section 5.2.
+5
+Experiments
+Inspired by the theoretical results in Section 4, in this section we propose several monotonic weighting
+functions, and present experiments that test the effectiveness of the monotonic weighting functions
+compared to baseline (non-monotonic) weighting functions. In addition, we test the adaptive noise
+schedule (Section 3.2). For brevity we had to pick a name for our models. Since we build on earlier
+results on Variational Diffusion Models (VDM) [Kingma et al., 2021], and our objective is equivalent
+to the VDM objective combined with data augmentation, we name our models VDM++.
+5.1
+Weighting functions
+We experimented with several new monotonic weighting functions. First, a sigmoidal weighting of
+the form sigmoid(−λ + k), inspired by the sigmoidal weighting corresponding to low-bit training
+(see Section 4.1 and Appendix I for details), where k is a hyper-parameter. In addition, inspired by
+the EDM weighting function from Karras et al. [2022] (non-monotonic, Table 1), we test a weighting
+function indicated with ‘EDM-monotonic’, which is identical to the EDM weighting, except that it is
+made monotonic by letting w(λ) = maxλ ˜w(λ) for λ < arg maxλ ˜w(λ), where ˜w(λ) indicates the
+original EDM weighting function. Put simply, ‘EDM-monotonic’ equals the EDM weighting, except
+that it is constant to the left of its peak; see Figure 3.
+5.2
+ImageNet 64x64
+All experiments on ImageNet 64x64 were done with the U-Net diffusion model architecture from
+[Nichol and Dhariwal, 2021]. We carried out extensive ablation studies over several design choices
+of diffusion models, namely model parametrization, training noise schedules, weighting functions
+and samplers. For ϵ-parametrization model, we took iDDPM [Nichol and Dhariwal, 2021] as the
+baseline, which utilized cosine noise schedule and a non-monotonic sech(λ/2) weighting. For EDM
+parmetrization, we recruited the setting in Karras et al. [2022] as the baseline, with EDM training
+noise schedule (Figure 2) and non-monotonic EDM weighting (Figure 3). For v-parametrization
+model, we followed Salimans and Ho [2022] taking the v-prediction loss as the baseline, which
+leads to a monotonic exp(−λ/2) weighting. We always use adaptive noise schedule under this
+setting. We started by searching the optimal hyperparameter for the sigmoidal weighting under
+the ϵ-parametrization model, and then applied the best sigmoidal weighting and EDM-monotonic
+weighting under other settings. We evaluated models with two samplers, DDPM and EDM samplers,
+with their corresponding sampling noise schedules. Table 2 summarizes the FID [Heusel et al., 2017]
+and Inception scores [Salimans et al., 2016] across different settings. From the table we made several
+observations as follows.
+8
+
+First, our adaptive noise schedule (Appendix F) works equally well as the hand-tuned ﬁxed noise
+schedules. We veriﬁed this under ϵ-parametrization with sigmoid(−λ + 2) weighting and EDM
+parametrization with EDM weighting. Under both settings, the adaptive noise schedule results in
+slightly better FID and Inception scores with the EDM sampler, and slightly worse scores with the
+DDPM sampler for the former setting. Although the adaptive noise schedule did not signiﬁcantly
+affect the end result, it allows us to experiment with new weighting functions while avoiding hand-
+tuning of the noise schedule. In addition, it sometimes leads to faster training; see Appendix F.
+Second, it is possible to modify an existing non-monotonic weighting function to a monotonic one with
+the minimal change, and results in on-par sample quality. Speciﬁcally, under EDM parameterization
+and adaptive noise schedule, we change EDM weighting to EDM-monotonic weighting with the very
+straightforward approach stated in Section 5.1. It results in nearly the same FID score and slightly
+better Inception score.
+Third, our proposed new weighting functions, sigmoid(−λ + 2) and EDM monotonic weightings,
+work better than the baseline settings across different model parameterization and samplers in most
+cases. Larger performance gain has been observed under ϵ-parameterization and v-parameterization
+settings. Our-reimplementation of the EDM parameterization baseline setting could not exactly
+reproduce their reported FID number (1.36), but comes close (1.45). We observed less signiﬁcant
+improvement under this setting, possibly because their already exhaustive search of the design space.
+Finally, the above observations remain consistent across different model parameterization and sam-
+plers, indicating the generalizability of our proposed weighting functions and noise schedules.
+5.3
+High resolution ImageNet
+In our ﬁnal experiments, we tested whether the weighting functions that resulted in the best scores on
+ImageNet 64×64, namely sigmoid(−λ+2) and ‘EDM-monotonic’, also results in competitive scores
+on high-resolution generation. As baseline we use the Simple Diffusion model from Hoogeboom et al.
+[2023], which reported the best FID scores to date on high-resolution ImageNet without sampling
+modiﬁcations (e.g. guidance).
+We recruited the large U-ViT model from Simple Diffusion [Hoogeboom et al., 2023], and changed
+the training noise schedule and weighting function to our proposed ones. Note that for higher-
+resolution models, Hoogeboom et al. [2023] proposed a shifted version of the cosine noise schedule
+(Table 4), that leads to a shifted version of the weighting function w(λ). Similarly, we extended our
+proposed sigmoidal and ‘EDM-monotonic’ weightings to their shifted versions (see Appendix D.2.1
+for details). For fair comparison, we adopted the same vanilla DDPM sampler as Simple Diffusion,
+without other advanced sampling techniques such as second-order sampling or rejection sampling.
+As shown in Table 3, with our adaptive noise schedule for training, the two weighting functions we
+proposed led to either better or comparable FID and IS scores on ImageNet 128×128, compared to
+the baseline Simple Diffusion approach.
+Next, we test our approach on ImageNet generation of multiple high resolutions (i.e., resolutions 128,
+256 and 512), and compare with existing methods in the literature. See Table 3 for the summary of
+quantitative evaluations and Figure 1 for some generated samples by our approach. With the shifted
+version of ‘EDM-monotonic’ weighting, we achieved state-of-the-art FID and IS scores on all three
+resolutions of ImageNet generation among all approaches without guidance. With classiﬁer-free
+guidance (CFG) [Ho and Salimans, 2022], our method outperforms all diffusion-based approaches
+on resolutions 128 and 512. On resolution 256, our method only falls a bit behind Gao et al. [2023]
+and Hang et al. [2023], both of which were build upon the latent space of a pretrained auto-encoder
+from latent diffusion models [Rombach et al., 2022a] that was trained on much larger image datasets
+than ImageNet, while our model was trained on the ImageNet dataset only. It is worth noting that we
+achieve signiﬁcant improvements compared to Simple Diffusion which serves as the backbone of our
+method, on all resolutions, with and without guidance. It is possible to apply our proposed weighting
+functions and adaptive noise schedules to other diffusion-based approaches such as Gao et al. [2023]
+to further improve their performance, which we shall leave to the future work.
+9
+
+Without guidance
+With guidance
+FID ↓
+FID ↓
+Method
+train
+eval
+IS ↑
+train
+eval
+IS ↑
+128 × 128 resolution
+ADM [Dhariwal and Nichol, 2022]
+5.91
+2.97
+CDM [Ho et al., 2022]
+3.52
+3.76
+128.8 ± 2.5
+RIN [Jabri et al., 2022]
+2.75
+144.1
+Simple Diffusion (U-Net) [Hoogeboom et al., 2023]
+2.26
+2.88
+137.3 ± 2.0
+Simple Diffusion (U-ViT, L) [Hoogeboom et al., 2023]
+1.91
+3.23
+171.9 ± 2.5
+2.05
+3.57
+189.9 ± 3.5
+VDM++ (Ours), w(λ) = sigmoid(−λ + 2)
+1.91
+3.41
+183.1 ± 2.2
+VDM++ (Ours), EDM-monotonic weighting
+1.75
+2.88
+171.1 ± 2.7
+1.78
+3.16
+190.5 ± 2.3
+256 × 256 resolution
+BigGAN-deep (no truncation) [Brock et al., 2018]
+6.9
+171.4 ± 2.0
+MaskGIT [Chang et al., 2022]
+6.18
+182.1
+ADM [Dhariwal and Nichol, 2022]
+10.94
+3.94
+215.9
+CDM [Ho et al., 2022]
+4.88
+4.63
+158.7 ± 2.3
+RIN [Jabri et al., 2022]
+3.42
+182.0
+Simple Diffusion (U-Net) [Hoogeboom et al., 2023]
+3.76
+3.71
+171.6 ± 3.1
+Simple Diffusion (U-ViT, L) [Hoogeboom et al., 2023]
+2.77
+3.75
+211.8 ± 2.9
+2.44
+4.08
+256.3 ± 5.0
+VDM++ (Ours), EDM-monotonic weighting
+2.40
+3.36
+225.3 ± 3.2
+2.12
+3.69
+267.7 ± 4.9
+Latent diffusion with pretrained VAE:
+DiT-XL/2 [Peebles and Xie, 2022]
+9.62
+121.5
+2.27
+278.2
+U-ViT [Bao et al., 2023]
+3.40
+Min-SNR-γ [Hang et al., 2023]
+2.06
+MDT [Gao et al., 2023]
+6.23
+143.0
+1.79
+283.0
+512 × 512 resolution
+MaskGIT [Chang et al., 2022]
+7.32
+156.0
+ADM [Dhariwal and Nichol, 2022]
+23.24
+3.85
+221.7
+RIN [Jabri et al., 2022]
+3.95
+216.0
+Simple Diffusion (U-Net) [Hoogeboom et al., 2023]
+4.30
+4.28
+171.0 ± 3.0
+Simple Diffusion (U-ViT, L) [Hoogeboom et al., 2023]
+3.54
+4.53
+205.3 ± 2.7
+3.02
+4.60
+248.7 ± 3.4
+VDM++ (Ours), EDM-monotonic weighting
+2.99
+4.09
+232.2 ± 4.2
+2.65
+4.43
+278.1 ± 5.5
+Latent diffusion with pretrained VAE:
+DiT-XL/2 [Peebles and Xie, 2022]
+12.03
+105.3
+3.04
+240.8
+LDM-4 [Rombach et al., 2022a]
+10.56
+103.5 ± 1.2
+3.60
+247.7 ± 5.6
+Table 3: Comparison to approaches in the literature for high-resolution ImageNet generation. ‘With
+guidance’ indicates that the method was combined with classiﬁer-free guidance [Ho and Salimans,
+2022]. † Models under ‘Latent diffusion with pretrained VAE’ use the pre-trained VAE from Stable
+Diffusion [Rombach et al., 2022a], which used a much larger training corpus than the other models
+in this table.
+6
+Conclusion and Discussion
+In summary, we have shown that the weighted diffusion loss, which generalizes diffusion objectives
+in the literature, has an interpretation as a weighted integral of ELBO objectives, with one ELBO
+per noise level. If the weighting function is monotonic, then we show that the objective has an
+interpretation as the ELBO objective with data augmentation, where the augmentation is additive
+Gaussian noise, with a distribution of noise levels.
+Our results open up exciting new directions for future work. The newfound equivalence between
+monotonically weighted diffusion objectives and the ELBO with data augmentation allows for a
+direct apples-to-apples comparison of diffusion models with other likelihood-based models. For
+example, it allows one to optimize other likelihood-based models, such as autoregressive models,
+towards the same objective as monotonically weighted diffusion models. This would shine light on
+whether diffusion models are better or worse than other model types, as measured in terms of their
+held-out objectives as opposed to FID scores. We leave such interesting experiments to future work.
+10
+
+Acknowledgments
+We’d like to thank Alex Alemi and Ben Poole for fruitful discussions and feedback on early drafts.
+We thank Emiel Hoogeboom for advice and help on the implementation of Simple Diffusion.
+References
+Brian DO Anderson. Reverse-time diffusion equation models. Stochastic Processes and their
+Applications, 12(3):313–326, 1982.
+Fan Bao, Shen Nie, Kaiwen Xue, Yue Cao, Chongxuan Li, Hang Su, and Jun Zhu. All are worth
+words: A vit backbone for diffusion models. In Proceedings of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition, pages 22669–22679, 2023.
+Andrew Brock, Jeff Donahue, and Karen Simonyan. Large scale gan training for high ﬁdelity natural
+image synthesis. arXiv preprint arXiv:1809.11096, 2018.
+Geoffrey J Burton and Ian R Moorhead. Color and spatial structure in natural scenes. Applied optics,
+26(1):157–170, 1987.
+Huiwen Chang, Han Zhang, Lu Jiang, Ce Liu, and William T Freeman. Maskgit: Masked generative
+image transformer. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, pages 11315–11325, 2022.
+Nanxin Chen, Yu Zhang, Heiga Zen, Ron J. Weiss, Mohammad Norouzi, and William Chan. WaveG-
+rad: Estimating Gradients for Waveform Generation. In ICLR, 2021a.
+Nanxin Chen, Yu Zhang, Heiga Zen, Ron J. Weiss, Mohammad Norouzi, Najim Dehak, and William
+Chan. WaveGrad 2: Iterative Reﬁnement for Text-to-Speech Synthesis . In INTERSPEECH,
+2021b.
+Rewon Child, Scott Gray, Alec Radford, and Ilya Sutskever. Generating long sequences with sparse
+transformers. arXiv preprint arXiv:1904.10509, 2019.
+Jooyoung Choi, Jungbeom Lee, Chaehun Shin, Sungwon Kim, Hyunwoo Kim, and Sungroh Yoon.
+Perception prioritized training of diffusion models. In Proceedings of the IEEE/CVF Conference
+on Computer Vision and Pattern Recognition, pages 11472–11481, 2022.
+Mauricio Delbracio and Peyman Milanfar. Inversion by direct iteration: An alternative to denoising
+diffusion for image restoration. arXiv preprint arXiv:2303.11435, 2023.
+Prafulla Dhariwal and Alex Nichol. Diffusion models beat gans on image synthesis. In NeurIPS,
+2022.
+Sander Dieleman, Laurent Sartran, Arman Roshannai, Nikolay Savinov, Yaroslav Ganin, Pierre H
+Richemond, Arnaud Doucet, Robin Strudel, Chris Dyer, Conor Durkan, et al. Continuous diffusion
+for categorical data. arXiv preprint arXiv:2211.15089, 2022.
+Ming Ding, Zhuoyi Yang, Wenyi Hong, Wendi Zheng, Chang Zhou, Da Yin, Junyang Lin, Xu Zou,
+Zhou Shao, Hongxia Yang, and Jie Tang. Cogview: Mastering text-to-image generation via
+transformers, 2021. URL https://arxiv.org/abs/2105.13290.
+Shanghua Gao, Pan Zhou, Ming-Ming Cheng, and Shuicheng Yan. Masked diffusion transformer is a
+strong image synthesizer. arXiv preprint arXiv:2303.14389, 2023.
+Tiankai Hang, Shuyang Gu, Chen Li, Jianmin Bao, Dong Chen, Han Hu, Xin Geng, and Baining Guo.
+Efﬁcient diffusion training via min-snr weighting strategy. arXiv preprint arXiv:2303.09556, 2023.
+Martin Heusel, Hubert Ramsauer, Thomas Unterthiner, Bernhard Nessler, and Sepp Hochreiter. Gans
+trained by a two time-scale update rule converge to a local nash equilibrium. arXiv preprint
+arXiv:1706.08500, 2017.
+Jonathan Ho and Tim Salimans. Classiﬁer-free diffusion guidance. arXiv preprint arXiv:2207.12598,
+2022.
+11
+
+Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. arXiv preprint
+arXiv:2006.11239, 2020.
+Jonathan Ho, Chitwan Saharia, William Chan, David J Fleet, Mohammad Norouzi, and Tim Salimans.
+Cascaded diffusion models for high ﬁdelity image generation. JMLR, 2022.
+Emiel Hoogeboom, Jonathan Heek, and Tim Salimans. simple diffusion: End-to-end diffusion for
+high resolution images. arXiv preprint arXiv:2301.11093, 2023.
+Chin-Wei Huang, Jae Hyun Lim, and Aaron Courville. A variational perspective on diffusion-based
+generative models and score matching. arXiv preprint arXiv:2106.02808, 2021.
+Allan Jabri, David Fleet, and Ting Chen. Scalable adaptive computation for iterative generation.
+arXiv preprint arXiv:2212.11972, 2022.
+Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of diffusion-
+based generative models. arXiv preprint arXiv:2206.00364, 2022.
+Diederik Kingma, Tim Salimans, Ben Poole, and Jonathan Ho. Variational diffusion models. Advances
+in neural information processing systems, 34:21696–21707, 2021.
+Diederik P Kingma and Jimmy Ba. Adam: A method for stochastic optimization. arXiv preprint
+arXiv:1412.6980, 2014.
+Diederik P Kingma and Prafulla Dhariwal. Glow: Generative ﬂow with invertible 1x1 convolutions.
+arXiv preprint arXiv:1807.03039, 2018.
+Diederik P Kingma and Max Welling. Auto-encoding variational Bayes. International Conference
+on Learning Representations, 2013.
+Zhifeng Kong, Wei Ping, Jiaji Huang, Kexin Zhao, and Bryan Catanzaro. DiffWave: A Versatile
+Diffusion Model for Audio Synthesis. In ICLR, 2021.
+Matthew Le, Apoorv Vyas, Bowen Shi, Brian Karrer, Leda Sari, Rashel Moritz, Mary Williamson,
+Vimal Manohar, Yossi Adi, Jay Mahadeokar, et al. Voicebox: Text-guided multilingual universal
+speech generation at scale. arXiv preprint arXiv:2306.15687, 2023.
+Yaron Lipman, Ricky TQ Chen, Heli Ben-Hamu, Maximilian Nickel, and Matt Le. Flow matching
+for generative modeling. arXiv preprint arXiv:2210.02747, 2022.
+Siwei Lyu. Interpretation and generalization of score matching. arXiv preprint arXiv:1205.2629,
+2012.
+Chenlin Meng, Jiaming Song, Yang Song, Shengjia Zhao, and Stefano Ermon. Improved autoregres-
+sive modeling with distribution smoothing. arXiv preprint arXiv:2103.15089, 2021.
+Alex Nichol and Prafulla Dhariwal. Improved denoising diffusion probabilistic models. arXiv
+preprint arXiv:2102.09672, 2021.
+Alex Nichol, Prafulla Dhariwal, Aditya Ramesh, Pranav Shyam, Bob McGrew Pamela Mishkin, Ilya
+Sutskever, and Mark Chen. GLIDE: Towards Photorealistic Image Generation and Editing with
+Text-Guided Diffusion Models. In arXiv:2112.10741, 2021.
+William Peebles and Saining Xie. Scalable diffusion models with transformers. arXiv preprint
+arXiv:2212.09748, 2022.
+Ben Poole, Ajay Jain, Jonathan T. Barron, and Ben Mildenhall. DreamFusion: Text-to-3D using 2D
+Diffusion. arXiv, 2022.
+Aditya Ramesh, Prafulla Dhariwal, Alex Nichol, Casey Chu, and Mark Chen. Hierarchical Text-
+Conditional Image Generation with CLIP Latents. In arXiv, 2022.
+Danilo J Rezende, Shakir Mohamed, and Daan Wierstra. Stochastic backpropagation and approximate
+inference in deep generative models. In International Conference on Machine Learning, pages
+1278–1286, 2014.
+12
+
+Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer. High-
+resolution image synthesis with latent diffusion models. In Proceedings of the IEEE/CVF confer-
+ence on computer vision and pattern recognition, pages 10684–10695, 2022a.
+Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer. High-
+Resolution Image Synthesis with Latent Diffusion Models. In CVPR, 2022b.
+Chitwan Saharia, William Chan, Huiwen Chang, Chris A. Lee, Jonathan Ho, Tim Salimans, David J.
+Fleet, and Mohammad Norouzi. Palette: Image-to-Image Diffusion Models. In SIGGRAPH,
+2022a.
+Chitwan Saharia, William Chan, Saurabh Saxena, Lala Li, Jay Whang, Emily Denton, Seyed
+Kamyar Seyed Ghasemipour, Burcu Karagol Ayan, S. Sara Mahdavi, Rapha Gontijo Lopes, Tim
+Salimans, Jonathan Ho, David J Fleet, and Mohammad Norouzi. Photorealistic Text-to-Image
+Diffusion Models with Deep Language Understanding. In NeurIPS, 2022b.
+Chitwan Saharia, Jonathan Ho, William Chan, Tim Salimans, David J Fleet, and Mohammad Norouzi.
+Image super-resolution via iterative reﬁnement. IEEE Transactions on Pattern Analysis and
+Machine Intelligence, 2022c.
+Tim Salimans and Jonathan Ho. Progressive distillation for fast sampling of diffusion models. arXiv
+preprint arXiv:2202.00512, 2022.
+Tim Salimans, Ian Goodfellow, Wojciech Zaremba, Vicki Cheung, Alec Radford, and Xi Chen.
+Improved techniques for training gans. Advances in neural information processing systems, 29,
+2016.
+Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep unsupervised
+learning using nonequilibrium thermodynamics. In International Conference on Machine Learning,
+pages 2256–2265, 2015.
+Yang Song and Stefano Ermon. Generative modeling by estimating gradients of the data distribution.
+In Advances in Neural Information Processing Systems, pages 11895–11907, 2019.
+Yang Song, Conor Durkan, Iain Murray, and Stefano Ermon. Maximum likelihood training of
+score-based diffusion models. arXiv e-prints, pages arXiv–2101, 2021a.
+Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and
+Ben Poole. Score-Based Generative Modeling Through Stochastic Differential Equations. In
+International Conference on Learning Representations, 2021b.
+Arash Vahdat, Karsten Kreis, and Jan Kautz. Score-based generative modeling in latent space. arXiv
+preprint arXiv:2106.05931, 2021.
+Pascal Vincent. A connection between score matching and denoising autoencoders. Neural computa-
+tion, 23(7):1661–1674, 2011.
+Daniel Watson, Ricardo Chan, William Martin-Brualla, Jonathan Ho, Andrea Tagliasacchi, and
+Mohammad Norouzi. Novel View Synthesis with Diffusion Models. arXiv, 2022.
+Jay Whang, Mauricio Delbracio, Hossein Talebi, Chitwan Saharia, Alexandros G. Dimakis, and
+Peyman Milanfar. Deblurring via Stochastic Reﬁnement. In CVPR, 2022.
+Jiahui Yu, Yuanzhong Xu, Jing Yu Koh, Thang Luong, Gunjan Baid, Zirui Wang, Vijay Vasudevan,
+Alexander Ku, Yinfei Yang, Burcu Karagol Ayan, Ben Hutchinson, Wei Han, Zarana Parekh, Xin
+Li, Han Zhang, and Yonghui Wu Jason Baldridge. Scaling Autoregressive Models for Content-Rich
+Text-to-Image Generation. In arXiv:2206.10789, 2022.
+Kaiwen Zheng, Cheng Lu, Jianfei Chen, and Jun Zhu. Improved techniques for maximum likelihood
+estimation for diffusion odes. arXiv preprint arXiv:2305.03935, 2023.
+13
+
+A
+Main proof
+Here we’ll provide a proof of Equation 11.
+Note that like in the main text, we use shorthand notation:
+L(t; x) := DKL(q(zt,...,1|x)||p(zt,...,1))
+(15)
+A.1
+Time derivative of DKL(q(zt,...,1|x)||p(zt,...,1))
+Let dt denote an inﬁnitesimal change in time. Note that L(t −dt; x) can be decomposed as the sum
+of a KL divergence and an expected KL divergence:
+L(t −dt; x) = L(t; x) + Eq(zt|x)[DKL(q(zt−dt|zt, x)||p(zt−dt|zt)]
+(16)
+Due to this identity, the time derivative d/dt L(t; x) can be expressed as:
+d
+dtL(t; x) = 1
+dt(L(t; x) −L(t −dt; x))
+(17)
+= −1
+dtEq(zt|x)[DKL(q(zt−dt|zt, x)||p(zt−dt|zt)]
+(18)
+In Appendix E of [Kingma et al., 2021], it is shown that in our model, this equals:
+d
+dtL(t; x) = −1
+2
+SNR(t −dt) −SNR(t)
+dt
+||x −ˆxθ(zt; λt)||2
+2
+(19)
+= 1
+2SNR′(t)||x −ˆxθ(zt; λt)||2
+2
+(20)
+where zt = αλx + σλϵ, and SNR(t) := exp(λ) in our model, and SNR′(t) = d/dt SNR(t) =
+eλ dλ/dt, so in terms of our deﬁnition of λ, this is:
+d
+dtL(t; x) = 1
+2eλ dλ
+dt Eϵ∼N(0,I)
+
+||x −ˆxθ(zt; λt)||2
+2
+
+(21)
+In terms of ϵ-prediction (see Section E.2), because ||ϵ −ˆϵθ||2
+2 = eλ||x −ˆxθ||2
+2 this simpliﬁes to:
+d
+dtL(t; x) = 1
+2
+dλ
+dt Eϵ∼N(0,I)
+
+||ϵ −ˆϵθ(zt; λt)||2
+2
+
+(22)
+where zλ = αλx + σλϵ. This can be easily translated to other parameterizations; see E.2.
+This allows us to rewrite the weighted loss of Equation 5 as:
+Lw(x) = 1
+2Et∼U(0,1),ϵ∼N(0,I)
+
+w(λt) · −dλ
+dt · ||ˆϵθ(zt; λ) −ϵ||2
+2
+
+(23)
+= Et∼U(0,1)
+
+w(λt) · −1
+2
+dλ
+dt Eϵ∼N(0,I)
+
+||ˆϵθ(zt; λ) −ϵ||2
+2
+
+(24)
+= Et∼U(0,1)
+
+−d
+dtL(t; x) w(λt)
+
+(25)
+=
+Z 1
+0
+−d
+dtL(t; x) w(λt) dt
+(26)
+A.2
+Integration by parts
+Integration by parts is a basic identity, which tells us that:
+−
+Z b
+a
+f(t)g′(t)dt =
+Z b
+a
+f ′(t)g(t)dt + f(a)g(a) −f(b)g(b)
+14
+
+This allows us to further rewrite the expression of the weighted loss in Equation 26 as:
+Lw(x) =
+Z 1
+0
+−d
+dtL(t; x) w(λt) dt
+(27)
+=
+Z 1
+0
+d
+dtw(λt) L(t; x) dt + w(λmax)L(0; x) −w(λmin)L(1; x)
+(28)
+where
+−w(λmin) L(1; x) = −w(λmin) DKL(q(z1|x)||p(z1))
+(29)
+is constant w.r.t. θ, since it does not involve the score function, and typically very small, since
+DKL(q(z1|x)||p(z1)) is typically small by design.
+The term w(λmax)DKL(q(z0,...,1|x)||p(z0,...,1)) is typically small, since w(λmax) is typically very
+small (see Figure 3).
+This concludes our proof of Equation 11.
+■
+B
+Visualization
+We tried to create a helpful visualization of the result from Section A.2. Note that we can rewrite:
+Z 1
+0
+d
+dtw(λt) L(t; x) dt =
+Z t=0
+t=1
+w(λt) dL(t; x)
+(30)
+The relationship in Equation 28 can be rewritten as:
+w(λmin) L(1) +
+Z t=0
+t=1
+w(λt) dL(t; x) = w(λmax) L(0) +
+Z t=1
+t=0
+L(t; x) dw(λt)
+(31)
+The ﬁrst LHS term equals a weighted prior loss term, and the second LHS term equals the weighted
+diffusion loss. From a geometric perspective, the two LHS terms together deﬁne an area that equals
+the area given by the right term, as illustrated in the ﬁgure below.
+0
+0
+t = 1
+t = 0
+t = 1
+t = 0
+w(λt)
+w(λt)
+w(λ1)
+· L(1; x)
+L(t; x)
+L(t; x)
+Z t=0
+t=1
+w(λt) dL(t; x)
+Z t=1
+t=0
+L(t; x) dw(λt)
+w(λ0) L(0; x)
+On the left, we have a rectangular area that equals a weighted prior loss w(λmin)L(1), plus a curved
+area equal to the weighted diffusion loss
+R t=0
+t=1 w(λt) dL(t; x). This integral can be intuitively
+understood as a Riemann sum over many tiny rectangles going from left (t = 1) to right (t = 0),
+each with height w(λt) and width dL(t; x). On the right, we have the same total area, but divided up
+into two different subareas: a rectangular area w(λmax)L(0) and a curved area that equals the integral
+R t=1
+t=0 L(t; x) dw(λt) going upwards from t = 0 to t = 1, which can also be intuitively understood as
+another Riemann sum, with each tiny rectangle having width L(t; x) and height dw(λt). The area of
+each of those tiny rectangles on the right can be understood as the ELBO at each noise level, L(t; x),
+times the weight of the ELBO at each noise level, dw(λt).
+C
+Relationship between DKL(q(zt,...,1|x)||p(zt,...,1)) and the ELBO
+First, note that:
+L(t; x) = DKL(q(zt,...,1|x)||p(zt,...,1)) ≥DKL(q(zt|x)||p(zt))
+(32)
+15
+
+More precisely, the joint KL divergence DKL(q(zt,...,1|x)||p(zt,...,1)) is the expected negative ELBO
+of noise-perturbed data, plus a constant entropy term:
+L(t; x) = DKL(q(zt,...,1|x)||p(zt,...,1)) = −Eq(zt|x)[ELBOt(zt)] −H(q(zt|x))
+|
+{z
+}
+constant
+(33)
+where the ELBO of noise-perturbed data is:
+ELBOt(zt) := Eq(˜zt|zt)[log p(zt, ˜zt) −log q(˜zt|zt)]
+(34)
+≤log p(zt)
+(35)
+where ˜zt := zt+dt,...,1.
+So, L(t; x) is the expected negative ELBO of noise-perturbed data zt:
+L(t; x) = −Eq(zt|x)[ELBOt(zt)] + constant ≥−Eq(zt|x)[log p(zt)] + constant
+(36)
+Therefore, the expression of the weighted loss in Equation 12 can be rewritten as:
+Lw(x) = Epw(t) [L(t; x)] + constant
+(37)
+= −Epw(t),q(zt|x) [ELBOt(zt)]
+|
+{z
+}
+ELBO of noise-perturbed data
++ constant
+(38)
+≥−Epw(t),q(zt|x) [log p(zt)]
+|
+{z
+}
+Log-likelihood of noise-perturbed data
++ constant
+(39)
+where w(λmin) is constant w.r.t. the diffusion model parameters. Therefore, minimizing Lw(x) is
+equivalent to maximizing this expected ELBO of noise-perturbed data.
+D
+Derivation of weighting functions for previous works
+The loss function used in previous works are equivalent to the weighted loss with a certain choice of
+noise schedule and weighting function w(λ). In this section, we derive these weighting functions
+w(λ).
+D.1
+‘Elucidating Diffusion Models’ (EDM) [Karras et al., 2022]
+Karras et al. [2022] proposes the following training objective:
+Ledm(x) = E˜σ∼p(˜σ),ϵ∼N(0,I)
+
+˜w(˜σ)∥x −ˆxθ(z˜σ; ˜σ)∥2
+2
+
+,
+(40)
+where p(˜σ) and ˜w(˜σ) are deﬁned as:
+p(log ˜σ) = N(log ˜σ; Pmean, P 2
+std),
+(41)
+˜w(˜σ) = (˜σ2 + ˜σ2
+data)/(˜σ2 · ˜σ2
+data),
+(42)
+where ˜σ is equivalent to the standard deviation of noise added to the clean sample x in the VP SDE
+case, so ˜σ2 = e−λ. Karras et al. [2022] used hyperparameters Pmean = −1.2, Pstd = 1.2 and
+˜σdata = 0.5.
+This can be rewritten in terms of λ = −2 log ˜σ as:
+Ledm(x) = Ep(λ),ϵ∼N(0,I)
+
+˜w(λ)∥x −ˆxθ(zλ; λ)∥2
+2
+
+,
+(43)
+where p(λ) and ˜w(λ) are deﬁned as
+p(λ) = N(λ; 2.4, 2.42),
+(44)
+˜w(λ) = (e−λ + 0.52)/(e−λ · 0.52),
+(45)
+Comparing Equation 45 with the weighted loss expressed in terms of x-prediction parameterization
+(Section E.2), we see that (ignoring the constant scaling factor 1/2) the EDM objective is a special
+case of the weighted loss with weighting function:
+w(λ) = p(λ)e−λ · ˜w(λ)
+(46)
+= p(λ)(e−λ + 0.52)/0.52.
+(47)
+where the divison by ˜σ2
+data can be ignored since it’s constant. This leads to:
+w(λ) = N(λ; 2.4, 2.42)(e−λ + 0.52)
+(48)
+16
+
+D.2
+The v-prediction loss / ‘SNR+1’-weighting [Salimans and Ho, 2022]
+Salimans and Ho [2022] introduced the v-parameterization, with a v-prediction model ˆv, where:
+v := αλϵ −σλx
+(49)
+ˆv := αλˆϵ −σλˆx
+(50)
+They propose to minimize a v-prediction loss, E[||v −ˆv||2
+2]. Note that ˆϵ = (zλ −αλˆx)/σλ. For our
+general family, this implies:
+||v −ˆv||2
+2 = σ2
+λ(eλ + 1)2||x −ˆx||2
+2
+(51)
+= α2
+λ(e−λ + 1)2||ϵ −ˆϵ||2
+2
+(52)
+In the special case of the variance preserving (VP) SDE, this simpliﬁes to:
+||v −ˆv||2
+2 = (eλ + 1)||x −ˆx||2
+2
+(53)
+= (e−λ + 1)||ϵ −ˆϵ||2
+2.
+(54)
+Since the ϵ-prediction loss corresponds to minimizing the weighted loss with w(λ) = p(λ), the
+v-prediction loss corresponds to minimizing the weighted loss with w(λ) = (e−λ + 1)p(λ).
+Note that Salimans and Ho [2022] view the loss from the x-prediction viewpoint, instead of our
+ELBO viewpoint; so in their view, minimizing simply ||x −ˆx||2 means no weighting. Note that eλ is
+the signal-to-noise ratio (SNR). Since ||ϵ −ˆϵ||2
+2 = eλ||x −ˆx||2
+2, they call the ϵ-prediction loss ’SNR
+weighting’, and since ||v −ˆv||2
+2 = (eλ + 1)||x −ˆx||2
+2, they call this ’SNR+1’-weighting.
+Salimans and Ho [2022] propose to use optimize a VP SDE with a cosine schedule p(λ) =
+sech(λ/2)/(2π) = 1/(2π cosh(−λ/2)) and the v-prediction loss: E[||v −ˆv||2
+2]. This corresponds
+to minimizing the weighted loss with:
+w(λ) = (e−λ + 1)p(λ)
+(55)
+= (e−λ + 1)/(2π cosh(−λ/2))
+(56)
+= πe−λ/2
+(57)
+The factor π can be ignored since it’s constant, so we can equivalently use:
+w(λ) = e−λ/2
+(58)
+D.2.1
+With shifted cosine schedule
+[Hoogeboom et al., 2023] extended the cosine schedule to a shifted version: p(λ) = sech(λ/2 −
+s)/(2π), where s = log(64/d), where 64 is the base resolution and d is the model resolution (e.g.
+128, 256, 512, etc.). In this case the weighting is:
+w(λ) = (e−λ + 1)p(λ)
+(59)
+= (2/π)e−se−λ/2
+(60)
+Since (2/π)e−s is constant w.r.t λ, the weighting is equivalent to the weighting for the unshifted
+cosine schedule.
+D.3
+Flow Matching with the Optimal Transport ﬂow path (FM-OT) [Lipman et al., 2022]
+Flow Matching [Lipman et al., 2022] with the Optimal Transport ﬂow path can be seen as a special
+case of Gaussian diffusion with the weighted loss.
+D.3.1
+Noise schedule
+Note that in [Lipman et al., 2022], time goes from 1 to 0 as we go forward in time. Here, we’ll let
+time go from 0 to 1 as we go forward in time, consistent with the rest of this paper. We’ll also assume
+17
+
+σ0 = 0, for which we can later correct by truncation (see Section E.3.1). In this model, the forward
+process q(zt|x) is deﬁned by:
+zt = αtx + σtϵ
+(61)
+= (1 −t)x + tϵ
+(62)
+This implies that the log-SNR is given by:
+λt = fλ(t) = log(α2
+t/σ2
+t )
+(63)
+= 2 log((1 −t)/t)
+(64)
+Its inverse is given by:
+t = f −1
+λ (λ) = 1/(1 + eλ/2)
+(65)
+= sigmoid(−λ/2)
+(66)
+The derivative, as a function of t, is:
+dλ
+dt = d
+dtfλ(t) = 2/(−t + t2)
+(67)
+This derivative of its inverse, as a function of λ, is:
+dt
+dλ = d
+dλf −1
+λ (λ) = d
+dλsigmoid(−λ/2) = −sech2(λ/4)/8
+(68)
+The corresponding density is
+p(λ) = −d
+dλf −1
+λ (λ) = sech2(λ/4)/8
+(69)
+which is a Logistic distribution; see also Table 4.
+D.3.2
+Score function parameterization and loss function
+Lipman et al. [2022] then propose the following generative model ODE:
+dz = −ˆo(zt, t)dt
+(70)
+The model is then optimized with the Conditional ﬂow matching (CFM) loss:
+LCFM(x) = Et∼U(0,1),ϵ∼N(0,I)[||o −ˆo||2
+2]
+(71)
+where they use the parameterization:
+o := x −ϵ
+(72)
+D.3.3
+Weighting function
+What is the weighting function w(λ) corresponding to this loss? Note that this parameterization
+means that:
+zt = (1 −t)x + tϵ
+(73)
+= (1 −t)o + ϵ
+(74)
+o = (zt −ϵ)/(1 −t)
+(75)
+Since t = 1/(1 + eλ/2), we have that 1/(1 −t) = 1 + e−λ/2, so parameterized as a function of λ,
+we have:
+o = (zλ −ϵ)(1 + e−λ/2)
+(76)
+Likewise, we can parameterize o-prediction in terms of ϵ-prediction:
+ˆo(zλ, λ) = (zλ −ˆϵ(zλ, λ))(1 + e−λ/2)
+(77)
+We can translate the o-prediction loss to a ϵ-prediction loss:
+||o −ˆo(zλ, λ)||2
+2 = (1 + e−λ/2)2||ϵ −ˆϵ(zλ, λ)||2
+2
+(78)
+18
+
+Therefore, combining the derivations above, the CFM loss, formulated in terms of the λ parame-
+terization instead of t, and in terms of the ϵ-prediction parameterization instead of the o-prediction
+parameterization, is:
+LCFM(x) = Et∼U(0,1),ϵ∼N(0,I)[||o −ˆo(zt, t)||2
+2]
+(79)
+=
+Z 1
+0
+Eϵ∼N(0,I)[||o −ˆo(zt, t)||2
+2] dt
+(80)
+=
+Z λmax
+λmin
+−dt
+dλEϵ∼N(0,I)[||o −ˆo(zλ, λ)||2
+2] dλ
+(81)
+=
+Z λmax
+λmin
+(sech2(λ/4)/8)Eϵ∼N(0,I)[||o −ˆo(zλ, λ)||2
+2] dλ
+(82)
+=
+Z λmax
+λmin
+(sech2(λ/4)/8)(1 + e−λ/2)2Eϵ∼N(0,I)[||ϵ −ˆϵ(zλ, λ)||2
+2] dλ
+(83)
+= 1
+2
+Z λmax
+λmin
+w(λ)Eϵ∼N(0,I)[||ϵ −ˆϵ(zλ, λ)||2
+2] dλ
+(84)
+= 1
+2Eϵ∼N(0,I),λ∼˜p(λ)
+w(λ)
+˜p(λ) ||ϵ −ˆϵ(zλ, λ)||2
+2
+
+(85)
+where ˜p is any distribution with full support on [λmin, λmax], and where:
+w(λ) = 2(sech2(λ/4)/8)(1 + e−λ/2)2
+(86)
+= e−λ/2
+(87)
+Therefore, this weighting is equivalent to the weighting for the v-prediction loss with cosine schedule
+(Section D.2): the CFM loss is equivalent to the v-prediction loss with cosine schedule.
+D.4
+Inversion by Direct Iteration (InDI) [Delbracio and Milanfar, 2023]
+Delbracio and Milanfar [2023] propose Inversion by Direct Iteration (InDI). Their forward process is
+identical to the forward process of FM-OT [Lipman et al., 2022] introduced in Section D.3:
+zt = (1 −t)x + tϵ
+(88)
+As derived in Section D.3 above, this means that the distribution over log-SNR λ is the Logistic
+distribution: p(λ) = sech2(λ/4)/8. The proposed loss function is the x-prediction loss:
+LInDI(x) = Et∼U(0,1),ϵ∼N(0,I)[||x −ˆx(zt, t)||2
+2]
+(89)
+Since ||x −ˆx||2
+2 = e−λ||ϵ −ˆϵ||2
+2, and the ϵ-prediction loss corresponds to minimizing the weighted
+loss with w(λ) = p(λ), the x-prediction loss above corresponds to minimizing the weighted loss
+with:
+w(λ) = e−λp(λ)
+(90)
+= e−λsech2(λ/4)/8
+(91)
+Which is a slightly different weighting then the FM-OT weighting, giving a bit more weighting to
+lower noise levels.
+D.5
+Perception prioritized weighting (P2 weighting) [Choi et al., 2022]
+Choi et al. [2022] proposed a new weighting function:
+w(λ) = −dt/dλ
+(k + eλ)γ =
+p(λ)
+(k + eλ)γ ,
+(92)
+where empirically they set k = 1 and γ as either 0.5 or 1. Compared to the ϵ-prediction objective,
+where w(λ) = dt/dλ = p(λ), this objective put more emphasis on the middle regime of the
+whole noise schedule, which Choi et al. [2022] hypothesized to be the most important regime for
+creating content that is sensitive to visual perception. When combined with the most commonly
+used cosine noise schedule [Nichol and Dhariwal, 2021], the weighting function becomes w(λ) =
+sech(λ/2)/(1 + eλ)γ.
+19
+
+D.6
+Min-SNR-γ weighting [Hang et al., 2023]
+Hang et al. [2023] proposed the following training objective:
+LMinSNR(x) = Et∼U(0,1),ϵ∼N(0,I)
+
+min{eλ, γ}∥x −ˆx(zt; λ)∥2
+2
+
+(93)
+= Et∼U(0,1),ϵ∼N(0,I)
+
+min{1, γe−λ}∥ϵ −ˆϵ(zt; λ)∥2
+2
+
+(94)
+= Et∼U(0,1),ϵ∼N(0,I)
+
+min{1, γe−λ} · −dt
+dλ · −dλ
+dt ∥ϵ −ˆϵ(zt; λ)∥2
+2
+
+(95)
+= Et∼U(0,1),ϵ∼N(0,I)
+
+min{1, γe−λ}p(λ) · −dλ
+dt ∥ϵ −ˆϵ(zt; λ)∥2
+2
+
+.
+(96)
+Therefore, it corresponds to w(λ) = min{1, γe−λ}p(λ). The motivation of the work is to avoid the
+model focusing too much on small noise levels, since it shares similar hypothesis to [Choi et al.,
+2022] that small noise levels are responsible for cleaning up details that may not be perceptible. A
+cosine noise schedule is then combined with the proposed weighting function, leading to w(λ) =
+sech(λ/2) · min{1, γe−λ}. γ is set as 5 empirically.
+E
+Useful Equations
+E.1
+SDEs
+The forward process is a Gaussian diffusion process, whose time evolution is described by a stochastic
+differential equation (SDE):
+dz = f(z, t)
+| {z }
+drift
+dt + g(t)
+|{z}
+diffusion
+dw
+(97)
+For derivations of diffusion SDEs, see Appendix B of [Song et al., 2021b]. Their β(t) equals
+d
+dt log(1 + e−λt) in our formulation, and their
+R t
+0 β(s)ds equals log(1 + e−λt), where they assume
+that λ →∞at t = 0.
+E.1.1
+Variance-preserving (VP) SDE
+A common choice is the variance-preserving (VP) SDE, which generalizes denoising diffusion
+models [Ho et al., 2020] to continuous time [Song et al., 2021b, Kingma et al., 2021]. In the VP case:
+f(z, t) = −1
+2
+ d
+dt log(1 + e−λt)
+
+z
+(98)
+g(t)2 = d
+dt log(1 + e−λt)
+(99)
+α2
+λ = sigmoid(λ)
+(100)
+σ2
+λ = sigmoid(−λ)
+(101)
+p(z1) = N(0, I)
+(102)
+E.1.2
+Variance-exploding (VE) SDE
+Another common choice of the variance-exploding (VE) SDE. In the VE case:
+f(z, t) = 0
+(103)
+g(t)2 = d
+dt log(1 + e−λt)
+(104)
+α2
+λ = 1
+(105)
+σ2
+λ = e−λ
+(106)
+p(z1) = N(0, e−λminI)
+(107)
+20
+
+E.2
+Possible parameterizations of the score network
+There are various ways of parameterizing the score network:
+sθ(z; λ) = −∇zEθ(z, λ)
+(With the gradient of an energy-based model)
+(108)
+= −ˆϵθ(z; λ)/σλ
+(With a noise prediction model)
+(109)
+= −σ−2
+λ (z −αλˆxθ(z; λ))
+(With a data prediction model)
+(110)
+We can let a neural network output any of sθ(zλ; λ), ˆϵθ or ˆxθ, and we can convert the variables to
+each other using the equalities above.
+The chosen relationship between zλ, ˆx, ˆϵ and sθ(zλ; λ) above, are due to the following relationships
+between zλ, x and ϵ:
+zλ = αλx + σλϵ
+(111)
+x = α−1
+λ (zλ −σλϵ)
+(112)
+ϵ = σ−1
+λ (zλ −αλx)
+(113)
+And:
+∇zλ log q(zλ|x) = ∇zλ −||zλ −αλx||2
+2/(2σ2
+λ)
+(114)
+= −σ−2
+λ (zλ −αλx)
+(115)
+= −σ−2
+λ (αλx + σλϵ −αλx)
+(116)
+= −ϵ/σλ
+(117)
+In addition, there’s the v-prediction parameterization (v := αλϵ −σλx) explained in D.2, and the
+o-prediction parameterization (o := x −ϵ) explained in D.3.
+Karras et al. [2022] proposed a speciﬁc F-parametrization, with an F-prediction model ˆFθ. In the
+special case of variance explosion (VE) SDE, it is formulated as:
+x =
+˜σ2
+data
+e−λ + ˜σ2
+data
+zλ +
+e−λ/2˜σdata
+p
+e−λ + ˜σ2
+data
+F
+(118)
+where ˜σdata = 0.5. Generalizing this to our more general family with arbitrary drift, this corresponds
+to:
+x =
+˜σ2
+dataαλ
+e−λ + ˜σ2
+data
+zλ +
+e−λ/2˜σdata
+p
+e−λ + ˜σ2
+data
+F
+(119)
+So that we have:
+F =
+p
+e−λ + ˜σ2
+data
+e−λ/2˜σdata
+x −
+˜σdataαλ
+e−λ/2p
+e−λ + ˜σ2
+data
+zλ
+(120)
+= −
+p
+e−λ + ˜σ2
+data
+˜σdata
+ϵ + eλ/2(e−λ + ˜σ2
+data −˜σ2
+dataα2
+λ)
+p
+e−λ + ˜σ2
+data˜σdataαλ
+zλ
+(121)
+In summary, given these different parameterizations, the ϵ-prediction loss can be written in terms of
+other parameterizations as follows:
+||ϵ −ˆϵθ||2
+2 = eλ||x −ˆxθ||2
+2
+(ϵ-prediction and x-prediction error)
+(122)
+= σ2
+λ||∇zλ log q(zλ|x) −sθ||2
+2
+(score prediction)
+(123)
+= α−2
+λ (e−λ + 1)−2||v −ˆvθ||2
+2
+(v-prediction, general)
+(124)
+= (e−λ + 1)−1||v −ˆvθ||2
+2
+(v-prediction with VP SDE)
+(125)
+= (e−λ/˜σ2
+data + 1)−1||F −ˆFθ||2
+2
+(F-prediction)
+(126)
+Interestingly, if we set ˜σ2
+data = 1, the training objectives of F-prediction and v-prediction are the
+same.
+21
+
+Noise schedule name
+λ = fλ(t) = ...
+t = f −1
+λ
+(λ) = ...
+p(λ) = −d
+dλ f −1
+λ
+(λ) = ...
+Cosine
+−2 log(tan(πt/2))
+(2/π) arctan(e−λ/2)
+sech(λ/2)/(2π)
+Shifted cosine
+−2 log(tan(πt/2)) + 2s
+(2/π) arctan(e−λ/2−s)
+sech(λ/2 −s)/(2π)
+EDM (training)
+−F −1
+N (t; 2.4, 2.42)
+FN (−λ; 2.4, 2.42)
+N(λ; 2.4, 2.42)
+EDM (sampling)
+−2ρ log(σ1/ρ
+max
++(1−t)(σ1/ρ
+min−σ1/ρ
+max))
+1 −e−λ/(2ρ)−σ1/ρ
+max
+σ1/ρ
+min−σ1/ρ
+max
+e−λ/(2ρ)
+2ρ(σ1/ρ
+max−σ1/ρ
+min)
+Flow Matching with OT (see D.3)
+2 log((1 −t)/t)
+1/(1 + eλ/2)
+sech2(λ/4)/8
+Table 4: Noise schedules used in our experiments: cosine [Nichol and Dhariwal, 2021], shifted cosine
+[Hoogeboom et al., 2023], and EDM [Karras et al., 2022] training and sampling schedules. Note that
+these are the noise schedules before truncation (Section E.3.1).
+E.3
+Noise schedules
+During model training, we sample time t uniformly: t ∼U(0, 1), then compute λ = fλ(t). This
+results in a distribution over noise levels p(λ), whose cumulative density function (CDF) is given by
+1 −f −1
+λ (λ). For λ ∈[λmin, λmax] the probability density function (PDF) is the derivative of the CDF,
+which is p(λt) = −(d/dλ) f −1
+λ (λ) = −dt/dλ = −1/f ′
+λ(t). Outside of [λmin, λmax] the probability
+density is 0.
+In table 4 we provide some popular noise schedules: cosine [Nichol and Dhariwal, 2021], shifted
+cosine [Hoogeboom et al., 2023], and EDM [Karras et al., 2022]. We do not list the ’linear’ schedule
+by [Ho et al., 2020], fλ(t) = −log(et2 −1) which has fallen out of use. Note that:
+• In the shifted cosine schedule, s = log(64/d), where 64 is the base resolution and d is the
+used resolution (e.g. 128, 256, 512, etc.).
+• In the EDM training schedule, the function FN (λ; µ, σ2) is the Normal distribution CDF,
+and N(λ; µ, σ2) is its PDF.
+• In the EDM sampling schedule, ρ = 7, σmin = 0.002, σmax = 80. The density function
+p(λ) in the table has support λ ∈[−log σ2
+max, −log σ2
+min]. Outside this range, p(λ) = 0.
+Note that the table gives the noise schedules before truncation, resulting in [ efλ(0), efλ(1)] = [∞, −∞].
+The truncation procedure is given in E.3.1.
+E.3.1
+Truncation
+The noise schedules above are truncated, resulting in a noise schedule efλ(0) whose endpoints have
+desired values [ efλ(0), efλ(1)] = [λmax, λmin]:
+efλ(t) := fλ(t0 + (t1 −t0)t)
+(127)
+where: t0 := f −1
+λ (λmax)
+(128)
+t1 := f −1
+λ (λmin)
+(129)
+Its inverse is:
+ef −1
+λ (λ) = (f −1
+λ (λ) −t0)/(t1 −t0)
+(130)
+And the corresponding probability density:
+if λmin ≤λ ≤λmax :
+˜p(λ) = −d
+dλ
+ef −1
+λ (λ) = −d
+dλf −1
+λ (λ)/(t1 −t0) = p(λ)/(t1 −t0)
+(131)
+else:
+˜p(λ) = 0
+(132)
+E.4
+Sampling
+Anderson [1982] showed that if sθ(z; λ) = ∇z log qt(z), then the forward SDE is exactly reversed
+by the following SDE:
+dz = [f(z, t) −g(t)2sθ(z; λ)]dt + g(t)dw
+(133)
+22
+
+50000
+100000
+150000
+200000
+250000
+Training iteration
+0.084
+0.085
+0.086
+0.087
+0.088
+0.089
+0.090
+Loss
+Fixed vs adaptive schedules
+Fixed noise schedule (Cosine)
+Adaptive noise schedule (Ours)
+(a)
+50000
+100000
+150000
+200000
+250000
+Training iteration
+15.4
+15.5
+15.6
+15.7
+Loss
+Fixed vs adaptive schedules
+Fixed noise schedule (EDM)
+Adaptive noise schedule (Ours)
+(b)
+Figure 4: Our proposed adaptive noise schedule allows us to freely change the weighting function
+without needing to handtune a corresponding noise schedule. For some models it leads to slightly
+worse convergence speed (left) compared to a static noise schedule, probably because the noise
+schedule was already well-tuned for the weighting function, while in other cases it led to faster
+convergence (right). The adaptive noise schedule did not signiﬁcantly affect the end result, but it did
+allow us to more freely experiment with weighting functions.
+Recent diffusion models have used increasingly sophisticated samplers. As an alternative to solving
+the SDE, [Song et al., 2021b] showed that sampling from the model can alternatively be done by
+solving the following probability ﬂow ODE:
+dz = [f(z, t) −1
+2g(t)2sθ(z; λ)]dt
+(134)
+which, under the assumption that sθ is a conservative vector ﬁeld, will result in the same marginals
+p(zt) as the SDE of Equation 133 for every t ∈[0, 1], and therefore also the same marginal p(x).
+Note that due to the continuous-time nature of the model, any sampling method is necessarily
+approximate, with the discretization error depending on various factors including the choice of noise
+schedule. For sampling we can therefore typically use a different noise schedule fλ for sampling
+than for training, and we can change the SDE drift term; as long as we appropriately rescale the input
+to the score network, this would still result in correct samples.
+F
+Adaptive noise schedule
+The invariance shown in Section 3.2 holds for the loss Lw(x), but not for the Monte Carlo estimator
+of the loss that we use in training, based on random samples t ∼U(0, 1), ϵ ∼N(0, I). The noise
+schedule still affects the variance of this Monte Carlo estimator and its gradients; therefore, the noise
+schedule affects the efﬁciency of optimization.
+In fact, the noise schedule acts as an importance sampling distribution for estimating the loss integral
+of Equation 6. Speciﬁcally, note that p(λ) = −1/(dλ/dt). We can therefore rewrite the weighted
+loss as the following, which clariﬁes the role of p(λ) as an importance sampling distribution:
+Lw(x) = 1
+2Eϵ∼N(0,I),λ∼p(λ)
+w(λ)
+p(λ) ||ˆϵθ(zλ; λ) −ϵ||2
+2
+
+(135)
+In order to avoid having to hand-tune the noise schedule for different weighting functions, we
+implemented an adaptive noise schedule. The noise schedule λt is updated online, where we let
+p(λ) ∝Ex∼D,ϵ∼N(0,I)[w(λ)||ˆϵθ(zλ; λ) −ϵ||2
+2]. This noise schedule ensures that the loss is spread
+evenly over time, i.e. that the magnitude of the loss Ex∼D,ϵ∼N(0,I)
+
+(w(λ)/p(λ))||ˆϵθ(zλ; λ) −ϵ||2
+2
+
+is approximately invariant to λ or t. We ﬁnd that this often signiﬁcantly speeds op optimization.
+We implemented an adaptive noise schedule p(λ), where:
+p(λ) ∝Ex∼D,ϵ∼N(0,I)[w(λ)||ϵ −ˆϵθ(zλ; λ)||2
+2]
+(136)
+23
+
+In practice we approximate this by dividing the range [λmin, λmax] into 100 evenly spaced bins, and
+during training keep an exponential moving average (EMA) of w(λ)||ϵ −ˆϵθ(zλ; λ)||2
+2 within each
+bin. From these EMAs we construct a piecewise linear function fλ(t) such that Equation 136 is
+approximately satisﬁed. The EMAs and corresponding noise schedule p(λ) are updated at each
+training iteration. Similar noise schedules have been proposed in Zheng et al. [2023], Nichol and
+Dhariwal [2021], Dieleman et al. [2022].
+In experiments we measure the effect of changing the ﬁxed noise schedule of existing modules with
+an adaptive schedule. We found that this lead to approximately equal FID scores. In half of the
+experiments, optimization was approximately as fast as with the original noise schedule, while in the
+other half the adaptive noise schedule lead to faster optimization (see Figure 4). The end results were
+not signiﬁcantly altered.
+G
+Relationship between the KL divergence and Fisher divergence
+We’ll use the following deﬁnition of the Fisher divergence [Lyu, 2012]:
+DF (q(x)||p(x)) := Eq(x)[||∇x log q(x) −∇x log p(x)||2
+2]
+(137)
+Theorem 2. Assume a model in the family speciﬁed in Section 2, and assume the score network
+encodes a conservative vector ﬁeld: sθ(zt, λt) = ∇zt log p(zt) (not assumed by the other theorems).
+Then:
+d
+dλDKL(q(zt,...,1|x)||p(zt,...,1)) = 1
+2σ2
+λDF (q(zt|x)||p(zt))
+(138)
+Proof of Theorem 2. Note that (see Equation 117):
+∇zt log q(zt|x) = −ϵ/σλ
+(139)
+And assume the score network encodes a conservative vector ﬁeld:
+∇zt log p(zt) = sθ(zt, λt) = −ˆϵθ(zt; t)/σλ
+(140)
+So the time derivative of Equation 22 can be expressed as:
+d
+dλDKL(q(zt,...,1|x)||p(zt,...,1)) = 1
+2σ2
+λEq(zt|x)
+
+||∇zt log q(zt|x) −∇zt log p(zt)||2
+2
+
+(141)
+Equation 138 follows from the deﬁnition of the Fisher divergence.
+■
+G.1
+Comparison with Theorem 1 by Lyu [2012]
+Lyu [2012] prove a similar result in their Theorem 1. We’ll translate their result into our notation.
+In particular, let the forward process be as in our family, such that q(zt|x) = N(zt; αλx, σ2
+t I). The
+marginal (data) distribution is q(x), such that q(zt) =
+R
+q(zt|x)q(x)dx. Similarly, let the generative
+model have a marginal p(x), and p(zt) =
+R
+p(zt|x)p(x)dx. So far the assumptions are the same in
+our family.
+They assume that q(zt|x) = N(zt, x, t), which corresponds to a variance exploding (VE) diffusion
+process, with t = σ2
+λ, so λ = −log(t). Importantly, they make the assumption that p(zt|x) =
+q(zt|x), i.e. that the forward process for p equals the forward process for q. Given these assumptions,
+Lyu [2012] show that:
+d
+dtDKL(q(zt)||p(zt)) = −1
+2DF (q(zt)||p(zt))
+(142)
+Which, given the noise schedule λ = −log(t), can be rewritten as:
+d
+dλDKL(q(zt)||p(zt)) = 1
+2σ2
+λDF (q(zt)||p(zt))
+(143)
+which looks a lot like our Equation 138. One difference are that in Equation 138, the left-hand-
+side distributions are joint distributions, and q conditions on x, while Equation 143 is about the
+24
+
+unconditional q. Another key difference is that for Equation 138 we need fewer assumptions: most
+importantly, we do not make the assumption that p(zt|x) = q(zt|x), since this assumption does
+not hold for the family of diffusion models we consider. Before or during optimization, p(zt|x)
+might be very far from q(zt|x). After optimization, p(zt|x) might be close to q(zt|x), but we still
+can’t assume they’re equal. In addition, we’re mostly interested in the properties of the loss function
+during optimization, since that’s when we’re using our loss for optimization. We for this reason, our
+Theorem 2 is a lot more relevant for optimization.
+H
+Implementation details
+Instead of uniformly sampling t, we applied the low-discrepency sampler of time that was proposed
+by Kingma et al. [2021], which has been shown to effectively reduce the variance of diffusion loss
+estimator and lead to faster optimization. The model is optimized by Adam [Kingma and Ba, 2014]
+with the default hyperparameter settings. We clipped the learning gradient with a global norm of 1.
+For the adaptive noise schedules, we divided the range of [λmin, λmax] into 100 evenly spaced bins.
+During training, we maintaiedn an exponential moving average of w(λ)||ϵ −ˆϵθ(zλ; λ)||2
+2 with a
+decay rate 0.999, and a constant initialization value of 1 for each bin.
+Below we elaborate the implementation details speciﬁc for each task.
+ImageNet 64x64.
+For class-conditional generation on ImageNet 64x64, we applied the ADM
+U-Net architecture from Dhariwal and Nichol [2022], with dropout rate 0.1. We didn’t use any
+data augmentation. The model was trained with learning rate 1e −4, exponential moving average
+of 50 million images and learning rate warmup of 10 million images, which mainly follows the
+conﬁguration of Karras et al. [2022]. We employed 128 TPU-v4 chips with a batch size of 4096 (32
+per chip). We trained the model for 700k iterations and reported the performance of the checkpoint
+giving the best FID score (checkpoints were saved and evaluated on every 20k iterations). It took
+around 3 days for a single training run. For training noise schedule and sampling noise schedule of
+DDPM sampler, we set λmin = −20 and λmax = 20. We ﬁxed the noise schedule used in sampling to
+the cosine schedule for the DDPM sampler, and the EDM (sampling) schedule for the EDM sampler
+(see Table 4 for the formulations). We adopted the same hyperparameters of EDM sampler from
+Karras et al. [2022] with no changes (i.e., Table 5 in their work, column ‘ImageNet-Our model’).
+Both DDPM and EDM samplers took 256 sampling steps.
+ImageNet 128x128.
+For class-conditional generation on ImageNet 128x128, we heavily followed
+the setting of simple diffusion [Hoogeboom et al., 2023]. Speciﬁcally, we used their ‘U-ViT, L’
+architecture, and followed their learning rate and EMA schedules. The data was augmented with
+random horizontal ﬂip. The model is trained using 128 TPU-v4 chips with a batch size of 2048 (16
+per chip). We trained the model for 700 iterations and evaluated the FID and inception scores every
+100k iterations. The results were reported with the checkpoint giving the best FID score. It took
+around 7 days for a single run. We set λmin = −15 + s and λmax = 15 + s, where s = log(64/d) is
+the shift of the weighting function, with 64 being the base resolution and d being the model resolution
+(d = 128 for this task). The DDPM sampler used for evaluation used ‘shifted-cosine’ noise schedule
+(Table 4) and took 512 sampling steps.
+I
+Relationship with low-bit training
+Various earlier work, such as [Kingma and Dhariwal, 2018], found that maximum likelihood training
+on 5-bit data can lead to perceptually higher visual quality than training on 8-bit data (at the cost of
+a decrease in color ﬁdelity). This leads to improved visual quality, probably because it allows the
+model to spend more capacity on modeling the bits that are most relevant for human perception.
+In [Kingma and Dhariwal, 2018], training on 5-bit data was performed by adding uniform noise to the
+data, before feeding it to the model. It was found that adding Gaussian noise had a similar effect as
+uniform noise. As we have seen, in the case of diffusion models, adding Gaussian noise is equivalent
+to using a weighted objective with a monotonic weighting function.
+25
+
+Therefore, training on 5-bit data is similar to training using a monotonic weighting function in case of
+diffusion models. We can wonder: which weighting function emulates training on 5-bit data? Here,
+we’ll attempt to answer this question.
+I.1
+The shape of
+d
+dλL(λ; x) for low-bit data
+Note that the results of Appendix A.1 can also be written as:
+d
+dλL(λ; x) = 1
+2Eϵ∼N(0,I)
+
+||ϵ −ˆϵθ(zλ; λ)||2
+2
+
+(144)
+This allows us to rewrite the weighted loss as simply:
+Lw(x) =
+Z λmin
+λmax
+d
+dλL(λ; x) w(λ) dλ
+(145)
+To understand the effect of λ, we can plot the
+d
+dλL(λ; x) as a function of λ.
+We’d like to plot
+d
+dλL(λ; x) dof different choices of bit precision. This will tell us where the different
+bits ’live’ as a function of λ. Since training different diffusion models on different bit precisions is
+very expensive, we instead use an approximation. In particular, we assume that the data x is univariate,
+with a uniform distribution q(x) over the 2n possible pixel values, where n is the bit precision. The
+data is x is, as usual, normalized to [−1, 1]. We then let the model p(zλ), for each choice of λ, be
+the optimal model: p(zλ) :=
+R
+q(x)q(zλ|x)dz, which is a univariate mixture-of-Gaussians, where
+each mixture component is a Gaussian centered one of the 2n possible pixel values. In this case,
+L(λ; x) := DKL(q(zλ|x)||p(zλ)).
+We start by plotting the function Eq(x)[L(λ; x)], for differences choices of n = 1, ..., 8, as shown in
+Figure 5a. Next, we plot Eq(x)[ d
+dλL(λ; x)], for each n, in Figure 5b. The more bits included in the
+data, the more information contained by Eq(x)[ d
+dλL(λ; x)] (measured by the area under each curve).
+We can further visualize the contribution of each additional added bit to the loss, by subtracting the
+curve for n −1 bits from the curve for n bits, as displayed in Figure 5c. The area under each of these
+curves is exactly 1 bit. Interestingly, as more bits being added, the contribution to the loss gradually
+shifts from low-SNR regions to high-SNR regions.
+Now the connection between low-bit training (e.g., 5-bit) and the weighted training objective becomes
+clear: If we want to “shut down” the last three curves in Figure 5c, a way is to have a sigmoidal
+weighting function that goes down sharply between λ = 7.5 and λ = 10. In fact, the 5-bit unweighted
+loss curve is very similar to the 8-bit loss curve, when using the following weighting function:
+w(λ) = FN ((−2(λ −8.4)))
+(146)
+where FN is the CDF of a standard Gaussian. See Figure 5e for the comparison of the 5-bit unweighted
+loss and the 8-bit weighted loss, and Figure 5d for the visualization of the above weighting function
+(‘5-bit-like weighting’). Interestingly, this weighting function gives much more weight to low noise
+levels than the weighting functions used in this paper (i.e. the other curves shown in Figure 5d).
+J
+Fourier analysis of Gaussian noise perturbation
+Recall Theorem 1 showed that assuming monotonic weightings, the weighted training objective is
+equivalent to the ELBO with data augmentation, namely Gaussian noise perturbation. One may
+wonder, why Gaussian noise perturbation can help improve perceptual quality. In this section, we try
+to answer this question by lifting Gaussian noise perturbation to the frequency domain.
+Given a clean natural image x and a Gaussian white noise image ϵ, the Gaussian-noise-perturbed
+data is given by zλ = αλx + σλϵ. Denote the Fourier transform operation as F(·). Since F(·) is a
+linear operation, we have
+F(zλ) = αλF(x) + σλF(ϵ).
+(147)
+To understand how noise affects the data, we can compare the power spectra of αλF(x) and σλF(ϵ),
+which is deﬁned as the square amplitude of the Fourier transform: S(·) = |F(·)|2. More speciﬁcally,
+given the power spectrum S of an image, we can take the circular average of S for the Fourier
+26
+
+10
+5
+0
+5
+10
+15
+0
+1
+2
+3
+4
+5
+Eq(x)[ ( , x)]
+Eq(x)[ ( , x)] (Expected nats as a function of )
+n_bits = 1
+n_bits = 2
+n_bits = 3
+n_bits = 4
+n_bits = 5
+n_bits = 6
+n_bits = 7
+n_bits = 8
+(a) Eq(x)[L(λ; x)] as a function of λ.
+10
+5
+0
+5
+10
+15
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+Eq(x)[d/d
+( , x)]
+Eq(x)[d/d
+( , x)]
+n_bits = 1
+n_bits = 2
+n_bits = 3
+n_bits = 4
+n_bits = 5
+n_bits = 6
+n_bits = 7
+n_bits = 8
+(b) Eq(x)[ d
+dλL(λ; x)] as a function of λ.
+10
+5
+0
+5
+10
+15
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+0.35
+0.40
+Contribution of each bit to Eq(x)[d/d
+( , x)]
+Contribution of each bit to Eq(x)[d/d
+( , x)]
+bit 1
+bit 2
+bit 3
+bit 4
+bit 5
+bit 6
+bit 7
+bit 8
+(c) Subtraction of the curve for n −1 bits from the
+curve for n bits in Fig.5b.
+7.5
+5.0
+2.5
+0.0
+2.5
+5.0
+7.5
+10.0
+ (log SNR)
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+w( ) (normalized)
+Weighting functions
+ELBO
+v-prediction and FM-OT
+EDM-monotonic (Ours)
+sigmoid(
++ 2) (Ours)
+5-bit-like weighting
+(d) Weighting functions, with a weighting resembling
+5-bit training.
+10
+5
+0
+5
+10
+15
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+Unweighted 5-bit versus weighted 8-bit
+Eq(x)[d/d
+( , x)], n_bits = 5
+Eq(x)[d/d
+( , x) w( )], n_bits = 8
+(e) Unweighted 5-bit loss versus weighted 8-bit loss.
+Figure 5: Low-bit training analysis. See Section I.1 for description.
+components of the same spatial frequency, such that it becomes a function of the spatial frequency.
+Figure 6 displays the average power spectra of αλF(x) and σλF(ϵ) as functions of the spatial
+frequency, for different λ. As λ goes from high to low, i.e., gradually perturbing the data with more
+noise, the average power spectrum of σλF(ϵ) (orange curve) ﬁrst exceeds the one of αλF(x) (blue
+curve) in the high frequency region, and then followed by the low frequency region. That is, the high
+frequency components of the data are destroyed more quickly than the low frequency components.
+When the data is perturbed with small amounts of noise, only high frequency details are signiﬁcantly
+removed, and most low frequency content remains. Therefore, given that the model capacity is
+limited, learning data with Gaussian noise perturbation help the model focus more on low frequency
+components of the data, which often correspond to high level content and global structure that are
+more crucial to human perception. This analysis can also be applied to understand the forward
+process of diffusion models.
+27
+
+100
+101
+102
+Spatial frequency
+10
+1
+101
+103
+105
+107
+109
+Average power spetrum
+= -5.0
+(x)
+( )
+100
+101
+102
+Spatial frequency
+10
+1
+101
+103
+105
+107
+109
+= -2.5
+(x)
+( )
+100
+101
+102
+Spatial frequency
+10
+1
+101
+103
+105
+107
+109
+= 0.0
+(x)
+( )
+100
+101
+102
+Spatial frequency
+10
+1
+101
+103
+105
+107
+109
+= 2.5
+(x)
+( )
+100
+101
+102
+Spatial frequency
+10
+1
+101
+103
+105
+107
+109
+= 5.0
+(x)
+( )
+Gaussian noise perturbation
+Figure 6: The circular average power spectrum as a function of spatial frequency, for the scaled clean
+image and scaled Gaussian noise image. From the rightmost to the leftmost subﬁgure, more noise is
+gradually added.
+To make the claim even clearer, we can compute the log signal-to-noise-ratio (log SNR) ˜λ between
+the power spectra of αλF(x) and σλF(ϵ), as a function of λ. Figure 7 shows the average value
+of that log ratio around different frequency regions. Given a ﬁxed λ, ˜λ is higher for low frequency
+regions, so that the data are less destroyed by the noise.
+10
+5
+0
+5
+10
+15
+ (log SNR)
+15
+10
+5
+0
+5
+10
+15
+20
+ (log SNR around freq)
+freq=1.12
+freq=3.91
+freq=13.62
+freq=47.45
+freq=165.37
+Figure 7: Log-SNR (˜λ) of the power spectra of the scaled clean image and scaled Gaussian noise
+image, as a function of log-SNR (λ) in the data space. Given a ﬁxed λ, ˜λ is higher around low
+frequency regions.
+K
+Limitations
+It is important to emphasize that our empirical results, like other deep learning approaches, depend
+on the choice of hyper-parameters. A change in, for example, the dataset or spatial resolution will
+generally require re-tuning of optimization hyperparameters, architectural choices and/or weighting
+functions. Such re-tuning can be time consuming and costly.
+L
+Broader impact
+While our work primarily focuses on theoretical developments in the understanding and optimization
+of diffusion models, the advancements could have broader implications, some of which could
+potentially be negative. The development of more efﬁcient and effective generative models could, on
+one hand, propel numerous beneﬁcial applications, such as art and entertainment. However, it is also
+worth acknowledging the potential misuse of these technologies.
+One notable concern is the generation of synthetic media content, for example to mislead. These
+fraudulent yet realistic-looking images and videos could be used for spreading disinformation or for
+other malicious purposes, such as identity theft or blackmail.
+Regarding fairness considerations, generative models are typically trained on large datasets and could
+therefore inherit and reproduce any biases present in the training data. This could potentially result
+28
+
+in unfair outcomes or perpetuate harmful stereotypes if these models are used in decision-making
+processes or content generation.
+Mitigation strategies to address these concerns could include the gated release of models, where
+access to the model or its outputs is regulated to prevent misuse. Additionally, the provision of
+defenses, such as methods to detect AI generated media, could be included alongside the development
+of the generative models. Monitoring mechanisms could also be implemented to observe how a
+system is being used and to ensure that it learns from feedback over time in an ethical manner.
+These issues should be considered when applying the techniques we propose. The community should
+strive for an open and ongoing discussion about the ethics of AI and the development of strategies to
+mitigate potential misuse of these powerful technologies.
+M
+Samples from our model trained on 512 × 512 ImageNet
+Below we provide random samples from our highest-resolution (512x512) model trained on ImageNet.
+We did not cherry-pick, except that we removed depictions of humans due to ethical guidelines.
+Samples in Figures 8 and 9 are generated without guidance, while samples in Figures 10 and 11 are
+generated with guidance strength 4.
+29
+
+Figure 8: Random samples from our 512x512 ImageNet model, without guidance.
+30
+
+Figure 9: More random samples from our 512x512 ImageNet model, without guidance.
+31
+
+Figure 10: Random samples from our 512x512 ImageNet model, with guidance strength 4.
+32
+
+Figure 11: More random samples from our 512x512 ImageNet model, with guidance strength 4.
+33
+

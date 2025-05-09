@@ -1,0 +1,4134 @@
+Weisfeiler and Leman Go Loopy: A New Hierarchy
+for Graph Representational Learning
+Raffaele Paolino∗,1,2
+Sohir Maskey∗,1
+Pascal Welke3
+Gitta Kutyniok1,2,4,5
+1Department of Mathematics, LMU Munich
+2Munich Center for Machine Learning (MCML)
+3Faculty of Computer Science, TU Wien
+4Institute for Robotics and Mechatronics, DLR-German Aerospace Center
+5Department of Physics and Technology, University of Tromsø
+Abstract
+We introduce r-loopy Weisfeiler-Leman (r-ℓWL), a novel hierarchy of graph
+isomorphism tests and a corresponding GNN framework, r-ℓMPNN, that can
+count cycles up to length r+2. Most notably, we show that r-ℓWL can count
+homomorphisms of cactus graphs. This extends 1-WL, which can only count
+homomorphisms of trees and, in fact, we prove that r-ℓWL is incomparable to
+k-WL for any ﬁxed k. We empirically validate the expressive and counting power
+of r-ℓMPNN on several synthetic datasets and demonstrate the scalability and
+strong performance on various real-world datasets, particularly on sparse graphs.
+Our code is available on GitHub.
+1
+Introduction
+Graph Neural Networks (GNNs) (Scarselli et al., 2009; Bronstein et al., 2017) have become a
+prevalent architecture for processing graph-structured data, contributing signiﬁcantly to various
+applied sciences, such as drug discovery (Stokes et al., 2020), recommender systems (Fan et al.,
+2019), and fake news detection (Monti et al., 2019).
+Among various architectures, Message Passing Neural Networks (MPNNs) (Gilmer et al., 2017)
+are widely used in practice, as they encompass only local computation, leading to fast and scalable
+models. Despite their success, the representational power of MPNNs is bounded by the Weisfeiler-
+Leman (WL) test, a classical algorithm for graph isomorphism testing (Xu et al., 2019; Morris et al.,
+2019). This limitation hinders MPNNs from recognizing basic substructures like cycles (Chen et al.,
+2020). However, speciﬁc substructures can be crucial in many applications. For example, in organic
+chemistry, the presence of cycles can impact various chemical properties of the underlying molecules
+(Deshpande et al., 2002; Koyutürk et al., 2004). Therefore, it is crucial to investigate whether GNNs
+can count certain substructures and to design architectures that surpass the limited power of MPNNs.
+Several models have been proposed to surpass the limitations of WL. Many of these models draw
+inspiration from higher-order WL variants (Morris et al., 2019), enabling them to count a broader
+range of substructures. For instance, GNNs emulating 3-WL can count cycles up to length 7. However,
+this increased expressivity comes at a high computational cost, as 3-WL does not respect the sparsity
+of real-world graphs, posing serious scalability issues. Hence, there is a critical need to design
+expressive GNNs that respect the inherent sparsity of real-world graphs (Morris et al., 2023).
+*Equal contribution.
+Corresponding authors: paolino@math.lmu.de, maskey@math.lmu.de.
+38th Conference on Neural Information Processing Systems (NeurIPS 2024).
+
+0
+1
+2
+3
+4
+5
+Input graph
+1
+3
+4
+5
+1
+3
+4
+5
+1
+2
+3
+v = 0
+. . .
+. . .
+. . .
+0
+4
+0
+4
+v = 5
+Preprocessing: extracting Nr(v)
+Pooling direct neighbors
+Path-wise
+GNN
+Path-wise
+GNN
+Pooling path
+embeddings
+Pooling path
+embeddings
+Graph
+Pooling
+Graph
+Embedding
+Training: paths-to-graph embedding
+Figure 1: Visual depiction of r-ℓGIN: During preprocessing, we calculate the path neighborhoods
+Nr(v) for each node v in the graph G. Paths of varying lengths are processed separately using simple
+GINs, and their embeddings are pooled to obtain the ﬁnal graph embedding. The forward complexity
+scales linearly with the sizes of Nr(v), enabling efﬁcient computation on sparse graphs.
+Main Contributions.
+We introduce a novel class of color reﬁnement algorithms called r-loopy
+Weisfeiler-Leman test (r-ℓWL) and a corresponding class of GNNs named r-loopy Graph Isomorphism
+Networks (r-ℓGIN). The key idea is to collect messages not only from neighboring nodes but also from
+the paths connecting any two distinct neighboring nodes, as illustrated in Figure 1. This approach
+enhances the resulting GNNs’ expressivity beyond 1-WL. In particular, r-ℓWL can count cycles up
+to length r+2, even surpassing the k-WL hierarchy.
+Furthermore, we prove that r-ℓWL can homomorphism-count any cactus graph with cycles up to
+length r+2. Cactus graphs are valuable due to their structural properties and simplicity, making them
+useful for modeling in areas such as electrical engineering (Nishi et al., 1986) and computational
+biology (Paten et al., 2011). For instance, aromatic compounds often form cactus graphs, where
+the molecular core, usually a cycle, is coonected to functional groups (e.g., carboxyl groups) that
+can signiﬁcantly impact the properties of the molecule. Thus, the ability to homomorphism-count
+cactus graphs can enhance model performance, and it allows us to compare the expressive power of
+r-ℓWL with other popular GNNs in a quantitative manner (Barceló et al., 2021; B. Zhang et al., 2024).
+Speciﬁcally, we show that r-ℓWL is more expressive than GNNs that include explicit homomorphism
+counts of cycle graphs, known as F-Hom-GNNs (Barceló et al., 2021). Additionally, 1-ℓWL can
+already separate inﬁnitely many graphs that Subgraph k-GNNs (Frasca et al., 2022; Qian et al., 2022)
+cannot (see, e.g., Figure 7). The higher expressivity, paired with the local computations, highlights
+the enhanced potential of r-ℓGIN, showing its competitive performance and the efﬁciency of its
+forward pass on real-world datasets, see Section 7.
+2
+Related Work
+The notion of expressivity in standard neural networks is linked to the ability to approximate any
+continuous function (Cybenko, 1989; Hornik et al., 1989). In contrast, GNN expressivity is measured
+by the ability to distinguish non-isomorphic graphs. According to the Stone-Weierstrass theorem,
+these criteria are equivalent (Chen et al., 2019; Dasoulas et al., 2021): a network that can distinguish
+all graphs can approximate any continuous function. Therefore, research often focuses on determining
+which graphs a GNN can distinguish (Morris et al., 2023).
+Xu et al. (2019) and Morris et al. (2019) proved that the expressive power of MPNNs is bounded by 1-
+WL. Subsequent works (Maron et al., 2018; Morris et al., 2019, 2020) introduced higher-order GNNs
+that have the same expressive power as k-WL or its local variants (Geerts et al., 2022). Although
+these networks are universal (Maron et al., 2019b; Keriven et al., 2019), their exponential time and
+space complexity in k renders them impractical. Abboud et al. (2022) proposed k-hop GNNs which
+aggregate information from k-hop neighbors, thus, enhancing expressivity beyond 1-WL but within
+3-WL (Feng et al., 2022). Michel et al. (2023) and Graziani et al. (2024) construct GNNs that process
+paths emanating from each node to overcome 1-WL. Subgraph GNNs (Bevilacqua et al., 2021; You
+et al., 2021; Frasca et al., 2022; Huang et al., 2022) surpass 1-WL by decomposing the initial input
+2
+
+graph into a bag of subgraphs. However, subgraph GNNs are upper-bounded by 3-WL (Frasca et al.,
+2022). A different line of work leverages positional encoding through unique node identiﬁers (Vignac
+et al., 2020), random features (Abboud et al., 2021; Sato et al., 2021) or eigenvectors (Lim et al.,
+2022; Maskey et al., 2022) to augment the expressive power of MPNNs.
+While the predominant approach for gauging the expressive power of GNNs is within the k-WL
+hierarchy, such a measure is inherently qualitative, as it cannot shed light on substructures a particular
+GNN can encode. Lovász (1967) showed that homomorphism counts is a complete graph invariant,
+meaning two graphs are isomorphic if and only if their homomorphism counts are identical. Building
+on this result, B. Zhang et al. (2024) advocate for homomorphism-count as a quantitative measure of
+expressivity, as GNN architectures can homomorphism-count particular families of motifs. Tinhofer
+(1986, 1991) established that 1-WL is equivalent to counting homomorphisms from graphs with
+tree-width one, while Dell et al. (2018) proved the equivalence between k-WL and the ability to
+count homomorphisms from graphs with tree-width k. Nguyen et al. (2020), Barceló et al. (2021),
+Welke et al. (2023), and Jin et al. (2024) used homomorphism counts to develop expressive GNNs.
+Manually augmenting node features with homomorphism counts can be disadvantageous as perfor-
+mance depends on the chosen substructures. This can be alleviated by designing domain-agnostic
+GNNs that can learn structural information suitable for the task at hand. For instance, higher-order
+GNNs can count a large class of substructures as homomorphisms (B. Zhang et al., 2024), but they
+suffer from scalability issues. We propose r-ℓWL and r-ℓGIN, which can count homomorphisms of
+cactus graphs without adding explicit substructure counts. Our method is scalable to large datasets,
+particularly when the graphs in these datasets are sparse.
+3
+Preliminaries
+Let G be the set of all simple and undirected graphs, and let G ∈G. We denote the set of nodes by
+V (G) and the set of edges by E(G). The direct neighborhood of a node v ∈V (G) is deﬁned as
+N(v) := {u ∈V (G) | {v, u} ∈E(G)}.
+Deﬁnition 1. Let F, G ∈G. A homomorphism from F to G is a map h : V (F) →V (G) such that
+{u, v} ∈E(F) implies {h(u), h(v)} ∈E(G). A subgraph isomorphism is an injective homomor-
+phism.
+Intuitively, a homomorphism from F to G is an edge-preserving map. A subgraph isomorphism
+ensures that F actually occurs as a subgraph of G. Consequently, it also maps distinct edges to
+distinct edges. A visual explanation can be found in Figure 5. We denote by Hom(F, G) the set of
+homomorphisms from F to G and by hom(F, G) its cardinality. Similarly, we denote by Sub(F, G)
+the set of subgraph isomorphisms from F to G and by and sub(F, G) its cardinality.
+3.1
+Graph Invariants
+In order to unify different expressivity measures, we recall the deﬁnition of graph invariants.
+Deﬁnition 2. Let P be a designated set, referred to as the palette. A graph invariant is a function
+ζ : G →P such that ζ(G) = ζ(H) for all isomorphic pairs G, H ∈G. ζ is a complete graph
+invariant if ζ(G) ̸= ζ(F) for all non-isomorphic pairs G, F ∈G.
+Complete graph invariants have maximal expressive power. However, no polynomial-time algorithm
+to compute a complete graph invariant is known. To compare the expressive power of different graph
+invariants, such as graph colorings and GNN architectures, we introduce the following deﬁnition.
+Deﬁnition 3. Let γ, ζ be two graph invariants. We say that γ is more powerful than ζ (γ ⊑ζ) if for
+every pair G, H ∈G, γ(G) = γ(H) implies ζ(G) = ζ(H). We say that γ is strictly more powerful
+than ζ if γ ⊑ζ and there exists a pair F, G ∈G such that γ(G) ̸= γ(H) and ζ(G) = ζ(H).
+3.2
+Message Passing Neural Networks and Weisfeiler-Leman
+Message passing is an iterative algorithm that updates the colors of each node v ∈V (G) as
+c(t+1)(v) ←f (t+1) 
+c(t)(v), g(t+1) nn
+c(t)(u) | u ∈N(v)
+oo
+.
+(1)
+3
+
+The graph output after t iterations is given by
+c(t)(G) := h
+nn
+c(t)(v) | v ∈V (G)
+oo
+.
+Here, g(t), h are functions on the domain of multisets and f (t) is a function on the domain of tuples.
+For each t, the colorings c(t) are graph invariants. When the subsets of nodes with the same colors
+cannot be further split into different color groups, the algorithm terminates; the stable coloring after
+convergence is denoted by c(G).
+Choosing injective functions for all f (t) and setting g(t) and h as the identity function results in 1-WL
+(Weisfeiler et al., 1968). If f (t), g(t), h are chosen as suitable neural networks, one obtains a Message
+Passing Neural Network (MPNN). Xu et al. (2019) proved that MPNNs are as powerful as 1-WL if
+the functions f (t), g(t), and h are injective on their respective domains. The k-WL algorithms uplift
+the expressive power of 1-WL by considering interactions between k-tuples of nodes. This results in
+a hierarchy of strictly more powerful graph invariants (see Appendix B.1 for a formal deﬁnition).
+3.3
+Homomorphism and Subgraph Counting Expressivity
+A more nuanced graph invariant can be built by considering the occurrences of a motif F.
+Deﬁnition 4. Let F ∈G. A graph invariant ζ can homomorphism-count F if for all pairs G, H ∈G
+ζ(G) = ζ(H) implies hom(F, G) = hom(F, H). By analogy, ζ can subgraph-count F if for all
+pairs G, H ∈G, ζ(G) = ζ(H) implies sub(F, G) = sub(F, H).
+If F is a family of graphs, we say that ζ can homomorphism-count F if ζ can homomorphism-count
+every F ∈F; we denote the vector of homomorphism-count by hom(F, G) := (hom(F, G))F ∈F.
+Interpreting hom(F, ·) as a graph invariant, given by G 7→hom(F, G), another graph invariant ζ
+can homomorphism-count F if and only if ζ ⊑hom(F, ·).
+The ability of a graph invariant to count homomorphisms is highly relevant because hom(G, ·) is a
+complete graph invariant. Conversely, if ζ is a complete graph invariant, then ζ can homomorphism-
+count all graphs (Lovász, 1967). Additionally, homomorphism-counting serves as a quantitative
+expressivity measure to compare different WL variants and GNNs, such as k-WL, Subgraph GNNs,
+and other methods (Lanzinger et al., 2024; B. Zhang et al., 2024), and allows for relating them to our
+proposed r-ℓWL variant, as detailed in Corollary 2.
+4
+Loopy Weisfeiler-Leman Algorithm
+In this section, we introduce a new graph invariant by enhancing the direct neighborhood of nodes
+with simple paths between neighbors.
+Deﬁnition 5. Let G ∈G. A simple path of length r is a collection p = {pi}r+1
+i=1 of r+1 nodes such
+that {pi, pi+1} ∈E(G) and i ̸= j =⇒pi ̸= pj for every i, j ∈{1, . . . , r},.
+Simple paths are the building blocks of r-neighborhoods, which in turn are the backbone of our
+r-ℓWL algorithm. The following deﬁnition is inspired by (Cantwell et al., 2019; Kirkley et al., 2021).
+Deﬁnition 6. Let G ∈G and r ∈N \ {0}, we deﬁne the r-neighborhood Nr(v) of v ∈V (G) as
+Nr(v) := {p | p simple path of length r, p1, pr+1 ∈N(v), v /∈p} .
+v
+N0(v)
+N1(v)
+N2(v)
+Figure 2: Example of r-neighborhoods.
+For consistency, we set N0(v) := N(v). An ex-
+ample of the construction of r-neighborhood
+is shown in Figure 2, where different r-
+neighborhoods of node v are represented with
+different colors.
+We generalize 1-WL in (1) as follows.
+Deﬁnition 7. We deﬁne the r-loopy Weisfeiler-Leman (r-ℓWL) test by the following color update:
+c(t+1)
+r
+(v) ←HASHr
+
+c(t)
+r (v),
+nn
+c(t)
+r (p) | p ∈N0(v)
+oo
+, . . . ,
+nn
+c(t)
+r (p) | p ∈Nr(v)
+oo
+, (2)
+where c(t)
+r (p) :=
+
+c(t)
+r (p1), c(t)
+r (p2), . . . , c(t)
+r (pr+1)
+
+is the sequence of colors of nodes in the path.
+4
+
+We denote by c(t)
+r (G) the ﬁnal graph output after t iterations of r-ℓWL, i.e.,
+c(t)
+r (G) = HASHr
+nn
+c(t)
+r (v) | v ∈V (G)
+oo
+,
+and by cr(G) the stable coloring after convergence. The stable coloring cr serves as graph invariant
+and will be referred to as r-ℓWL.
+5
+Expressivity of r-ℓWL
+We analyze the expressivity of r-ℓWL in terms of its ability to distinguish non-isomorphic graphs,
+subgraph-count, and homomorphism-count motifs. The proofs for all statements are in Appendix D.
+5.1
+Isomorphism Expressivity
+It is straightforward to check that 0-ℓWL corresponds to 1-WL, since N0(v) = N(v) for all nodes v.
+However, increasing r leads to a strict increase in expressivity.
+Proposition 1. Let 0 ≤q < r. Then, r-ℓWL is strictly more powerful than q-ℓWL. In particular,
+every r-ℓWL is strictly more powerful than 1-WL.
+This shows that the number of graphs we can distinguish monotonically increases with r. We
+empirically verify this fact on several synthetic datasets in Section 7.
+5.2
+Subgraph Expressivity
+Recent studies highlight limitations in the ability of certain graph invariants to subgraph-count cycles.
+For instance, 1-WL cannot subgraph-count cycles (Chen et al., 2020, Theorem 3.3), while 3-WL can
+only subgraph-count cycles of length up to 7 (Arvind et al., 2020, Theorem 3.5). Similarly, Subgraph
+GNNs have limited cycle-counting ability (Huang et al., 2022, Proposition 3.1). In contrast, r-ℓWL
+can count cycles of arbitrary length, as shown in the following statement.
+Theorem 1. For any r ≥1, r-ℓWL can subgraph-count all cycles with at most r + 2 nodes.
+Since 3-WL cannot subgraph-count any cycle with more than 7 nodes, Theorem 1 implies that 6-ℓWL
+is not less powerful than 3-WL. This observation generalizes to any k-WL, as shown next.
+Corollary 1. Let k ∈N. There exists r ∈N, such that r-ℓWL is not less powerful than k-WL.
+Speciﬁcally, r ∈O(k2), with r ≤k(k+1)
+2
+−2 for even k and r ≤(k+1)2
+2
+−2 for odd k.
+The r-ℓWL color reﬁnement algorithm surpasses the limits of the k-WL hierarchy while only using
+local computation. This is particularly important since already 3-WL is computationally infeasible,
+whereas our method can scale efﬁciently to higher orders if the graphs are sparse, which is commonly
+the case in real-world applications.
+5.3
+Homomorphism Expressivity
+The following section unveils a close connection between the expressivity of r-ℓWL and cactus
+graphs (Harary et al., 1953), a signiﬁcant class between trees and graphs with tree-width 2.
+Deﬁnition 8. A cactus graph is a graph where every edge lies on at most one simple cycle. For r ≥2,
+an r-cactus graph is a cactus where every simple cycle has at most r vertices. We denote by M the
+set of all cactus graphs, and by Mr the set of all q-cactus graphs for q ≤r.
+Figure 6 shows two examples of cactus graphs. From the expressivity perspective, the ability to
+homomorphism-count cactus graphs establishes a lower bound strictly between the homomorphism-
+counting capabilities of 1-WL and 3-WL (Neuen, 2024), as cactus graphs are a strict superset of all
+trees and a strict subset of all graphs of treewidth two. With this in mind, we are now ready to present
+our signiﬁcant result on the homomorphism expressivity of our r-ℓWL algorithm.
+Theorem 2. Let r ≥0. Then, r-ℓWL can homomorphism-count Mr+2.
+5
+
+We refer to Appendix G for a detailed proof of Theorem 2, which is fairly involved and requires
+deﬁning canonical tree decompositions of cactus graphs and unfolding trees of r-ℓWL. Demonstrating
+their strong connection, we then follow the approach in (Dell et al., 2018; B. Zhang et al., 2024) to
+decompose homomorphism counts of cactus graphs. In fact, we prove a more general result, showing
+that r-ℓWL can count all fan-cactus graphs, see Appendix G for more details.
+The class M2 contains only forests; hence, Theorem 2 implies the standard results on the ability of
+1-WL to count forests. Since forests are the only class of graphs 1-WL can count, Theorem 2 implies
+that r-ℓWL is always strictly more powerful than 1-WL, corroborating the claim in Proposition 1.
+The implications of Theorem 2 are profound: it establishes that r-ℓWL can homomorphism-count
+a large class of graphs. Speciﬁcally, Theorem 2 provides a quantitative expressivity measure that
+enables comparison of r-ℓWL’s expressivity with other WL variants and GNNs. This comparison
+is achieved by examining the range of graphs that r-ℓWL can homomorphism-count against those
+countable by other models, as detailed in works by Barceló et al. (2021) and B. Zhang et al. (2024).
+For instance, B. Zhang et al. (2024) showed that Subgraph GNNs (Bevilacqua et al., 2021; You
+et al., 2021; Frasca et al., 2022; Huang et al., 2022) are limited to homomorphism-count graphs with
+end-point shared NED. Hence, Subgraph GNNs can not homomorphism-count F =
+
+	
+, while
+1-ℓWL can. Based on this, we can identify pairs of graphs that 1-ℓWL can distinguish but Subgraph
+GNNs cannot. We summarize these and other implications of Theorem 2 in the following corollary.
+Corollary 2. Let r ∈N \ {0}. Then,
+i) r-ℓWL is more powerful than F-Hom-GNNs, where F = {C3, . . . , Cr+2}.
+ii) 1-ℓWL is not less powerful than Subgraph GNNs. In particular, any r-ℓWL can separate
+inﬁnitely many graphs that Subgraph GNNs fail to distinguish.
+iii) For any k > 0, 1-ℓWL is not less powerful than Subgraph k-GNNs. In particular, any r-ℓWL
+can separate inﬁnitely many graphs that Subgraph k-GNNs fail to distinguish.
+iv) r-ℓWL can subgraph-count all graphs F such that spasm(F)
+⊂
+Mr+2, where
+spasm(F) := {H ∈G | ∃surjective h ∈Hom(F, H)}. In particular, if 1 ≤r ≤4, then
+r-ℓWL can subgraph-count all paths up to length r + 3.
+A detailed explanation of Subgraph (k-)GNNs, F-Hom-GNNs, along with the proofs of Corollary 2,
+can be found in Appendix H. Finally, we note that Theorem 2 states a loose lower bound on the
+homomorphism expressivity of r-ℓWL. This observation opens the avenue for future research to
+explore tight lower bounds, or upper bounds, on the homomorphism expressivity of r-ℓWL.
+6
+Loopy Message Passing
+In this section, we build a GNN emulating r-ℓWL.
+Deﬁnition 9. For t ∈{0, . . . , T −1} and k ∈{0, . . . , r}, r-ℓMPNN applies the following message,
+update and readout functions:
+m(t+1)
+k
+(v) = f (t+1)
+k
+nn
+c(t)
+k (p) | p ∈Nk(v)
+oo
+,
+c(t+1)
+r
+(v) = g(t+1) 
+c(t)
+r (v), m(t+1)
+0
+(v), . . . , m(t+1)
+r
+(v)
+
+,
+(3)
+and ﬁnal readout layer c(T )
+r
+(G) = h
+nn
+c(T )
+r
+(v) | v ∈V (G)
+oo
+.
+In the following statement, we link the expressive power of r-ℓMPNN and r-ℓWL.
+Theorem 3. For ﬁxed t, r ≥0, t iterations of r-ℓWL are more powerful than r-ℓMPNN with t layers.
+Conversely, r-ℓMPNN is more powerful than r-ℓWL if the functions f (t), g(t) in (3) are injective.
+The previous result derives conditions under which r-ℓMPNN is as expressive as r-ℓWL. To imple-
+ment r-ℓMPNN in practice, we choose suitable neural layers for f (t)
+k , g(t), and h in Deﬁnition 9. As
+a consequence of (Xu et al., 2019, Lemma 5), the aggregation function in (3) can be written as
+f (t+1)
+k
+nn
+c(t)
+k (p) | p ∈Nk(v)
+oo
+:= f
+
+
+X
+p∈Nk(v)
+g(p)
+
+,
+6
+
+for suitable functions f, g. Since 1-WL is injective on forests (Arvind et al., 2015), hence on paths,
+and since GIN can approximate 1-WL (Xu et al., 2019), we choose f = MLP and g = GIN. Hence,
+r-ℓGIN is deﬁned as an r-ℓMPNN that updates node features via
+x(t+1)
+r
+(v) := MLP
+
+x(t)
+r (v) + (1 + ε0)
+X
+u∈N0(v)
+x(t)
+r (u) +
+r
+X
+k=1
+(1 + εk)
+X
+p∈Nk(v)
+GINk(p)
+
+. (4)
+To reduce the number of learnable parameters in (4), the GINk can be shared among all k. Nothing
+prevents from choosing a different path-processing layer; we opted for GIN because it is simple yet
+maximally expressive on paths. We refer to Figure 1 for a visual depiction of r-ℓGIN.
+Computational Complexity
+The complexity of r-ℓGIN is O(|E| + P
+v∈V (G)
+Pr
+k=1 2k|Nk(v)|).
+The former addend is the standard message complexity, while the latter arises from applying GIN to
+paths of length k ≤r. This implies that our model’s complexity scales linearly with the number of
+edges, and with the number of paths within Nk(v). The number of such paths is typically less than the
+number of edges. For example, ZINC12K has overall 598K edges while only containing 374K paths
+in Nr(v) for 1 ≤r ≤5. Hence, the runtime overhead is small in practice. Compared to 3-WLGNN
+(Dwivedi et al., 2022a), which has the same cycle-counting expressivity, our model requires ca.
+10 seconds/epoch while 3-WLGNN takes ca. 329.49 seconds/epoch on ZINC12K. Our runtime is
+comparable to that of GAT, MoNet, or GatedGCN (see Table 10 for a thorough comparison).
+Comparison with (Michel et al., 2023)
+PathNN updates node features by computing all possible
+paths starting from each node. In contrast, our approach selects paths between distinct neighbors,
+potentially resulting in fewer paths. For instance, a tree’s r-neighborhoods (r ≥1) are empty, while
+counts of paths between nodes are quadratic. Notably, Michel et al. (2023) do not explore the impact
+of increasing the path length on architecture expressiveness, a consideration we address (see, e.g.,
+Proposition 1 and Corollary 1). Another signiﬁcant contribution of our work, which we assert does
+not hold (at least not trivially) for PathNN, is the provable ability to subgraph-count cycle graphs
+(see, e.g., Theorem 1) and homomorphism-count cactus graphs (see, e.g., Theorem 2).
+7
+Experiments
+All instructions to reproduce the experiments are available on GitHub (MIT license). Additional
+information on the training and test details can be found in Appendix C.
+Expressive Power.
+We showcase the expressive power of r-ℓGIN on synthetic datasets:
+• GRAPH8C (Balcilar et al., 2021) comprises 11 117 connected non-isomorphic simple graphs
+on 8 nodes; 312 pairs are 1-WL equivalent but none is 3-WL equivalent.
+• EXP_ISO (Abboud et al., 2022) comprises 600 pairs of 1-WL equivalent graphs.
+0
+6.4 10−21
+0
+1
+2
+3
+r
+GRAPH8C
+0
+1
+0
+1
+2
+3
+r
+EXP_ISO
+Proportion of indistinguishable pairs (←)
+0 10−3 10−2 10−1
+0
+1
+2
+3
+r
+COSPECTRAL10
+010−5
+1 102
+1
+2
+3
+4
+r
+SR16622
+L1 distance (→)
+Figure 3: Indistinguishable pairs at initialization, symlog scale. For GRAPH8C and EXP_ISO,
+we report the proportion of indistinguished pairs: 2 graphs are deemed indistinguishable if the L1
+distance of their embeddings is less than 10−3. For COSPECTRAL10 and SR16622, we report the
+L1 distance between graph embeddings. We report the mean and standard deviation over 100 seeds.
+7
+
+Table 1: Num. of distinguished pairs (↑). Results from (Wang et al., 2024).
+Model
+Basic (60)
+Regular (140)
+Extension (100)
+CFI (100)
+3-WL
+60
+50
+100
+60
+PPGN
+60
+50
+100
+23
+NestedGNN
+59
+48
+59
+0
+GSN
+60
+99
+95
+0
+OSAN
+52
+41
+82
+2
+4-ℓGIN
+60
+100
+95
+2
+0 1 2 3 4 5 6
+1
+2
+1
+r
+acc.
+EXP
+CEXP
+CSL
+0 1 2 3 4 5 6
+1
+2
+1
+r
+acc.
+EXP
+CEXP
+CSL
+Figure 4: Test accuracy on synthetic classiﬁcation task: (left) shared and (right) non-shared weights.
+• COSPECTRAL10 (van Dam et al., 2003): the dataset comprises two cospectral 4-regular
+non-isomorphic graphs on 10 nodes which are 1-WL equivalent (see, e.g., Figure 8a).
+• SR16622 (Michel et al., 2023) comprises two strongly regular graphs on 16 nodes, namely
+the Shrikhande and the 4×4 rook graph, which are 3-WL equivalent (see, e.g., Figure 8b).
+The goal is to check whether the model can distinguish non-isomorphic pairs at initialization. The
+results are shown in Figure 3.
+Additionally, Table 1 shows the performance on BREC (Wang et al., 2024), which includes 400 pairs
+of non-isomorphic graphs ranging from 1-WL to 4-WL equivalent. The baselines include PPGN,
+which is 3-WL equivalent and can count up to 7-cycles and homomorphism-count all graphs of
+tree-width 2; NestedGNN which is between 1-WL and 3-WL; GSN which is more powerful than
+1-WL but whose expressive power depends on the chosen pattern.
+Finally, Figure 4 reports the performance on synthetic classiﬁcation tasks:
+• EXP, CEXP (Abboud et al., 2021) require expressive power beyond 1-WL.
+• CSL (Murphy et al., 2019) comprises 150 cycle graphs with skip links (see, e.g., Figure 8c).
+The task is to predict the length of the skip link.
+Counting Power.
+Following (B. Zhang et al., 2024), we use the SUBGRAPHCOUNT dataset
+(Chen et al., 2020) to test the ability to homomorphism- and subgraphs-count exemplary motifs.
+Table 2: Test MAE for homomorphism- and subgraph-counts. Results from (B. Zhang et al., 2024).
+hom(F, G)
+sub(F, G)
+Model
+MPNN
+0.300
+0.233
+0.254
+0.358
+0.208
+0.188
+0.146
+0.261
+0.205
+Subgraph GNN
+0.011
+0.015
+0.012
+0.010
+0.020
+0.024
+0.046
+0.007
+0.027
+Local 2-GNN
+0.008
+0.008
+0.010
+0.008
+0.011
+0.017
+0.034
+0.007
+0.016
+Local 2-FGNN
+0.003
+0.005
+0.004
+0.003
+0.004
+0.010
+0.020
+0.003
+0.010
+r-ℓGIN
+0.001
+(r=2)
+0.006
+(r=3)
+0.009
+(r=3)
+0.0005
+(r=1)
+0.0005
+(r=2)
+0.0003
+(r=3)
+0.0003
+(r=4)
+0.001
+(r=2)
+0.0004
+(r=3)
+8
+
+There is a strict hierarchy in the expressive power of the baselines: MPNN ⊑Subgraph GNN ⊑local
+2-GNN ⊑local 2-FGNN. These variants, apart from MPNNs, are more expressive than 1-WL and
+can subgraph-count up to 7-cycles.
+Real-World Datasets.
+We experimented with three benchmark datasets: ZINC250K (Irwin et al.,
+2012), ZINC12K (Dwivedi et al., 2022a), and QM9 (Wu et al., 2018) which consist of 250 000,
+12 000, and 130 831 molecular graphs, respectively. We report the mean and standard deviation over
+4 random seeds.
+Table 3: Test MAE (↓) on ZINC dataset.
+Model
+ZINC12K
+ZINC250K
+GIN
+0.163 ± 0.004
+0.088 ± 0.002
+GCN
+0.321 ± 0.009
+-
+GAT
+0.384 ± 0.007
+-
+GSN
+0.115 ± 0.012
+-
+CIN
+0.079 ± 0.006
+0.022 ± 0.002
+NestedGNN
+0.111 ± 0.003
+0.029 ± 0.001
+SUN
+0.083 ± 0.003
+-
+GNNAK+
+0.080 ± 0.001
+-
+I2-GNN
+0.083 ± 0.001
+0.023 ± 0.001
+DRFWL
+0.077 ± 0.002
+0.025 ± 0.003
+SignNet
+0.084 ± 0.004
+0.024 ± 0.003
+HIMP
+0.151 ± 0.006
+0.036 ± 0.002
+PathNN
+0.090 ± 0.004
+-
+5-ℓGIN
+0.072 ± 0.002
+0.022 ± 0.001
+For ZINC250K and ZINC12K, we selected as base-
+line models standard MPNNs (GIN, GCN, GAT),
+Subgraph GNNs (NestedGNN, GNNAK+, SUN),
+domain-agnostic GNNs fed with substructure counts
+(GSN, CIN), a GNN processing paths (PathNN), and
+expressive GNNs with provable cycle counting power
+(HIMP, SignNet, I2-GNN, DRFWL). Following the
+standard procedure, we kept the number of parame-
+ters under 500K (Dwivedi et al., 2022a) for ZINC12K.
+The results are detailed in Table 3.
+For the QM9 dataset, we followed the setup of
+(Huang et al., 2022; Zhou et al., 2023). Speciﬁcally,
+the test MAE is multiplied by the standard deviation
+of the target and divided by the corresponding con-
+version unit. The baseline results and models were
+obtained from (Zhou et al., 2023), including expres-
+sive GNNs with provable cycle counting power. We
+omit methods that use additional geometric features
+to focus on the model’s expressive power. The results
+are presented in Table 4.
+Table 4: Normalized test MAE (↓) on QM9 dataset. Top three models as 1st , 2nd , 3rd.
+Model
+Target
+1-GNN 1-2-3-GNN
+DTNN
+Deep LRP NestedGNN I2-GNN DRFWL
+5-ℓGIN
+µ
+0.493
+0.476
+0.244
+0.364
+0.428
+0.428
+0.346
+0.350 ±0.011
+α
+0.78
+0.27
+0.95
+0.298
+0.290
+0.230
+0.222
+0.217 ±0.025
+εhomo
+0.00321
+0.00337
+0.00388
+0.00254
+0.00265
+0.00261
+0.00226
+0.00205 ±0.00005
+εlumo
+0.00355
+0.00351
+0.00512
+0.00277
+0.00297
+0.00267
+0.00225
+0.00216 ±0.00004
+∆(ε)
+0.0049
+0.0048
+0.0112
+0.00353
+0.0038
+0.0038
+0.00324
+0.00321 ±0.00014
+R2
+34.1
+22.9
+17.0
+19.3
+20.5
+18.64
+15.04
+13.21 ±0.19
+ZVPE 0.00124
+0.00019
+0.00172
+0.00055
+0.0002
+0.00014
+0.00017
+0.000127 ±0.000003
+U0
+2.32
+0.0427
+2.43
+0.413
+0.295
+0.211
+0.156
+0.0418 ±0.0520
+U
+2.08
+0.111
+2.43
+0.413
+0.361
+0.206
+0.153
+0.023 ±0.023
+H
+2.23
+0.0419
+2.43
+0.413
+0.305
+0.269
+0.145
+0.0352 ±0.0304
+G
+1.94
+0.0469
+2.43
+0.413
+0.489
+0.261
+0.156
+0.0118 ±0.0015
+Cv
+0.27
+0.0944
+2.43
+0.129
+0.174
+0.0730
+0.0901
+0.0702 ±0.0024
+Discussion of Results
+The results in Figures 3 and 4 and Table 1 constitute a strong empirical
+validation of our theory: increasing r leads to more expressive r-ℓMPNN. Albeit 6-ℓWL is not less
+powerful than 3-WL (see, e.g., Section 5.2), in practice, smaller values of r can already distinguish
+pair of graphs that are 3-WL equivalent, such as the Shrikhande and the (4×4) rook graphs. In the
+BREC dataset, 4-ℓGIN distinguishes all pairs of strongly regular graphs, signiﬁcantly outperforming
+3-WL (0/50 graphs). Notably, 4-ℓGIN can already distinguish 257 out of 400 total pairs of graphs,
+surpassing other expressive GNNs like PPGN (233/400), theoretically equivalent to 3-WL, and
+NestedGNN (166/400). Refer to (Wang et al., 2024, Table 2) for detailed baseline results.
+The results in Table 2 further substantiate our theory, as r-ℓWL can effectively count cycles of length
+r+2 (see, e.g., Theorem 1).
+9
+
+On molecular datasets, we observe that r-ℓGIN, although designed for subgraph-counting cycles and
+homomorphism-counting cactus graphs, is highly competitive. Notably, we outperform the baseline
+0-ℓGIN by 226% on ZINC12K and 400% on ZINC250K and surpass domain-agnostic methods such
+as CIN or GSN. We conjecture that this is attributed to straightforward optimization, driven by the
+simplicity of the architecture (see, e.g., Figure 1) and its inductive bias towards counting cycles.
+Limitations
+Path calculations can become infeasible for dense graphs due to O(N dr) complexity,
+where N is the number of nodes and d is the average degree. However, for sparse graphs, the runtime
+remains reasonably low. For instance, preprocessing ZINC12K for r = 5 takes just over a minute.
+8
+Conclusion
+In this paper,we introduce a novel hierarchy of color reﬁnement algorithms, denoted as r-ℓWL, which
+incorporates an augmented neighborhood mechanism accounting for nearby paths. We establish
+connections between r-ℓWL and the classical k-WL. We construct a GNN (r-ℓMPNN) designed to
+emulate and match the expressive powerof r-ℓWL. Theoretical and empirical evidence support the
+claim that r-ℓMPNN can effectively subgraph-count cycles and homomorphism-count cactus graphs.
+Future research could focus on precisely characterizing the expressivity of r-ℓWL tests by iden-
+tifying the maximal class of graphs that r-ℓWL can homomorphism-count. This would facilitate
+comparisons by constructing pairs of graphs that r-ℓWL cannot separate, but other WL variants can.
+Another promising direction involves exploring the generalization capabilities of GNNs with prov-
+able homomorphism-counting properties. The ability to homomorphism-count certain motifs could
+provide a mathematical framework to support the intuitive notion that the capacity to count relevant
+features may improve generalization. We observed this improved generalization experimentally in
+our ablation study on ZINC12K (see, e.g., Table 8).
+Acknowledgements
+R.P. is funded by the Munich Center for Machine Learning (MCML).
+S.M. is funded by the NSF-Simons Research Collaboration on the Mathematical and Scientiﬁc
+Foundations of Deep Learning (MoDL) (NSF DMS 2031985) and DFG SPP 1798, KU 1446/27-2.
+P.W. is funded by the Vienna Science and Technology Fund (WWTF) project StruDL (ICT22-059).
+G.K. acknowledges partial support by the Konrad Zuse School of Excellence in Reliable AI (DAAD),
+the Munich Center for Machine Learning (BMBF) as well as the German Research Foundation
+under Grants DFG-SPP-2298, KU 1446/31-1 and KU 1446/32-1. Furthermore, G.K. acknowledges
+support from the Bavarian State Ministry for Science and the Arts as well as by the Hightech Agenda
+Bavaria.
+References
+Abboud, R., Ceylan, I. I., Grohe, M., and Lukasiewicz, T. (2021). “The Surprising Power of Graph
+Neural Networks with Random Node Initialization”. In: International Joint Conference on Artiﬁcial
+Intelligence (IJCAI), pp. 2112–2118.
+Abboud, R., Dimitrov, R., and Ceylan, I. I. (2022). “Shortest Path Networks for Graph Property
+Prediction”. In: Learning on Graphs Conference (LoG), 5:1–5:25.
+Arvind, V., Fuhlbrück, F., Köbler, J., and Verbitsky, O. (2020). “On Weisfeiler-Leman Invariance:
+Subgraph Counts and Related Graph Properties”. In: Journal of Computer and System Sciences
+113, pp. 42–59.
+Arvind, V., Köbler, J., Rattan, G., and Verbitsky, O. (2015). “On the Power of Color Reﬁnement”. In:
+International Symposium Fundamentals of Computation Theory (FCT). Vol. 9210. Lecture Notes
+in Computer Science, pp. 339–350.
+Balcilar, M., Heroux, P., Gauzere, B., Vasseur, P., Adam, S., and Honeine, P. (2021). “Breaking the
+Limits of Message Passing Graph Neural Networks”. In: International Conference on Machine
+Learning (ICML), pp. 599–608.
+10
+
+Barceló, P., Geerts, F., Reutter, J., and Ryschkov, M. (2021). “Graph neural networks with local graph
+parameters”. In: Advances in Neural Information Processing Systems (NeurIPS), pp. 25280–25293.
+Bevilacqua, B., Frasca, F., Lim, D., Srinivasan, B., Cai, C., Balamurugan, G., Bronstein, M. M., and
+Maron, H. (2021). “Equivariant Subgraph Aggregation Networks”. In: International Conference
+on Learning Representations (ICLR).
+Bodnar, C., Frasca, F., Otter, N., Wang, Y., Liò, P., Montufar, G. F., and Bronstein, M. (2021). “Weis-
+feiler and Lehman Go Cellular: CW Networks”. In: Advances in Neural Information Processing
+Systems (NeurIPS), pp. 2625–2640.
+Bouritsas, G., Frasca, F., Zafeiriou, S., and Bronstein, M. M. (2023). “Improving Graph Neural
+Network Expressivity via Subgraph Isomorphism Counting”. In: IEEE Transactions on Pattern
+Analysis and Machine Intelligence 45.1, pp. 657–668.
+Bresson, X. and Laurent, T. (2017). “Residual gated graph convnets”. In: arXiv preprint
+arXiv:1711.07553.
+Bronstein, M. M., Bruna, J., LeCun, Y., Szlam, A., and Vandergheynst, P. (2017). “Geometric Deep
+Learning: Going beyond Euclidean Data”. In: IEEE Signal Processing Magazine 34.4, pp. 18–42.
+Cantwell, G. T. and Newman, M. E. J. (2019). “Message Passing on Networks with Loops”. In:
+Proceedings of the National Academy of Sciences 116.47, pp. 23398–23403.
+Chen, Z., Chen, L., Villar, S., and Bruna, J. (2020). “Can Graph Neural Networks Count Substruc-
+tures?” In: Advances in Neural Information Processing Systems (NeurIPS), pp. 10383–10395.
+Chen, Z., Villar, S., Chen, L., and Bruna, J. (2019). “On the equivalence between graph isomorphism
+testing and function approximation with gnns”. In: Advances in Neural Information Processing
+Systems (NeurIPS), pp. 15868–15876.
+Colbourn, C. J. and Booth, K. S. (1981). “Linear Time Automorphism Algorithms for Trees, Interval
+Graphs, and Planar Graphs”. In: SIAM Journal on Computing 10.1, pp. 203–225.
+Curticapean, R., Dell, H., and Marx, D. (2017). “Homomorphisms are a good basis for counting
+small subgraphs”. In: ACM SIGACT Symposium on Theory of Computing (STOC), pp. 210–223.
+Cybenko, G. (1989). “Approximation by superpositions of a sigmoidal function”. In: Mathematics of
+control, signals and systems 2.4, pp. 303–314.
+Dasoulas, G., Santos, L. D., Scaman, K., and Virmaux, A. (Jan. 7, 2021). “Coloring Graph Neural
+Networks for Node Disambiguation”. In: International Joint Conference on Artiﬁcial Intelligence
+(IJCAI), pp. 2126–2132.
+Dell, H., Grohe, M., and Rattan, G. (2018). “Lovász Meets Weisfeiler and Leman”. In: International
+Colloquium on Automata, Languages, and Programming (ICALP). Vol. 107. LIPIcs, 40:1–40:14.
+Deshpande, M., Kuramochi, M., and Karypis, G. (2002). “Automated Approaches for Classifying
+Structures”. In: ACM SIGKDD Workshop on Data Mining in Bioinformatics (BIOKDD), pp. 11–18.
+Dwivedi, V. P., Joshi, C. K., Luu, A. T., Laurent, T., Bengio, Y., and Bresson, X. (2022a). “Bench-
+marking Graph Neural Networks”. In: Journal of Machine Learning Research 24.43, pp. 1–48.
+Dwivedi, V. P., Rampáek, L., Galkin, M., Parviz, A., Wolf, G., Luu, A. T., and Beaini, D. (2022b).
+“Long Range Graph Benchmark”. In: Advances in Neural Information Processing Systems. Ed. by
+S. Koyejo, S. Mohamed, A. Agarwal, D. Belgrave, K. Cho, and A. Oh. Vol. 35. Curran Associates,
+Inc., pp. 22326–22340.
+Fan, W., Ma, Y., Li, Q., He, Y., Zhao, Y. E., Tang, J., and Yin, D. (2019). “Graph Neural Networks
+for Social Recommendation”. In: The World Wide Web Conference (WWW), pp. 417–426.
+Feng, J., Chen, Y., Li, F., Sarkar, A., and Zhang, M. (2022). “How Powerful are K-hop Message Pass-
+ing Graph Neural Networks”. In: Advances in Neural Information Processing Systems (NeurIPS).
+Fey, M., Yuen, J. G., and Weichert, F. (2020). “Hierarchical Inter-Message Passing for Learning on
+Molecular Graphs”. In: ICML Graph Representation Learning and Beyond (GRL+) Workhop.
+Fey, M. and Lenssen, J. E. (2019). “Fast Graph Representation Learning with PyTorch Geometric”.
+In: ICLR Workshop on Representation Learning on Graphs and Manifolds.
+Frasca, F., Bevilacqua, B., Bronstein, M., and Maron, H. (2022). “Understanding and Extending
+Subgraph GNNs by Rethinking Their Symmetries”. In: Advances in Neural Information Processing
+Systems (NeurIPS), pp. 31376–31390.
+Fürer, M. (2001). “Weisfeiler-Lehman Reﬁnement Requires at Least a Linear Number of Iterations”.
+In: Automata, Languages and Programming. Ed. by F. Orejas, P. G. Spirakis, and J. van Leeuwen,
+pp. 322–333.
+Geerts, F. and Reutter, J. L. (2022). “Expressiveness and Approximation Properties of Graph Neural
+Networks”. In: International Conference on Learning Representations (ICLR).
+11
+
+Gilmer, J., Schoenholz, S. S., Riley, P. F., Vinyals, O., and Dahl, G. E. (2017). “Neural Message
+Passing for Quantum Chemistry”. In: International Conference on Machine Learning (ICML),
+pp. 1263–1272.
+Graziani, C., Drucks, T., Jogl, F., Bianchini, M., scarselli, franco, and Gärtner, T. (2024). “The
+Expressive Power of Path-Based Graph Neural Networks”. In: Forty-ﬁrst International Conference
+on Machine Learning.
+Hagberg, A. A., Schult, D. A., Swart, P., and Hagberg, J. (2008). “Exploring Network Structure,
+Dynamics, and Function using NetworkX”. In: Python in Science Conference (SciPy),
+Harary, F. and Uhlenbeck, G. E. (1953). “On the Number of Husimi Trees, I”. In: Proceedings of the
+National Academy of Sciences of the United States of America 39.4, pp. 315–322.
+Hornik, K., Stinchcombe, M., and White, H. (1989). “Multilayer feedforward networks are universal
+approximators”. In: Neural networks 2.5, pp. 359–366.
+Hu*, W., Liu*, B., Gomes, J., Zitnik, M., Liang, P., Pande, V., and Leskovec, J. (2020a). “Strategies for
+Pre-training Graph Neural Networks”. In: International Conference on Learning Representations
+(ICLR).
+– (2020b). “Strategies for Pre-training Graph Neural Networks”. In: International Conference on
+Learning Representations.
+Huang, Y., Peng, X., Ma, J., and Zhang, M. (2022). “Boosting the Cycle Counting Power of Graph
+Neural Networks with I2-GNNs”. In: International Conference on Learning Representations
+(ICLR).
+Ioffe, S. and Szegedy, C. (2015). “Batch Normalization: Accelerating Deep Network Training by
+Reducing Internal Covariate Shift”. In: International Conference on Machine Learning, (ICML).
+Vol. 37, pp. 448–456.
+Irwin, J. J., Sterling, T., Mysinger, M. M., Bolstad, E. S., and Coleman, R. G. (2012). “ZINC: A Free
+Tool to Discover Chemistry for Biology”. In: Journal of Chemical Information and Modeling 52,
+pp. 1757–1768.
+Jin, E., Bronstein, M., Ceylan, I. I., and Lanzinger, M. (2024). “Homomorphism Counts for Graph
+Neural Networks: All About That Basis”. In: International Conference on Machine Learning
+(ICML).
+Keriven, N. and Peyré, G. (2019). “Universal invariant and equivariant graph neural networks”. In:
+Advances in Neural Information Processing Systems (NeurIPS), pp. 7090–7099.
+Kingma, D. P. and Ba, J. (2015). “Adam: A Method for Stochastic Optimization”. In: International
+Conference on Learning Representations (ICLR).
+Kipf, T. N. and Welling, M. (2017). “Semi-Supervised Classiﬁcation with Graph Convolutional
+Networks”. In: International Conference on Learning Representations (ICLR).
+Kirkley, A., Cantwell, G. T., and Newman, M. E. J. (2021). “Belief Propagation for Networks with
+Loops”. In: Science Advances 7.17, eabf1211.
+Korte, B. and Vygen, J. (2018). Combinatorial Optimization. Springer.
+Koyutürk, M., Grama, A. Y., and Szpankowski, W. (2004). “An efﬁcient algorithm for detecting
+frequent subgraphs in biological networks”. In: Bioinformatics 20 Suppl 1, pp. i200–7.
+Lanzinger, M. and Barcelo, P. (2024). “On the Power of the Weisfeiler-Leman Test for Graph Motif
+Parameters”. In: International Conference on Learning Representations (ICLR).
+Lim, D., Robinson, J. D., Zhao, L., Smidt, T., Sra, S., Maron, H., and Jegelka, S. (2022). “Sign
+and Basis Invariant Networks for Spectral Graph Representation Learning”. In: International
+Conference on Learning Representations (ICLR).
+Lovász, L. M. (1967). “Operations with structures”. In: Acta Mathematica Academiae Scientiarum
+Hungarica 18, pp. 321–328.
+Maron, H., Ben-Hamu, H., Serviansky, H., and Lipman, Y. (2019a). “Provably Powerful Graph
+Networks”. In: Advances in Neural Information Processing Systems (NeurIPS), pp. 2153–2164.
+Maron, H., Ben-Hamu, H., Shamir, N., and Lipman, Y. (2018). “Invariant and Equivariant Graph
+Networks”. In: International Conference on Learning Representations (ICLR).
+Maron, H., Fetaya, E., Segol, N., and Lipman, Y. (2019b). “On the Universality of Invariant Networks”.
+In: International Conference on Machine Learning (ICML), pp. 4363–4371.
+Maskey, S., Parviz, A., Thiessen, M., Stärk, H., Sadikaj, Y., and Maron, H. (2022). “Generalized
+Laplacian Positional Encoding for Graph Representation Learning”. In: NeurIPS 2022 Workshop
+on Symmetry and Geometry in Neural Representations.
+Michel, G., Nikolentzos, G., Lutzeyer, J. F., and Vazirgiannis, M. (2023). “Path Neural Networks:
+Expressive and Accurate Graph Neural Networks”. In: International Conference on Machine
+Learning (ICML), pp. 24737–24755.
+12
+
+Monti, F., Boscaini, D., Masci, J., Rodola, E., Svoboda, J., and Bronstein, M. M. (2017). “Geometric
+deep learning on graphs and manifolds using mixture model cnns”. In: IEEE Conference on
+Computer Vision and Pattern Recognition (CVPR), pp. 5115–5124.
+Monti, F., Frasca, F., Eynard, D., Mannion, D., and Bronstein, M. M. (2019). Fake News Detection
+on Social Media using Geometric Deep Learning. arXiv: 1902.06673.
+Morris, C., Lipman, Y., Maron, H., Rieck, B., Kriege, N. M., Grohe, M., Fey, M., and Borgwardt, K.
+(2023). “Weisfeiler and Leman Go Machine Learning: The Story so Far”. In: Journal of Machine
+Learning Research 24, 333:1–333:59.
+Morris, C., Rattan, G., and Mutzel, P. (2020). “Weisfeiler and Leman go sparse: Towards scal-
+able higher-order graph embeddings”. In: Advances in Neural Information Processing Systems
+(NeurIPS), pp. 21824–21840.
+Morris, C., Ritzert, M., Fey, M., Hamilton, W. L., Lenssen, J. E., Rattan, G., and Grohe, M. (2019).
+“Weisfeiler and Leman Go Neural: Higher-Order Graph Neural Networks”. In: AAAI Conference
+on Artiﬁcial Intelligence (AAAI), pp. 4602–4609.
+Murphy, R., Srinivasan, B., Rao, V., and Ribeiro, B. (2019). “Relational Pooling for Graph Represen-
+tations”. In: International Conference on Machine Learning (ICML), pp. 4663–4673.
+Neuen, D. (2024). “Homomorphism-Distinguishing Closedness for Graphs of Bounded Tree-Width”.
+In: International Symposium on Theoretical Aspects of Computer Science (STACS), 53:1–53:12.
+Nguyen, H. and Maehara, T. (2020). “Graph Homomorphism Convolution”. In: International Confer-
+ence on Machine Learning (ICML), pp. 7306–7316.
+Nishi, T. and Chua, L. (1986). “Uniqueness of solution for nonlinear resistive circuits containing
+CCCS’s or VCVS’s whose controlling coefﬁcients are ﬁnite”. In: IEEE Transactions on Circuits
+and Systems 33.4, pp. 381–397.
+Paszke, A. et al. (2019). “PyTorch: An Imperative Style, High-Performance Deep Learning Library”.
+In: Advances in Neural Information Processing Systems (NeurIPS), pp. 8024–8035.
+Paten, B., Diekhans, M., Earl, D., John, J. S., Ma, J., Suh, B., and Haussler, D. (2011). “Cactus graphs
+for genome comparisons”. In: Journal of Computational Biology 18.3, pp. 469–481.
+Qian, C., Rattan, G., Geerts, F., Niepert, M., and Morris, C. (2022). “Ordered subgraph aggregation
+networks”. In: Advances in Neural Information Processing Systems (NeurIPS), pp. 21030–21045.
+Sato, R., Yamada, M., and Kashima, H. (2021). “Random Features Strengthen Graph Neural Net-
+works”. In: SIAM International Conference on Data Mining (SDM), pp. 333–341.
+Scarselli, F., Gori, M., Tsoi, A. C., Hagenbuchner, M., and Monfardini, G. (2009). “The Graph Neural
+Network Model”. In: IEEE Transactions on Neural Networks 20.1, pp. 61–80.
+Stokes, J. M. et al. (2020). “A deep learning approach to antibiotic discovery”. In: Cell 180.4, 688–
+702.e13.
+Tinhofer, G. (1986). “Graph isomorphism and theorems of Birkhoff type”. In: Computing 36, pp. 285–
+300.
+– (1991). “A note on compact graphs”. In: Discrete Applied Mathematics 30, pp. 253–264.
+van Dam, E. R. and Haemers, W. H. (2003). “Which Graphs Are Determined by Their Spectrum?”
+In: Linear Algebra and its Applications. Vol. 373. Combinatorial Matrix Theory Conference,
+pp. 241–272.
+Velickovic, P., Cucurull, G., Casanova, A., Romero, A., Liò, P., and Bengio, Y. (2018). “Graph
+Attention Networks”. In: International Conference on Learning Representations (ICLR).
+Vignac, C., Loukas, A., and Frossard, P. (2020). “Building powerful and equivariant graph neural
+networks with structural message-passing”. In: Advances in Neural Information Processing Systems
+(NeurIPS), pp. 14143–14155.
+Wang, Y. and Zhang, M. (2024). “An Empirical Study of Realized GNN Expressiveness”. In:
+International Conference on Machine Learning (ICML).
+Weisfeiler, B. and Lehman., A. (1968). “The reduction of a graph to canonical form and the algebra
+which appears therein”. In: Nauchno-Technicheskaya Informatsia 9.
+Welke, P., Thiessen, M., Jogl, F., and Gärtner, T. (2023). “Expectation-Complete Graph Repre-
+sentations with Homomorphisms”. In: International Conference on Machine Learning (ICML),
+pp. 36910–36925.
+Wu, Z., Ramsundar, B., Feinberg, E. N., Gomes, J., Geniesse, C., Pappu, A. S., Leswing, K., and Pande,
+V. (2018). MoleculeNet: A Benchmark for Molecular Machine Learning. arXiv: 1703.00564.
+Xu, K., Hu, W., Leskovec, J., and Jegelka, S. (2019). “How Powerful Are Graph Neural Networks?”
+In: International Conference on Learning Representations (ICLR).
+You, J., Gomes-Selman, J. M., Ying, R., and Leskovec, J. (2021). “Identity-Aware Graph Neural
+Networks”. In: AAAI Conference on Artiﬁcial Intelligence (AAAI), pp. 10737–10745.
+13
+
+Zhang, B., Gai, J., Du, Y., Ye, Q., He, D., and Wang, L. (2024). “Beyond Weisfeiler-Lehman: A
+Quantitative Framework for GNN Expressiveness”. In: International Conference on Learning
+Representations (ICLR).
+Zhang, M. and Li, P. (2021). “Nested Graph Neural Networks”. In: Advances in Neural Information
+Processing Systems (NeurIPS), pp. 15734–15747.
+Zhao, L., Jin, W., Akoglu, L., and Shah, N. (2022). “From Stars to Subgraphs: Uplifting Any GNN
+with Local Structure Awareness”. In: International Conference on Learning Representations
+(ICLR).
+Zhou, J., Feng, J., Wang, X., and Zhang, M. (2023). “Distance-Restricted Folklore Weisfeiler-Leman
+GNNs with Provable Cycle Counting Power”. In: Advances in Neural Information Processing
+Systems (NeurIPS).
+14
+
+Appendix
+Table of Contents
+A Additional Figures
+16
+B Additional Notions
+18
+B.1
+Higher-Order Weisfeiler-Leman Tests . . . . . . . . . . . . . . . . . . . . . . .
+18
+C Experimental Details
+19
+C.1
+Synthetic Datasets . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+20
+C.2
+Real-World Datasets . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+20
+D Preparation for Proofs
+23
+E Appendix for Section 5.1
+23
+F
+Appendix for Section 5.2
+24
+G Appendix on Homomorphism Counting and Section 5.3
+25
+G.1 Tree Decomposition Preliminaries . . . . . . . . . . . . . . . . . . . . . . . . .
+26
+G.2
+Cactus Graphs and their Canonical Tree Decomposition
+. . . . . . . . . . . . .
+26
+G.3 Alternative r-ℓWL . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+29
+G.4 The Unfolding Tree of r-ℓWL . . . . . . . . . . . . . . . . . . . . . . . . . . .
+30
+H Implications of Theorem 2
+40
+H.1 Appendix on F-Hom-GNNs and Proof of Corollary 2 i) . . . . . . . . . . . . .
+40
+H.2 Appendix on Subgraph GNNs and Proof of Corollary 2 ii) . . . . . . . . . . . .
+41
+H.3 Appendix on Subgraph k-GNNs and Proof of Corollary 2 iii) . . . . . . . . . . .
+42
+H.4
+Proof of Corollary 2 iv) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+43
+I
+Appendix for Section 6
+43
+15
+
+A
+Additional Figures
+Homomorphism
+Subgraph
+Isomorphism
+Bijective
+Homomorphism
+Isomorphism
+Figure 5: Examples of non-injective homomorphism (row 1), subgraph isomorphism (row 2), bijective
+homomorphism with non-homomorphic inverse (row 3), and isomorphism (row 4). For better clarity,
+the mappings h : V (F) →V (G) are visually represented with colors, where F is consistently on the
+left, and G is on the right in each row.
+v
+v
+N0(v)
+N1(v)
+(a) r = 0
+v
+v
+N0(v)
+N2(v)
+(b) r = 1
+Figure 6: Example of two non-isomorphic graphs that are r-ℓWL equivalent but not (r+1)-ℓWL
+equivalent: a chordal cycle (left) and a cactus graph (right).
+16
+
+5
+6
+4
+3
+2
+1
+(a) Input graph F.
+6, {4, 5}
+4, {6, 3}
+3, {2, 4}
+2, {1, 3}
+1, {2, 3}
+3, {1, 4}
+4, {5, 3}
+5, {4, 6}
+3, {1, 2}
+4, ∅
+3, ∅
+4, {5, 6}
+6, ∅
+5, ∅
+1, ∅
+2, ∅
+(b) Fürer graph G(F): hom(F, G(F)) = 68.
+6, {4, 5}
+4, {6, 3}
+3, {2, 4}
+2, {1, 3}
+1, {2, 3}
+3, {1, 4}
+4, {5, 3}
+5, {4, 6}
+3, {1, 2}
+4, ∅
+3, ∅
+4, {5, 6}
+6, ∅
+5, ∅
+1, ∅
+2, ∅
+(c) Twisted Fürer graph H(F): hom(F, H(F)) = 34.
+Figure 7: Example of graphs that Subgraph GNNs cannot separate but 1-ℓWL can: Subgraph GNNs
+cannot separate G(F) and H(F). However, since hom(F, G(F)) ̸= hom(F, H(F)) and F is a
+cactus graph, 1-ℓWL can separate G(F) and H(F) by Theorem 2.
+17
+
+v
+v
+(a) COSPECTRAL10.
+v
+v
+(b) SR16622.
+v
+v
+(c) CSL example, skip length 2 (left) and 3 (right).
+Figure 8: Some synthetic datasets. The dotted lines are the common edges. The orange edges
+identiﬁes N1(v).
+B
+Additional Notions
+B.1
+Higher-Order Weisfeiler-Leman Tests
+It is possible to uplift the expressive power of WL by considering higher-order interactions. The
+simplest higher-order variant of WL is the k-dimensional Weisfeiler-Leman test, denoted by k-WL.
+Given a graph G with nodes V (G) and edges E(G), the algorithm generates a new graph H where
+each node is a k-tuple of elements of V (G)
+V (H) =
+n
+v = {vi}k
+i=1 | vi ∈V (G)
+o
+= V (G)k,
+and edges E(H) are built among those k-tuples that differ in one entry only
+E(H) = {{v, u} | dH(v, u) = 1 , u, v ∈V (H)}
+where dH is the Hamming distance. The algorithm assigns to each node v ∈V (H) an initial color
+depending on the isomorphic type of the induced subgraph G[v]. The color reﬁnements scheme is
+18
+
+exactly (1) applied to H. While H can be generated by a simple algorithm, the approach quickly
+becomes impractical as the number of nodes and edges grows exponentially in k.
+(a) Input graphs.
+(b) 1-WL after one iteration.
+(c) 3-WL at initialization.
+(d) 1-ℓWL after one iteration.
+Figure 9: The input graphs cannot be distinguished by 1-WL, since the color distribution after
+convergence of the algorithm is equal. 3-WL can distinguish them at the cost of creating new dense
+graphs. Our proposed 1-ℓWL can distinguish the two graphs heeding the original graph sparsity.
+C
+Experimental Details
+Our model is implemented in PyTorch (BSD-3 license) (Paszke et al., 2019), using PyTorch
+Geometric (MIT license) (Fey et al., 2019). The r-neighborhoods are computed with NetworkX
+(Creative Commons Zero v1.0 Universal) (Hagberg et al., 2008) as preprocessing. Hyperparameters
+19
+
+on real-world datasets were tuned using grid search; for synthetic experiments, we ﬁxed one conﬁgu-
+ration of hyperparameters. All experiments were run on an internal cluster with Intel Xeon CPUs (28
+cores, 192GB RAM) and GeForce RTX 3090 Ti GPUs (4 units, 24GB memory each), as well as Intel
+Xeon CPUs (32 cores, 192GB RAM) and NVIDIA RTX A6000 GPUs (3 units, 48GB memory each).
+All models are trained with Adam optimizer (Kingma et al., 2015).
+C.1
+Synthetic Datasets
+The SR16622 dataset is retrieved from the ofﬁcial PATHNN repository (MIT license) (Michel et al.,
+2023). The GRAPH8C dataset is downloaded from Australian National University webpage (Creative
+Commons Attribution 4.0 International (CC BY 4.0) license). The EXP, EXP_ISO, and CEXP
+datasets are downloaded from GNN-RNI ofﬁcial repository (GPL-3.0 license) (Abboud et al., 2021),
+while the corresponding splits are generated via Stratiﬁed 5-fold cross-validation. The CSL dataset
+is provided by torch_geometric, while the corresponding splits are taken from PathNN ofﬁcial
+repository. The SUBGRAPHCOUNT dataset is taken from the ofﬁcial repository (MIT license)
+of (Zhao et al., 2022). The BREC dataset is downloaded from its ofﬁcial repository (MIT license)
+(Wang et al., 2024). The conﬁguration of hyperparameters can be found in Table 5. For the synthetic
+datasets, we ﬁxed one conﬁguration and studied the effect of increasing r on the expressive and
+counting power of the architecture.
+For the SR16622, GRAPH8C, EXP_ISO, and COSPECTRAL10 datasets, we report the mean and
+standard deviation over 100 random seeds. For the EXP, CEXP, and CSL datasets, we report the
+mean and standard deviation of 5-fold cross-validation. For BREC, we follow the original setup
+and perform an α-level Hotellings T-square test; see (Wang et al., 2024) for more details. For the
+SUBGRAPHCOUNT dataset, we report the mean and standard deviation over 4 random seeds, using
+the original splits from (Zhao et al., 2022).
+Table 5: Hyperparameter conﬁguration for synthetic experiments.
+COSPECTRA10
+GRAPH8C
+SR16622
+EXP_ISO
+EXP
+CEXP
+CSL
+SUBGRAPHCOUNT
+BREC
+Epochs
+-
+-
+-
+-
+103
+103
+103
+1.2 103
+40
+Learning Rate
+-
+-
+-
+-
+10−3
+10−3
+10−3
+10−3
+10−4
+Early Stopping
+-
+-
+-
+-
+lr < 10−5
+lr < 10−5
+lr < 10−5
+-
+lr < 10−5
+Scheduler
+-
+-
+-
+-
+{50, 0.5}
+{50, 0.5}
+{50, 0.5}
+{10, 0.9}
+{50, 0.5}
+Hidden Size
+64
+64
+64
+64
+64
+64
+64
+64
+32
+Num. Layers
+3
+3
+3
+3
+3
+3
+3
+5
+5
+Num. Encoder Layers
+2
+2
+2
+2
+2
+2
+2
+2
+2
+Num. Decoder Layers
+2
+2
+2
+2
+2
+2
+2
+2
+2
+Batch Size
+64
+64
+64
+64
+64
+64
+64
+128
+64
+Dropout
+0
+0
+0
+0
+0
+0
+0
+0
+0
+Readout
+sum
+sum
+sum
+sum
+sum
+sum
+sum
+sum
+sum
+C.2
+Real-World Datasets
+All real-world datasets are provided by torch_geometric. The splits for both ZINC datasets are
+also provided by torch_geometric. For QM9, we follow the set-up of (Zhou et al., 2023) and use
+random 80/10/10 splits. Details for the datasets are provided in Table 6.
+Hyperparameters were tuned using grid search. For ZINC12K, the grid was deﬁned by Hidden Size
+∈{64, 128} and Num. Layers ∈{3, 4, 5}. For ZINC250K, the grid was deﬁned by Hidden Size
+∈{128, 256} and Num. Layers ∈{4}. For the QM9 tasks, the grid was deﬁned by Hidden Size
+∈{64, 128} and Num. Layers ∈{3, 4, 5}. For the QM9 tasks, we followed the training set-up of
+(Zhou et al., 2023), training for 400 epochs with a ReduceLROnPlateau scheduler, reducing the
+learning rate by a factor of 0.9 if the validation metric did not decrease for 10 epochs. The exact
+hyperparameters are given in Table 7.
+20
+
+All real-world datasets come with edge features. We use an encoder layer, followed by a linear
+layer to encode node, edge features, and atomic types before passing them to the r-ℓGIN. Within the
+r-ℓGIN layers, we process the edge features via a 2-layered learnable MLP, and replace the GIN in
+(4) by GINE layers (Hu* et al., 2020a). After t rounds of r-ℓGIN layer, we apply a two-layered MLP
+as decoder layer. In all experiments, BatchNorm1D (Ioffe et al., 2015) is used in the MLP layers. We
+refer to Figure 1 for a depiction of the architecture.
+Table 6: Statistics of real-world datasets.
+Dataset
+Number of graphs
+Average number of nodes
+Average number of edges
+QM9
+130 831
+18.0
+18.7
+ZINC12K
+12 000
+23.2
+24.9
+ZINC250K
+249 456
+23.2
+24.9
+Table 7: Hyperparameters conﬁguration for real-world experiments.
+ZINC12K
+ZINC250K
+QM9 (µ)
+QM9 (α)
+QM9 (εhomo)
+Epochs
+1000
+2000
+400
+400
+400
+Learning Rate
+0.001
+0.001
+0.001
+0.001
+0.001
+Early Stopping
+lr < 10−5
+lr < 10−6
+lr < 10−5
+lr < 10−5
+lr < 10−5
+Scheduler
+{50, 0.5}
+{50, 0.5}
+{10, 0.9}
+{10, 0.9}
+{10, 0.9}
+r
+5
+5
+5
+5
+5
+Hidden Size
+64
+256
+64
+64
+64
+Depth
+3
+4
+4
+5
+5
+Batch Size
+64
+128
+64
+64
+64
+Dropout
+0
+0
+0
+0
+0
+Readout
+sum
+sum
+sum
+sum
+sum
+# Parameters
+452 633
+2 379 041
+418 481
+519 677
+519 677
+Preprocessing Time [sec]
+77.4
+1278.5
+427.5
+425.9
+517.4
+Run Time per Seed [h]
+2.8
+45.6
+13.6
+15.9
+21.1
+Table 8: Ablation study on the effect of r in r-ℓGIN, ZINC12K.
+MAE (↓)
+Model
+Train
+Test
+0-ℓGIN
+0.060 ± 0.009
+0.209 ± 0.007
+1-ℓGIN
+0.060 ± 0.012
+0.201 ± 0.004
+2-ℓGIN
+0.068 ± 0.011
+0.198 ± 0.008
+3-ℓGIN
+0.056 ± 0.013
+0.184 ± 0.007
+4-ℓGIN
+0.0203 ± 0.0002
+0.077 ± 0.001
+5-ℓGIN
+0.022 ± 0.004
+0.072 ± 0.002
+6-ℓGIN
+0.028 ± 0.000
+0.077 ± 0.000
+21
+
+Table 9: Test metrics on long-range graph benchmark datasets (Dwivedi et al., 2022b). The baseline
+results are obtained from (Dwivedi et al., 2022b, Table 4). Our method is able to enhance performance
+over standard baselines.
+PEPTIDES
+Model
+STRUCT (MAE ↓)
+FUNC (AP ↑)
+GCN
+0.3496 ± 0.0013
+59.30 ± 0.23
+GINE
+0.3496 ± 0.0013
+59.30 ± 0.23
+GatedGCN
+0.3420 ± 0.0013
+58.64 ± 0.77
+7-ℓGIN
+0.2513 ± 0.0021
+65.70 ± 0.60
+Table 10: Empirical time complexity for QM9 dataset; results from (Zhou et al., 2023). In parenthesis
+the size of the dataset after the computation of r-neighborhoods.
+Model
+Memory usage [GB]
+Preprocessing [sec]
+Training [sec/epoch]
+MPNN
+2.28
+64
+45.3
+NestedGNN
+13.72
+2 354
+107.8
+I2-GNN
+19.69
+5 287
+209.9
+2-DRFWL
+2.31
+430
+141.9
+0-ℓGIN
+0.02 (0.39)
+191
+44.7
+1-ℓGIN
+0.03 (0.48)
+370
+66.4
+2-ℓGIN
+0.05 (0.57)
+388
+84.0
+3-ℓGIN
+0.07 (0.66)
+408
+85.2
+4-ℓGIN
+0.10 (0.82)
+427
+96.9
+5-ℓGIN
+0.12 (0.91)
+444
+130.6
+22
+
+D
+Preparation for Proofs
+We begin by recalling some core concepts that are relevant for Section 5 and the proofs therein.
+Deﬁnition 10. A node invariant ζ(·) is a mapping that assigns to each graph G ∈G a function
+ζG : V (G) →P, which satisﬁes
+∀v ∈V (G), ζG(v) = ζH(h(v)),
+where H is any graph isomorphic to G and h is the corresponding isomorphism from H to G.
+The following deﬁnition enables us to compare the expressive power of different node invariants.
+Deﬁnition 11 (Node Invariant Reﬁnement). Given two node invariants γ and ζ. We say that ζ reﬁnes
+γ if for every ﬁxed graph G and nodes u, v ∈V (G), it holds ζG(u) = ζG(v) ⇒γG(u) = γG(v).
+We write ζ ⊑γ.
+We emphasize that every node invariant ζ induces a graph invariant A[γ] by collecting the multiset,
+i.e., G 7→{{ζG(v)}}v∈V (G). We denote the induced graph invariant of a node invariant γ as A[γ].
+The following lemma establishes a connection between the expressive power of two node invariants
+(see Deﬁnition 11) and that of their induced graph invariants (see Deﬁnition 3).
+Lemma 1. Let ζ, γ be node invariant. If ζ ⊑γ, then A[ζ] is more powerful than A[γ].
+Proof. Let G, H be two graphs, and let P be the underlying palette of ζ, γ. Consider the function
+φ : P −→P, ζ(u) 7→γ(u) ∀u ∈V (G) ∪V (H).
+As a consequence of ζ ⊑γ, φ is well-deﬁned, since
+ζ(u) = ζ(v) =⇒(φ ◦ζ) (u) = γ(u) = γ(v) = (φ ◦ζ) (v).
+Assume that A[ζ](G) = A[ζ](H), i.e,
+{{ζ(u) | u ∈V (G)}} = {{ζ(v) | v ∈V (H)}} .
+As φ is well-deﬁned, we have
+{{φ ◦ζ(u) | u ∈V (G)}} = {{φ ◦ζ(x) | v ∈V (H)}} ,
+which leads to A[γ](G) = A[γ](H).
+E
+Appendix for Section 5.1
+In this section, we provide the proof of Proposition 1 from the main paper.
+Proposition 1. Let 0 ≤q < r. Then, r-ℓWL is strictly more powerful than q-ℓWL. In particular,
+every r-ℓWL is strictly more powerful than 1-WL.
+Proof of Proposition 1. Let r ≥0. We aim to prove that (r + 1)-ℓWL is strictly more powerful than
+r-ℓWL. We begin by demonstrating that (r + 1)-ℓWL is more powerful than r-ℓWL.
+To establish this, we rely on Lemma 1. Speciﬁcally, we demonstrate that the underlying (r + 1)-ℓWL
+node invariant cr+1 reﬁnes cr. Moreover, we go beyond and show that the node invariant c(t)
+r+1 reﬁnes
+c(t)
+r
+at every iteration t ≥0, which shows that t iterations of (r + 1)-ℓWL are more powerful than t
+iterations of r-ℓWL.
+For this purpose, let G be a graph with node set V (G). For t = 0, c(0)
+r+1 ⊑c(0)
+r
+since both algorithms
+start with the same labels. By induction, we assume that
+c(t)
+r+1(u) = c(t)
+r+1(v) =⇒c(t)
+r (u) = c(t)
+r (v)
+(5)
+holds; we need to prove that (5) implies
+c(t+1)
+r+1 (u) = c(t+1)
+r+1 (v) =⇒c(t+1)
+r
+(u) = c(t+1)
+r
+(v).
+(6)
+23
+
+Since HASH in Deﬁnition 7 is injective, c(t)
+r+1(u) = c(t)
+r+1(v) in (5) leads to
+nn
+c(t)
+r+1(p) | p ∈Nq(u)
+oo
+=
+nn
+c(t)
+r+1(p) | p ∈Nq(v)
+oo
+for all q ∈{0, . . . , r}. The assumption c(t)
+r (uq
+l,k) = c(t)
+r (vq
+l,k) in (5) is satisﬁed for every path uq
+l =
+n
+uq
+l,k
+o
+∈Nq(u) and vq
+l =
+n
+vq
+l,k
+o
+∈Nq(v) for q = 0, . . . , r, l = 1, . . . , |Nv| and k = 1, . . . , q + 1.
+Hence,
+nn
+c(t)
+r (p) | p ∈Nk(u)
+oo
+=
+nn
+c(t)
+r (p) | p ∈Nk(v)
+oo
+Inputting this into Deﬁnition 7, we get (6), i.e, c(t+1)
+r+1
+⊑c(t+1)
+r
+.
+The “strictly” can be deduced as follows. The cycle graph on (2r + 6) nodes equipped with a
+chord between nodes 1 and r + 4 is r-ℓWL equivalent to the graph consisting of two (r + 3)-cycles
+connected by one edge; however, they are not (r + 1)-ℓWL equivalent (see, e.g., Figure 6).
+F
+Appendix for Section 5.2
+The goal of this subsection is to provide a proof for Theorem 1 and Corollary 1. In fact, we present
+and prove a more general statement. Speciﬁcally, for a graph G and v ∈V (G), we introduce the
+node invariant sub(F x, Gv), deﬁned as the count of subgraph isomorphisms from F to G that are
+rooted, meaning that x is mapped to v. Let us denote this node invariant as sub(F x, ·). Our result
+establishes that c(1)
+r (·) reﬁnes sub(Cx, ·) for every cycle graph C with at most r nodes. In simpler
+terms, c(1)
+r
+can determine how often node v appears in a cycle C.
+Lemma 2. Let r ≥1. For every cycle graph C with at most r + 2 nodes and x ∈V (C), it holds
+c(1)
+r (·) ⊑sub(Cx, ·).
+Proof of Lemma 2. Let G be any graph, u, v ∈V (G), and q = 1, . . . , r + 2. Let C be a cycle
+graph with q nodes. It is important to note that for every x1, x2 ∈C, we have sub(Cx1, Gv) =
+sub(Cx2, Gv) since every node in C is automorphic to each other. Therefore, we can arbitrarily
+choose any x ∈V (C).
+We show that
+sub (Cx, Gu) ̸= sub (Cx, Gv) =⇒c(1)
+r (u) ̸= c(1)
+r (v)
+The number of injective homomorphisms from the q-long cycles Cx to Gv, i.e., sub(Ca
+q , Gv), is
+equal to the number of paths of length (q −2) between distinct neighbors of v.
+The neighborhood N(q−2)(v) comprises exactly all paths of length (q −2) between any two distinct
+neighbors of v. Therefore,
+sub (Cx, Gv) =
+N(q−2)(v)
+ .
+Thus
+sub (Cx, Gu) ̸= sub (Cx, Gv) =⇒
+N(q−2)(u)
+ ̸=
+N(q−2)(v)
+ ,
+which implies
+nn
+c(0)
+q−2(p) : p ∈N(q−2)(u)
+oo
+̸=
+nn
+c(0)
+q−2(p) : p ∈N(q−2)(v)
+oo
+.
+Finally, as HASH in Deﬁnition 7 is injective, we get the thesis c(1)
+q−2(u) ̸= c(1)
+q−2(v).
+Now, Theorem 1 from the main paper is a simple corollary of Lemma 2.
+Theorem 1. For any r ≥1, r-ℓWL can subgraph-count all cycles with at most r + 2 nodes.
+Proof of Theorem 1. Combining Lemma 2 and Lemma 1, we get that c(1)
+r
+(as a graph invariant) is
+stronger than the induced graph invariant A [sub(Cx, ·)]. Now, consider graphs G, H, and assume
+without loss of generality that |V (G)| = n = |V (H)|.
+24
+
+If c(1)
+r (G) = c(1)
+r (H), we have A [sub(Cx, ·)] (G) = A [sub(Cx, ·)] (H). Hence, by deﬁnition of
+induced graph invariants,
+{{sub(Cx, Gv) | v ∈V (G)}} = {{sub(Cx, Hw) | w ∈V (H)}} .
+Hence,
+1
+n
+X
+v∈V (G)
+sub(Cx, Gv) = 1
+n
+X
+w∈V (H)
+sub(Cx, Hw),
+which is equivalent to sub(C, G) = sub(C, H).
+We proceed to restate Corollary 1 and provide its proof.
+Corollary 1. Let k ∈N. There exists r ∈N, such that r-ℓWL is not less powerful than k-WL.
+Speciﬁcally, r ∈O(k2), with r ≤k(k+1)
+2
+−2 for even k and r ≤(k+1)2
+2
+−2 for odd k.
+Proof of Corollary 1. Let k > 0. We need to show that there exist rk ∈N and a pair of graphs G, H,
+such that k−WL(G) = k−WL(H) and rk-ℓWL(G) ̸= rk-ℓWL(H).
+The hereditary treewidth hdtw(F) of a graph F is the maximum treewidth of ϕ(F) where ϕ is an
+edge surjective homomorphism. Neuen (2024) has shown that k-WL can subgraph-count a graph F
+if and only if hdtw(F) ≤k. This directly implies that for F with hereditary treewidth larger than k,
+there exist graphs GF , HF with k−WL(GF ) = k−WL(HF ) and sub(F, G) ̸= sub(F, H).
+Since the hereditary tree-width of cycle graphs is not uniformly bounded (Arvind et al., 2020), for
+every k > 0 there exists a cycle Cck of length ck ∈N with hereditary treewidth larger than k. Setting
+F = Cck concludes the existence proof with rk = ck −2.
+To see that rk ∈O(k2), note that the complete graph Kn on n vertices has treewidth n −1 and
+exactly
+ n
+2
+
+edges. For odd n, Kn is Eulerian, i.e., there exists an edge surjective homomorphism
+from a cycle to Kn which uses each edge exactly once, i.e., from C(n
+2). If n is odd, the minimum
+T-join which makes Kn Eulerian contains exactly n
+2 edges (see, e.g., Korte et al., 2018). As a
+result, there exists an edge surjective homomorphism from C(n
+2) to Kn if n is odd, and an edge
+surjective homomorphism from C(n
+2)+ n
+2 to Kn if n is even. This implies that hdtw(Cck) > k for
+ck =
+ k+1
+2
+
++ ⌈k+1
+2 ⌉. Hence, rk := ck −2 ∈O(k2).
+G
+Appendix on Homomorphism Counting and Section 5.3
+In this section, we provide background information and all proofs related to homomorphism counts.
+We begin by introducing additional deﬁnitions and notation.
+Deﬁnition 12 (Induced Subgraph). Let G = (V (G), E(G)) and S ⊂V (G). The induced subgraph
+G[S] of G over S is deﬁned as the graph G[S] with vertices V (G[S]) = S and edges E(G[S]) =
+{{u, v} ∈E(G) | u, v ∈S}.
+The following deﬁnition indicates whether a pair of nodes is connected by an edge or not.
+Deﬁnition 13 (Atomic Type). For a tuple of nodes (u1, u2), the atomic type atpG ((u1, u2)) of G
+over (u1, u2) indicates where {u1, u2} ∈E(G), i.e., atpG((u1, u2)) = 1 if {u1, u2} ∈E(G) and
+zero otherwise.
+We continue by deﬁning tree graphs, an important class of graphs closely related to the 1-WL test.
+Deﬁnition 14 (Tree Graph). A graph T is called a tree (graph) if it is connected and does not
+contain cycles. A rooted tree T s = (V (T s), E(T s)) is a tree in which a node s ∈V (T s) is
+singled out. This node is called the root of the tree. For each vertex t ∈V (T s), we deﬁne its
+depth depT s(t) := distT s(t, s), where dist denotes the shortest path distance between t and s.
+The depth of T s is then the maximum depth among all nodes t ∈V (T). We deﬁne DescT s(t) the
+set of descendants of t, i.e., DescT s(t) = {t′ ∈T s | depT s(t′) = depT s(t) + distT s(t, t′)}. For
+each t ∈V (T s) \ {s}, we deﬁne the parent node paT s(t) of t as the unique node t′ ∈N(t)
+such that depT s(t) = depT s(t′) + 1. We deﬁne the subtree of T s rooted at node t by T s[t], i.e.,
+T s[t] := T s[DescT s(t)].
+25
+
+The remainder of this section is structured as follows. Appendix G.1 introduces the basics of tree
+decompositions. In Appendix G.2, we present the class of fan cactus graphs, encompassing all cactus
+graphs, and develop its canonical tree decomposition. We present an alternative formulation of r-ℓWL
+in Appendix G.3 for technical reasons. Subsequently, in Appendix G.4, we deﬁne the unfolding tree
+of r-ℓWL and illustrate its relation to the r-ℓWL colors and canonical tree decompositions of fan
+cactus graphs. Finally, in Appendix G.4.1, we establish the groundwork to conclude the proof of
+Theorem 2, a simple corollary of all the results in this section.
+G.1
+Tree Decomposition Preliminaries
+Along with its notation, this subsection closely adheres to the conventions outlined by B. Zhang et al.
+(2024, Section C). We start with a formal deﬁnition of a tree decomposition for a graph.
+Deﬁnition 15 (Tree Decomposition). Let G = (V (G), E(G)). A tree decomposition of G is a
+tree T = (V (T), E(T)) together with a function βT : V (T) →2V (G) satisfying the following
+conditions:
+1. Each tree node t ∈V (T) is mapped to a non-empty subset of vertices βT (t) ⊂V (G) in G,
+referred to as a bag. We say tree node t contains vertex u if u ∈βT (t).
+2. For each edge {u, v} ∈E(G), there exists at least one tree node t ∈V (T) such that
+{u, v} ⊂βT (t).
+3. For each vertex u ∈V (G), all tree nodes t containing u form a connected subtree, i.e., the
+induced subgraph T [{t ∈V (T) : u ∈βT (t)}] is connected.
+If (T, βT ) is a tree decomposition of G, we refer to the tuple (G, T, βT ) as a tree-decomposed graph.
+The width of the tree decomposition T of G is deﬁned as
+max
+t∈V (T ) |βT (t)| −1.
+If T has root s, we also denote it as (G, T s, βT ).
+Deﬁnition 16 (Treewidth). The treewidth of a graph G, denoted as tw(G), is the minimum positive
+integer k such that there exists a tree decomposition of width k.
+G.2
+Cactus Graphs and their Canonical Tree Decomposition
+Cactus graphs play a crucial role in graph theory due to their unique structural properties. Before
+delving into their canonical tree decomposition, we deﬁne the concept of a rooted r-cactus graph. To
+simplify the notation, we assume that graphs in this section are connected and that V (G) ⊆N for all
+graphs G. Further, we assume that r ∈N throughout this section.
+Deﬁnition 17 (Rooted r-Cactus Graph). A cactus graph is a graph where every edge lies on at most
+one simple cycle. An r-cactus graph is a cactus graph where every simple cycle has at most r vertices.
+A rooted cactus (graph) Gs is a cactus graph G with a root node s ∈V (G).
+Now, we introduce the notion of a fan cactus, which is an essential concept for our subsequent
+discussions on the canonical tree decomposition of these graphs.
+Deﬁnition 18 (Fan Cactus). Let Gs be a rooted r-cactus. For every simple cycle C in G let vC be
+the unique vertex in C that is closest to s. We obtain a fan r-cactus F s from a rooted r-cactus Gs
+by adding an arbitrary number of edges {vC, w} to any cycle C with w ∈V (C). Let Mr+2 be the
+class of graphs F with s ∈V (F) such that F s is a fan r-cactus.
+Remark 1. Every r-cactus is a fan r-cactus. Every fan r-cactus is outerplanar. Every outerplanar
+graph has tree-width at most 2.
+Figure 10 shows an example of a fan 6-cactus. As fan cacti are outerplanar, graph isomorphism can
+be decided in linear time. One way to do so is to use a canonicalization function, that maps graphs to
+a unique representative of each set of isomorphic graphs. We denote the set of all such representatives
+as Mr+2/ ∼= ⊆Mr+2.
+Lemma 3 (Colbourn et al. (1981)). There exists a function canon : Mr+2 →Mr+2/ ∼= such that
+26
+
+1. G ∼= canon(G)
+2. G ∼= H ⇐⇒V (canon(G)) = V (canon(H)) ∧E(canon(G)) = E(canon(H)).
+Moreover, given G ∈Mr+2, canon(G) can be computed in linear time.
+For each G ∈Mr+2 we denote the isomorphism between G and canon(G) as canonG. Colbourn
+et al. (1981) describe a bottom-up algorithm to obtain canon(G) of a fan r-cactus G. We will
+implicitly use the results of this canonicalization to deﬁne a canonical tree decomposition of fan
+r-cacti. The crucial point in the algorithm is a simple way to decide which “direction” to use when
+dealing with a cycle in the underlying cactus graph. Each undirected, rooted cycle allows for a choice
+between two directions when building a tree decomposition. We will ﬁrst deﬁne a tree decomposition
+for a rooted cycle which depends on a choice of direction and then deﬁne a canonical direction of
+cycles in G based on canonG.
+Deﬁnition 19 (Tree Decomposition of Rooted Cycle). Let Cn be a cycle graph on n nodes v0 to
+vn−1. The path T on nodes w1, . . . , w2n−3 with bags β(w1) = {v0, v1} and for i ≥2
+β(wi) =
+β(wi−1) ∪
+
+vi/2+1
+	
+if i is even
+β(wi−1) \
+
+v(i−1)/2
+	
+if i is odd
+is a tree decomposition of Cn. We say that v0 and v1 correspond to w1 and vi corresponds to w2i−1
+for i ≥2.
+A depiction of the tree decomposition T 0 (right) of C6 (left) is shown below. Note that we have to
+choose one of two possible orientations of the undirected cycle to construct T 0. We address this
+choice in the next deﬁnition.
+0
+1
+2
+3
+4
+5
+{0, 1}
+{0, 1, 2}
+{0, 2}
+{5, 0}
+{0, 4, 5}
+{0, 2, 3}
+{0, 3}
+{0, 3, 4}
+{0, 4}
+Deﬁnition 20 (Canonical Tree Decomposition of Undirected Rooted Cycle). Let F s be a fan r-cactus
+and C be a simple cycle in the underlying cactus G. Let vC, v1, . . . , vn−1 and vC, vn−1, . . . , v1 be
+the two directions of C rooted at vC. We deﬁne the canonical tree decomposition of C in G as the tree
+decomposition of the smaller of the two orientations canonF (vC), canonF (v1), . . . , canonF (vn−1)
+and canonF (vC), canonF (vn−1), . . . , canonF (v1).
+The choice of “smaller” does not matter as long as it deﬁnes a total order. One can, for example, use
+a lexicographical order. Based on Deﬁnition 20, we now deﬁne a canonical tree decomposition of
+fan cactus graphs, in the sense that any two isomorphic fan cactus graphs will have isomorphic tree
+decompositions.
+Deﬁnition 21 (Canonical Tree Decomposition of Fan r-Cactus Graphs). Let F s be a fan r-cactus
+and Gs its underlying r-cactus. We deﬁne the canonical tree decomposition T ˜s of F rooted at ˜s as
+follows
+1. Node Gadget: For all v ∈V (F) add a node t to V (T) and set β(t) = {v}. We choose ˜s
+such that β(˜s) = {s}.
+2. Tree Edge Gadget: For all {v, w} ∈E(G) that are not on a simple cycle in F add a node
+x{v,w} to V (T) with β(x{v,w}) = {v, w} and edges
+
+v, x{v,w}
+	
+and
+
+w, x{v,w}
+	
+to E(T)
+3. Cycle Gadget: For each (undirected) cycle C in the underlying cactus G, add a copy of
+its canonical tree decomposition T vC
+C
+of C rooted at vC to T and connect nodes in it to the
+corresponding node gadgets.
+See Figure 10 for an illustration. For the discussions in subsequent sections, we introduce the
+following deﬁnition.
+27
+
+12
+7
+8
+9
+10
+11
+C3
+13
+4
+1
+2
+3
+C1
+6
+5
+C2
+vC1
+vC2
+vC3
+{7, 12}
+{12}
+{7}
+{7, 8}
+{8}
+{7, 8, 9}
+{7, 9}
+{9}
+{7, 9, 10}
+{7, 10}
+{10}
+{7, 10, 11}
+{7, 11}
+{11}
+{7, 11, 12}
+{13}
+{12, 13}
+{4}
+{1}
+{2}
+{1, 4, 3}
+{1, 4}
+{1, 2}
+{1, 3, 2}
+{1, 3}
+{3}
+{4, 7}
+{2, 5}
+{2, 6}
+{2, 5, 6}
+{6}
+{5}
+Figure 10: Example of a fan 6-cactus F 1 (left) and its canonical tree decomposition (T, 1). The
+underlying rooted 6-cactus G1 (on colored, thick edges) of F 1 contains three simple cycles C1, C2, C3.
+Additional diagonal edges must have vCi as one endpoint.
+Deﬁnition 22 (Depth in the Canonical Tree Decomposition of Fan r-Cactus Graphs). Let (F, T s) be
+a canonical tree decomposition of a fan r-cactus. We deﬁne the depth dep(t) of t ∈V (T) recursively
+as follows:
+1. dep(s) = 0
+2. For v ∈V (T) with parent node p: dep(v) =
+dep(p) + 1
+if |β(v)| = 1 or |β(p)| = 1
+dep(p)
+otherwise
+The depth of (F, T s) is then the maximum depth of any node t ∈V (T s).
+Intuitively, for a given fan r-cactus graph F with its canonical tree decomposition T s, Deﬁnition 22
+captures the depth (see Deﬁnition 15) of the tree T s, if cycles in F and the corresponding bags in T s
+were replaced by single edges.
+Lemma 4. Let F s be a fan r-cactus. The canonical tree decomposition (F, T ˜s) is a tree decomposi-
+tion of F s.
+Proof. We need to show that (1) T is a tree, (2) for every edge e ∈E(F) there exists some bag β(v)
+with e ⊆β(v), and (3) T[{t ∈V (T) : u ∈β(t)}] is connected.
+To see that T does not contain cycles, note that we replace each cycle with its cycle gadget, which is
+a path. It is easy to see that T is connected as G is connected.
+For (2), note that tree edges e ∈V (F) have their own gadget node in xe with β(xe) = e. Similarly,
+each edge e on a simple cycle C of the underlying cactus F of G is contained in some bag within the
+cycle gadget of C. Finally, for diagonal edges {vC, w} ∈E(F) \ E(G), vC is contained in any bag
+of the cycle gadget of C. As a result, {vC, v} is contained in the bag of the corresponding node of v.
+28
+
+For (3), note that in the tree edge gadget, nodes t with v ∈β(t) are connected to the node gadget of
+v. In the cycle gadget, any node t with w ∈β(t) is either directly or via its neighbor connected to the
+node gadget of w if w ̸= vC. As the cycle gadget is connected and vC is in any bag of the gadget, a
+path to the node gadget of vC exists where every bag contains vC.
+We conclude this subsection with a formal deﬁnition of when two canonical tree decompositions are
+isomorphic and prove the main result of this section, i.e., that canonical tree decompositions of fan
+r-cacti Gs, Ht are isomorphic whenever Gs, Ht are isomorphic.
+Deﬁnition 23 (Isomorphism between canonical tree-decomposed graphs). Given two canonical
+tree-decomposed graphs (G, T s) and ( ˜G, ˜T ˜s), a pair of mappings (ρ, τ) is called an isomorphism
+between (G, T s) and ( ˜G, ˜T ˜s), denoted by (G, T s) ∼= ( ˜G, ˜T ˜s), if the following holds:
+• ρ is an isomorphism between G and ˜G,
+• τ is an isomorphism between T s and ˜T ˜s,
+• For any t ∈T s, we have ρ(βT (t)) = β ˜T (τ(t)).
+Lemma 5. Let Gs ∼= Ht be rooted r-fan cacti. Then (Gs, T[Gs]) ∼= (Ht, T[Ht]).
+Proof. Let ρ be a root preserving isomorphism between Gs and Ht. According to Lemma 3
+then there exist isomorphisms canonG and canonH with ρ = canonG ◦canon−1
+H . We construct
+τ : V (T[Gs]) →V (T[Ht]) from ρ as follows: It is easy to see that ρ induces a bijective mapping τ
+between the nodes of T[Gs] and T[Ht] that assigns each gadget node v ∈V (T[Gs]) to the unique
+gadget node τ(v) ∈V (T[Ht]) with β(τ(v)) = ρ(β(v)). By the same argument, τ maps the root of
+T[Gs] to the root of T[Ht].
+Now assume by contradiction that τ is not an isomorphism between T[Gs] and T[Ht]. That means
+that w.l.o.g. there exists {v, w} ∈E(T[Gs]) with {τ(v), τ(w)} /∈E(T[Ht]). However, for the
+bags of v, w it holds canonG(β(v)) = canonH(β(τ(v))) and canonG(β(w)) = canonH(β(τ(w))).
+This cannot happen, as the addition of edges in Deﬁnition 21 depends only on the images of the bags
+under canon.
+G.3
+Alternative r-ℓWL
+In this subsection, we deﬁne slightly modiﬁed versions of 1-WL and r-ℓWL that we consider in the
+subsequent sections.
+Deﬁnition 24 (Alternative 1-WL and r-ℓWL). The alternative 1-WL test reﬁnes vertices’ colors as
+c(t+1)(v) ←HASH
+
+c(t)(v),
+nn
+atp(v, u), c(t)(u)
+
+| u ∈V (G)
+oo
+.
+Equivalently, we deﬁne the alternative r-ℓWL via
+c(t+1)
+r
+(v) ←HASHr
+ 
+c(t)
+r (v),
+nn
+atp(v, u), c(t)(u)
+
+| u ∈V (G)
+oo
+,
+nn
+c(t)
+r (p) | p ∈N1(v)
+oo
+,
+...
+nn
+c(t)
+r (p) | p ∈Nr(v)
+oo !
+,
+It is well-known that both the alternative 1-WL test and the standard 1-WL test are equally powerful
+(in terms of their expressive power). Similarly, the alternative k-WL test and the standard k-WL test
+are equally powerful. For the sake of simplicity in the subsequent discussion, we will refer to both
+the alternative 1-WL and k-WL tests simply as the 1-WL and k-WL tests, respectively. Although this
+practice may seem like a slight abuse of notation, it is justiﬁed because the expressive power of these
+tests remains unaffected.
+29
+
+Finally, as noted in Section 6, we alter the r-ℓWL algorithm slightly by incorporating atomic types
+into the path representation. Hence, we update node features according to
+c(t+1)
+r
+(v) ←HASHr
+ 
+c(t)
+r (v),
+nn
+atp(v, u), c(t)(u)
+
+| u ∈V (G)
+oo
+,
+nn
+atp(v, p), c(t)
+r (p)
+
+| p ∈N1(v)
+oo
+,
+...
+nn
+atp(v, p), c(t)
+r (p)
+
+| p ∈Nr(v)
+oo !
+,
+(7)
+where
+
+atp(v, p), c(t)
+r (p)
+
+:=
+
+atp(v, p1), c(t)
+r (p1)
+
+, . . . ,
+
+atp(v, pq+1), c(t)
+r (pq+1)
+
+for p =
+{pi}q+1
+i=1 ∈Nq(v). The deﬁnition of atomic types atp(·, ·) is given in Deﬁnition 13. Clearly this
+version of r-ℓWL is more powerful than the standard version, according to Deﬁnition 3. However, it
+is unclear whether r-ℓWL with atomic types is strictly more powerful than standard r-ℓWL.
+G.4
+The Unfolding Tree of r-ℓWL
+Given Deﬁnition 20, we assume, for the remainder of this appendix, that every fan cactus graph has a
+unique labeling function, allowing us to select a unique orientation for every cycle in the graph. We
+call this orientation the canonical orientation. If not otherwise mentioned, we consider the canonical
+orientation of cycle graphs.
+We begin this section by introducing a critical concept known as bag isomorphism (Dell et al., 2018;
+B. Zhang et al., 2024).
+Deﬁnition 25 (Bag Isomorphism). Let (F, T s) be a tree-decomposed graph, and G be a graph. A
+homomorphism f from F to G is called a bag isomorphism from (F, T s) to G if, for all t ∈V (T s),
+the mapping f is an isomorphism from F[βT s(t)] to G[f(βT s(t))]. We denote by BIso((F, T s), G)
+the set of all bag isomorphisms from (F, T s) to G, and set bIso((F, T s), G) = |BIso((F, T s), G)|.
+Moving forward, we proceed to deﬁne r-ℓWL unfolding trees, which intuitively construct, for a given
+graph and a node in the graph, the computational graph of the r-ℓWL algorithm and its canonical tree
+decomposition.
+Deﬁnition 26 (Unfolding tree of r-ℓWL). Given a graph G, vertex v ∈V (G) and a non-negative
+D ∈Z, the depth-2D r-ℓWL unfolding tree of a graph G ∈Mr+2 at node v, denoted as
+ F (D)(v), T (D)(v)
+
+, is a tree-decomposition (F, T s) constructed in the following way:
+1. Initialization: V (F) = {v} without edges, and T s only has a root node s with βT s(s) =
+{v}. Deﬁne a mapping V (F) →V (G) as π(v) = v.
+2. Introduce nodes: For each leaf node t with |βT s(t)| = 1 in T s, do the following procedure:
+Let βT (t) = {g}. For each w ∈V (G) do the following:
+a) Add a fresh child tw to t in T s.
+b) Add a fresh vertex f to F and extend π with [f 7→w].
+c) Deﬁne the bag of tw by βT s(tw) = βT s(t) ∪{f}.
+d) Add an edge between f and g if {π(f), π(g)} ∈E(G).
+3. Introduce paths: For each q = 1, . . . , r, do:
+For each length q path with canonical orientation p = {pi}q+1
+i=1 ∈Nq(g), do the following:
+a) Add a fresh path tp =
+
+t{p1}, t{p1,p2}, t{p2}, . . . , t{pq}, t{pq,pq+1}, t{pq+1}
+	
+to t in
+T s.
+b) Add q + 1 fresh vertices f1, . . . , fq+1 to F and extend π with [fi 7→pi] for every
+i = 1, . . . , q + 1.
+30
+
+7
+1
+2
+3
+8
+4
+5
+6
+G
+7’
+1
+2”
+3”
+8”
+2’
+3’
+4’
+5’
+6’
+F (2)(1)
+1
+1, 2’
+1, 3’
+1, 4’
+2’
+1,2”
+1,2”,8”
+1,8”
+1,8”,3”
+1,3”
+2”
+8”
+3”
+3’
+4’
+T (2)(1)
+1, 8’
+8’
+...
+Figure 11: The depth-2 unfolding tree of graph G at vertex 1 for 2-ℓWL.
+c) For i = 1, . . . , q, let the bag of t{pi,pi+1} be deﬁned via βT s(t{pi,pi+1}) = βT s(t) ∪
+{fi, fi+1}.
+d) For i = 1, . . . , q + 1, let the bag of t{pi} be deﬁned via βT s(t{pi}) = βT s(t) ∪{fi}.
+e) For i = 1, . . . , q + 1, add edges between fi and fi+1.
+f) Add edges between g and f1, . . . , fq+1 such that for every i = 1, . . . , q, we have
+F[βT s(t{pi,pi+1})] = F[{fi, fi+1, g}] ∼= G[π(βT s(t{pi,pi+1}))], i.e., add edges be-
+tween g and fi if and only if there is an edge between {π(g), π(fi)} ∈E(G).
+4. Forget nodes: If t is a leaf node of T s with |βT s(t)| = 2 and parent t′ with |βT s(t)| = 1,
+do the following:
+a) Add a fresh child t1 of t to T s.
+b) Let f be that vertex introduced at t, that is, we have βT s(t) \ βT s(t′) = {f}.
+c) We set βT s(t1) = {f}.
+5. Forget paths: If tp =
+
+t{p1}, t{p1,p2}, t{p2}, . . . , t{pq}, t{pq,pq+1}, t{pq+1}
+	
+is a leaf path
+of T s with parent t′ of t{p1}, do the following:
+a) For i = 2, . . . , q + 1, add a fresh child ˜t{pi} to t{pi}.
+b) Let f2, . . . , fq+1 be the vertices introduced at tp, that is, we have βT s(t{pi}) \
+βT s(t′) = {fi}.
+c) For i = 2, . . . , q + 1, we set βT s(˜t{pi}) = {fi}.
+We refer to Figure 11 for the depth-2 2-ℓWL unfolding tree of an example graph.
+Theorem 4. Let r ≥1. For any graph G, any vertex v ∈V (G), and any non-negative integer
+D, let
+ F (D)(v), T (D)(v)
+
+be its depth-2D r-ℓWL unfolding tree at node v. Then, F (D)(v) is a
+fan r-cactus graph, and T (D)(v) is an r-canonical tree decomposition of F (D)(v). Moreover, the
+constructed mapping π in Deﬁnition 26 is a bag isomorphism from
+ F (D)(v), T (D)(v)
+
+to the graph
+G.
+Proof. Clear by the deﬁnition of the depth-2D unfolding tree of r-ℓWL.
+We present the following results that fully characterize when two graphs and their respective nodes
+have the same r-ℓWL colors in terms of their r-ℓWL unfolding trees.
+Theorem 5. Let r ∈N. For any two connected graphs G, H, any vertices v ∈V (G) and x ∈V (H)
+and any D ∈N, it holds: c(D)
+r
+(v) = c(D)
+r
+(x) if and only if there exists a root preserving isomorphism
+between
+ F (D)(v), T (D)(v)
+
+and
+ F (D)(x), T (D)(x)
+
+.
+Proof of “=⇒”. The proof is based on induction over D. When D = 0, the theorem obviously
+holds. Assume that the theorem holds for D ≤d, and consider D = d + 1. We show that if
+c(d+1)
+r
+(v) = c(d+1)
+r
+(x), then there exists an isomorphism (ρ, τ) from
+ F (d+1)(v), T (d+1)(v)
+
+to
+ F (d+1)(x), T (d+1)(x)
+
+such that ρ(v) = x.
+If c(d+1)
+r
+(v) = c(d+1)
+r
+(x), then
+nn
+atp(v, u), c(d)
+r (u)
+
+| u ∈V (G)
+oo
+=
+nn
+atp(x, y), c(d)
+r (y)
+
+| y ∈V (H)
+oo
+,
+31
+
+i.e., |V (G)| = |V (H)|, and we set n = |V (G)|. We enumerate V (G) = {w1, . . . , wn} and
+V (H) = {z1, . . . , zn} such that
+c(d)
+r (wi) = c(d)
+r (zi)
+(8)
+for all i = 1, . . . , n. Also, again since c(d+1)
+r
+(v) = c(d+1)
+r
+(x), we have for every q = 1, . . . , r,
+nn
+atp(v, u1), c(d)
+r (u1)
+
+, . . . ,
+
+atp(v, uq+1), c(d)
+r (uq+1)
+
+| {u1, . . . , uq+1} = u ∈Nq(v)
+oo
+=
+nn
+atp(x, y1), c(d)
+r (y1)
+
+, . . . ,
+
+atp(x, yq+1), c(d)
+r (yq+1)
+
+| {y1, . . . , yq+1} = y ∈Nq(x)
+oo
+.
+In particular, |Nq(v)| = |Nq(x)| and we can enumerate the paths in Nq(v) and Nq(x) such that
+c(d)
+r (uq
+l ) = c(d)
+r (yq
+l ) and atp(v, uq
+l ) = atp(v, yq
+l )
+(9)
+for every l = 1, . . . , |Nq(v)|.
+Now, by deﬁnition of the r-ℓWL unfolding tree, the graph F (d+1)(v) is isomorphic to the union of: a)
+all graphs F (d)(wi) for i = 1, . . . , n, plus additional edges between wi to v if {wi, v} ∈E(G), and
+b) all graphs F (d)(pq
+l,k) for q = 1, . . . , r, l = 1, . . . , |Nq(v)| for any path pq
+l =
+n
+pq
+l,1, . . . , pq
+l,q+1
+o
+∈
+Nq(v). And adding, for k = 1, . . . q, edges between pq
+l,k and pq
+l,k+1. And adding, for k = 1, . . . q +1,
+edges pq
+l,k and v if there is one in G, i.e., if
+n
+pq
+l,k, v
+o
+∈E(G).
+Similarly, the tree T (d+1)(v) is isomorphic to the disjoint union of all trees T (d)(wi) (for i = 1, . . . , n)
+and T (d)(pq
+l,k) (for q = 1, . . . , r, k = 1, . . . , q +1 and l = 1, . . . , |N(v)|). Plus adding the following
+fresh tree nodes and edges: a root node s, nodes twi (for i = 1, . . . , n) that connects to s and the root
+of T (d)(wi). And for q = 1, . . . , r, l = 1, . . . , |Nq(v)| for any path pq
+l ∈Nq(v) a path of length 2q,
+given by tpq
+l =
+
+tn
+pq
+l,1
+o, tn
+pq
+l,1,pq
+l,2
+o, . . . , tn
+pq
+l,q,pq
+l,q+1
+o, tn
+pq
+l,q+1
+o
+
+, where s is attached to tn
+pq
+l,1
+o.
+And ﬁnally, connecting the trees T (d)(pq
+l,k) at root node pq
+l,k to tn
+pq
+l,k
+o.
+By (8) and induction,
+there exist isomorphisms (ρi, τi) from (F (d)(wi), T (d)(wi)) to
+(F (d)(zi), T (d)(zi)) such that ρi(wi) = zi for i = 1, . . . , n. By (9) and induction, there exist isomor-
+phisms (ρq
+l,k, τ q
+l,k) from (F (d)(uq
+l,k), T (d)(uq
+l,k)) to (F (d)(yq
+l,k), T (d)(yq
+l,k)) such ρi(uq
+l,k) = yq
+l,k for
+q = 1, . . . , r, k = 1, . . . , q + 1 and l = 1, . . . , |Nq(v)|.
+We now construct ρ by merging all ρi and ρq
+l,k, and construct τ by merging all τi and τ q
+l,k. We
+ﬁnally specify an appropriate mapping for the tree root, its direct children and the paths attached
+to the tree root. Then, it is easy to see that (ρ, τ) is well-deﬁned and an isomorphism between
+ F (d+1)(v), T (d+1)(v)
+
+and
+ F (d+1)(x), T (d+1)(x)
+
+such that ρ(v) = x.
+Proof of “⇐=”. We now prove the other direction, again via induction over D. When D = 0 the
+assertion obviously holds. Assume that the assertion holds for D ≤d. Now, assume that there
+exists an isomorphism (ρ, τ) between
+ F (d+1)(v), T (d+1)(v)
+
+and
+ F (d+1)(x), T (d+1)(x)
+
+such
+that ρ(v) = x. We show that c(d+1)
+r
+(v) = c(d+1)
+r
+(x).
+We
+begin
+our
+proof
+by
+establishing
+the
+equality
+of
+two
+multisets:
+nn
+(c(d)
+r (w), atp(v, w))|w ∈V (G)
+oo
+and
+nn
+(c(d)
+r (z), atp(v, z))|z ∈V (H)
+oo
+.
+The proof
+of this equivalence closely mirrors the argument presented in the proof of B. Zhang et al. (2024,
+Lemma C.14). Since τ is an isomorphism it maps all tree nodes T (d+1)(v) of depth 2 with 1 element
+in their bag to the corresponding tree nodes in T (d+1)(x). Let s1, . . . , sn and t1, . . . , tn be the nodes
+in T (d+1)(v) and T (d+1)(x) of depth 2 with 1 element in their bag, respectively. For i = 1, . . . , n,
+let s′
+i and t′
+i the parents of si and ti, respectively. We then choose the order such that the following
+holds for all i = 1, . . . , n
+1. Let βT (d+1)(v)(s′
+i) = {v, ˜wi} and βT (d+1)(x)(t′
+i) = {x, ˜zi}. Then, ρ(v) = x and ρ( ˜wi) = ˜zi
+and thus, per assumption, {v, ˜wi} ∈E(F (d+1)(v)) if and only if {x, ˜zi} ∈E(F (d+1)(x)).
+32
+
+2. τ is an isomorphism from the subtree rooted at si in T (d+1)(v), i.e., T (d+1)(v)[si], the
+subtree rooted at ti in T (d+1)(x), i.e., T (d+1)(v)[ti].
+3. For all s ∈DescT (d+1)(v)(si), it holds ρ(βT (d+1)(v)(s)) = βT (d+1)(x)(τ(s)).
+4. By the deﬁnition of the unfolding tree, ρ is an isomorphism from the induced subgraph
+F (d+1)(v)
+
+T (d+1)(v)[si]
+
+and the induced subgraph F (d+1)(x)
+
+T (d+1)(x)[ti]
+
+.
+By
+the
+last
+three
+items,
+we
+get
+that
+ F (d+1)(v)
+
+T (d+1)(v)[si]
+
+, T (d+1)(v)[si]
+
+and
+ F (d+1)(x)
+
+T (d+1)(x)[ti]
+
+, T (d+1)(x)[ti]
+
+are isomorphic. By deﬁnition of the r-ℓWL unfold-
+ing tree,
+ F (d+1)(v)
+
+T (d+1)(v)[si]
+
+, T (d+1)(v)[si]
+
+is isomorphic to (F (d)(wi), T (d)(wi)) for
+some wi ∈V (G) that satisﬁes { ˜wi, v} ∈EF (d+1)(v) if and only if {wi, v} ∈E(G).
+And
+ F (d+1)(x)
+
+T (d+1)(x)[ti]
+
+, T (d+1)(x)[ti]
+
+is isomorphic to (F (d)(zi), F (d)(zi)) for some zi ∈
+V (H) that satisﬁes {˜zi, x} ∈E(F (d+1)(x)) if and only if {zi, x} ∈E(G). Hence, by induction, we
+have atp (v, wi) = atp (x, zi) and c(d)
+r (wi) = c(d)
+r (zi) for all i = 1, . . . , n.
+It remains to show that, for every q = 1, . . . , r,
+nn
+atp(v, u1), c(d)
+r (u1)
+
+, . . . ,
+
+atp(v, uq+1), c(d)
+r (uq+1)
+
+| {u1, . . . , uq+1} = u ∈Nq(v)
+oo
+=
+nn
+atp(x, y1), c(d)
+r (y1)
+
+, . . . ,
+
+atp(x, yq+1), c(d)
+r (yq+1)
+
+| {y1, . . . , yq+1} = y ∈Nq(x)
+oo
+.
+Fix q = 1, . . . , r. Since τ is an isomorphism it maps all paths of length q in T (d+1)(v) connected to
+v to paths of length q in T (d+1)(x) connected to x.
+By construction of the r-ℓWL unfolding tree and since (ρ, τ) is an isomorphism, it holds |Nq(v)| =
+|Nq(x)|. Denote the relevant bags at depth 2 by s′q
+l,k for l = 1, . . . , |Nq(v)| and k = 1, . . . , q + 1.
+Denote by sq
+l,k and tq
+l,k the parents of s′q
+l,k and t′q
+l,k, respectively. We then choose the order l =
+1, . . . , |Nq(v)| and k = 1, . . . , q + 1 such that it holds
+1. Let βT (d+1)(s′q
+l,k) =
+n
+v, ˜wq
+l,k
+o
+and βT (d+1)(t′q
+l,k) =
+n
+x, ˜zq
+l,k
+o
+. Then, ρ( ˜wq
+l,k) = ˜zq
+l,k and
+thus, per assumption,
+n
+v, ˜wq
+l,k
+o
+∈E(F (d+1)(v)) if and only if
+n
+x, ˜zq
+l,k
+o
+∈E(F (d+1)(x))
+2. τ is an isomorphism from the subtree rooted at sq
+l,k in T (d+1)(v), i.e., T (d+1)(v)[sq
+l,k], to
+the subtree rooted at tq
+l,k in T (d+1)(x), i.e., T (d+1)(x)[tq
+l,k].
+3. For all s ∈DescT (d+1)(v)(sq
+l,k), it holds ρ(βT (d+1)(v)(s)) = βT (d+1)(x)(τ(s)).
+4. By the deﬁnition of the unfolding tree, ρ is an isomorphism from the induced subgraph
+F (d+1)(v)
+h
+T (d+1)(v)[sq
+l,k]
+i
+and the induced subgraph F (d+1)(x)
+h
+T (d+1)(x)[tq
+l,k]
+i
+.
+By the last three items,
+we get that
+
+F (d+1)(v)
+h
+T (d+1)(v)[sq
+l,k]
+i
+, T (d+1)(v)[sq
+l,k]
+
+and
+
+F (d+1)(x)
+h
+T (d+1)(x)[tq
+l,k]
+i
+, T (d+1)(x)[tq
+l,k]
+
+are isomorphic. By deﬁnition of the r-ℓWL unfold-
+ing tree,
+
+F (d+1)(v)
+h
+T (d+1)(v)[sq
+l,k]
+i
+, T (d+1)(v)[sq
+l,k]
+
+is isomorphic to (F (d)(wq
+l,k), T (d)(wq
+l,k))
+for wq
+l,k ∈V (G) that satisﬁes
+n
+˜wq
+l,k, v
+o
+∈EF (d+1)(v) if and only if
+n
+wq
+l,k, v
+o
+∈E(G).
+And
+
+F (d+1)(x)
+h
+T (d+1)(x)[tq
+l,k]
+i
+, T (d+1)(x)[tq
+l,k]
+
+is isomorphic to (F (d)(zq
+l,k), T (d)(zq
+l,k)) for
+zq
+l,k ∈V (G) that satisﬁes
+n
+˜zq
+l,k, v
+o
+∈E(F (d+1)(v)) if and only if
+n
+zq
+l,k, v
+o
+∈E(G). Hence, by
+induction, we have c(d)
+r (wq
+l,k) = c(d)
+r (zq
+l,k) for all indices. By Item 1, we then have c(d)
+r (wq
+l ) =
+c(d)
+r (zq
+l ) and atp(v, wq
+l ) = atp(v, zq
+l ) for every q = 1, . . . , r and l = 1, . . . , |Nq(v)|.
+33
+
+We introduce the following deﬁnition that provides a similarity measure between a graph and a
+tree-decomposed graph.
+Deﬁnition 27. Given a graph G and a tree-decomposed graph (F, T s), deﬁne
+cnt ((F, T s), G) =
+
+n
+v ∈V | ∃D ∈N s.t. (F (D)(v), T (D)(v)) ∼= (F, T s)
+o ,
+where (F (D)(v), T (D)(v)) is the depth-2D r-ℓWL unfolding tree of G at v.
+The counting function cnt ((F, T s), G) serves as a key metric, allowing us to draw connections
+between r-ℓWL colorings of two different graphs.
+Corollary 3. Let r ∈N. Let G and H be two graphs. Then, cr(G) = cr(H) if and only if
+cnt ((F, T s), G) = cnt ((F, T s), H) holds for all graphs (F, T s) ∈Mr+2.
+Proof of “=⇒”. Let cr(G) = cr(H), i.e.,
+{{cr(v) | v ∈V (G)}} = {{cr(x) | x ∈V (H)}} .
+Assume, by contradiction, that there exists a tuple (F, T s) ∈Mr+2 such that cnt ((F, T s), G) ̸=
+cnt ((F, T s), H). Let c1, . . . , ck be the ﬁnal colors of nodes in V (G) and V (H). Then, deﬁne for
+i = 1, . . . , k
+cnt ((F, T s), G[ci]) :=
+
+n
+v ∈V (G) | cr(v) = ci and ∃D ∈N s.t. (F (D)(v), T (D)(v)) ∼= (F, T s)
+o .
+We have
+cnt ((F, T s), G) =
+k
+X
+i=1
+cnt ((F, T s), G[ci]) ,
+and
+cnt ((F, T s), H) =
+k
+X
+i=1
+cnt ((F, T s), H[ci]) .
+Since cnt ((F, T s), G) ̸= cnt ((F, T s), H), there exist an index i = 1, . . . , k such that
+cnt ((F, T s), G[ci]) ̸= cnt ((F, T s), H[ci]) .
+(10)
+Furthermore, there exists in ∈N such that there are exactly n nodes v1, . . . , vn and x1, . . . , xn such
+that
+cr(v1) = . . . = cr(vin) = ci and cr(x1) = . . . = cr(xin) = ci.
+Hence, as cr reﬁnes c(D)
+r
+, we have
+c(D)
+r
+(v1) = . . . = c(D)
+r
+(vin) = c(D)
+r
+(x1) = . . . = c(D)
+r
+(xin).
+By (10), there exists some D ∈N such that (without loss of generality) (F (D)(v1), T (D)(v1)) ∼=
+(F, T s). Then, by Theorem 5, we have
+(F (D)(v1), T (D)(v1)) ∼= . . . ∼= (F (D)(vin), T (D)(vin)) ∼= (F (D)(xin), T (D)(xin))
+∼= . . . ∼= (F (D)(x1), T (D)(x1)).
+There does not exist any other node w with cr(w) = c1 such that the corresponding unfolding tree is
+isomorphic to (F (D)(v1), T (D)(v1)). Hence, cnt((F, T s), G[ci]) = cnt((F, T s), H[ci]), which is a
+contradiction.
+Proof of “⇐=”. Suppose that cnt((F, T s), G) = cnt((F, T s), H) for all (F, T s) ∈Mr+2. Let
+c1, . . . , ckG with multiplicities m1, . . . , mkG and ˜c1, . . . , ˜ckH with multiplicities ˜m1, . . . , ˜mkG
+be the ﬁnal colors of r-ℓWL applied to G and H, respectively.
+Consider some v ∈V (G)
+such that cr(v) = c1. Let D be sufﬁciently large (any D after convergence of r-ℓWL), then
+cnt((F (D)(v), T (D)(v)), G) = cnt((F (D)(v), T (D)(v)), H) since (F (D)(v), T (D)(v)) ∈Mr+2.
+Hence, without loss of generality, c1 = ˜c1 and m1 = ˜m1. Repeating this argument for all colors
+ﬁnishes the proof.
+34
+
+G.4.1
+Proof of Theorem 2
+In this section, we employ techniques adapted from the works of Dell et al. (2018) and B. Zhang et al.
+(2024) to derive a proof for Theorem 2 from the established result in Corollary 3.
+Deﬁnition 28 (Deﬁnition 20 in (Dell et al., 2018)). Let (F, T t) and ( ˜F, ˜T s) be two tree-decomposed
+graphs. A pair of mappings (ρ, τ) is said to be a bag isomorphism homomorphism from (F, T t) to
+( ˜F, ˜T s) if it satisﬁes the following conditions
+1. ρ is a homomorphism from F to ˜F.
+2. τ is a homomorphism from T t to ˜T s.
+3. τ is depth-surjective, i.e., the image of T t under τ contains vertices at every depth present
+in ˜T s.
+4. For all t′ ∈T t, we have depT t(t′) = dep ˜T s(τ(t′)) and F[βT t(t′)] ∼= ˜F[β ˜T s(τ(t′))].
+5. For all t′ ∈T t, the set equality ρ(βT t(t′)) = β ˜T s(τ(t′)) holds.
+6. The depth of T t and ˜T s is equal.
+We
+denote
+the
+set
+of
+bag
+isomorphism
+homomorphisms
+from
+(F, T t)
+to
+( ˜F, ˜T s)
+by
+BIsoHom
+
+(F, T t), ( ˜F, ˜T s)
+
+and
+set
+bIsoHom
+
+(F, T t), ( ˜F, ˜T s)
+
+=
+|BIsoHom
+
+(F, T t), ( ˜F, ˜T s)
+
+|.
+We continue with the following lemma that shows a linear relation between the number of bag
+isomorphisms and the output of the counting function in Deﬁnition 27.
+Lemma 6. Let r ∈N. For any tree-decomposed graph (F, T s) ∈Mr+2 and any graph G, it holds
+bIso ((F, T s), G) =
+X
+( ˜
+F, ˜T t)∈Mr+2
+bIsoHom
+
+(F, T s) ,
+
+˜F, ˜T t
+· cnt
+
+˜F, ˜T t
+, G
+
+.
+(11)
+Proof. Let (F, T s) be a tree-decomposed graph such that T s has depth 2D. The sum is over all
+isomorphism types ( ˜F, ˜T t) of tree-decomposed graphs. This sum is ﬁnite and thus well-deﬁned
+as bIsoHom
+
+(F, T s),
+
+˜F, ˜T t
+= 0 holds if ˜T t has depth unequal to 2D or nodes with at least
+(r + 1) · (|V (G)| −1) children.
+Assume that for the root bag of (F, T s) it holds βT s(s) = {v}. Let x ∈V (G) be any vertex in
+G, and denote by (F (D)(x), T (D)(x)) the depth-2D r-ℓWL-unfolding tree at node x. Deﬁne the
+following two sets,
+S1(x) = {h ∈BIso((F, T s), G) | h(v) = x} ,
+S2(x) =
+n
+(ρ, τ) ∈BIsoHom
+
+(F, T s) ,
+
+F (D)(x), T (D)(x)
+
+| ρ(v) = x
+o
+.
+We prove that |S1(x)| = |S2(x)| for every x ∈V (G), which is equivalent to (11). For this, we show
+for any bag isomorphism h from (F, T s) to G with h(v) = x, there exists a unique bag isomorphism
+homomorphism σ from (F, T s) to (F (D)(x), T (D)(x)) with σ(v) = x such that h = π ◦σ, where
+π is the bag isomorphism from (F (D)(x), T (D)(x)) to G, deﬁned in Deﬁnition 26 and Theorem 4,
+respectively. To visualize this proof idea, see Figure 12.
+First, deﬁne ρ(v) := x. Let v1, . . . , vn ∈V (F) be nodes that correspond to bags in T s of depth 2
+with one element inside the bag and their parents having two elements in their bag, i.e., {vi} are
+the corresponding bags. Similarly, set x1, . . . , xm ∈V (F (D)(x)) nodes that correspond to bags
+of depth 2 in T (D)(x), with one element inside the bag and their parents having two elements in
+their bag. Since h is a bag isomorphism and π as well, for every i = 1, . . . , n there exists a ji such
+that h(vi) = ˜xji = π(xji), where ˜xji ∈V (G) and xji ∈V
+ F (D)(x)
+
+. Since π and h are bag
+isomorphisms, we have
+F[{{v, vi}}] ∼= G[{{x, ˜xji}}] ∼= F (D)(x)[{{x, xji}}].
+(12)
+35
+
+Now, set ρ(vi) = xji for every i = 1, . . . , n. Based on (12), we can easily deﬁne τ such that τ
+satisﬁes Deﬁnition 28 with respect to bags that are of depth 1 and 2.
+For q = 1, . . . , r and l = 1, . . . , |Nq(v)|, let pq
+l be a path of length 2q starting from the root node s
+in T s. Every such path pq
+l in T s corresponds to unique path vq
+l , that is in Nq(x), of length q in F.
+We represent the path by
+n
+vq
+l,1, vq
+l,2, . . . , vq
+l,q+1
+o
+, where every consecutive node is connected to each
+other and for k = 1, . . . q + 1, we have
+n
+v, vq
+l,k
+o
+∈E(F) iff
+n
+h(v), h(vq
+l,k)
+o
+∈E(G) as h is a bag
+isomorphism. Further for every node k = 1, . . . , q + 1 there exists a jq
+l,k such that h(vq
+l,k) = ˜xjq
+l,k =
+π(xjq
+l,k), where ˜xjq
+l,k ∈V (G),
+n
+˜xjq
+l,1, . . . , ˜xjq
+l,q+1
+o
+∈Nq(x) and
+n
+xjq
+l,1, . . . , xjq
+l,q+1
+o
+∈Nq(x). We
+set σ(vq
+l,k) = xjq
+l,k for every k = 1, . . . , q + 1. Clearly, we have
+F [{{v, vi, vi+1}}] ∼= G
+
+x, ˜xji, ˜xji+1
+		 ∼= F (D)(x)
+
+x, xji, xji+1
+		
+.
+(13)
+Now, based on (13), we can easily deﬁne τ such that τ satisﬁes Deﬁnition 28 with respect to bags that
+correspond to paths in Nq(v) for q = 1, . . . , r. Now, following this construction recursively leads to
+a bag isomorphism ρ such that h = π ◦ρ.
+It remains to show that (ρ, τ) is unique (up to isomorphism). For this, let (ρ1, τ1) be another bag
+isomorphism homomorphism between (F, T s) and (F (D)(x), T (D)(x)) such that ρ1(v) = x and
+h = π ◦ρ1. We show that ρ = ρ1.
+We begin by showing that ρ(v) = ρ1(v) for every v that is not in a cycle. Adopting the previous
+notations, consider v1, . . . , vn ∈V (F) and x1, . . . , xm ∈V (F (D)(x)). For each i = 1, . . . , n, let
+ki and li be the indices such that ρ(vi) = xki and ρ1(vi) = xli. Consequently, π(xki) = π(xli). We
+note that the image of h(vi) is not contained in a cycle in G, as otherwise, h would not be a bag
+isomorphism. Similarly, xki and xli are not contained in a cycle; otherwise, ρ and ρ1 would not be
+bag isomorphisms. Now, π is an injective mapping if the domain is restricted to nodes that are of
+depth 1 and 2, and not contained in a cycle. Hence, xki = xli.
+We continue by showing that for every w ∈V (F), that is contained in a cycle, we have ρ(w) = ρ1(w).
+This follows a similar argument as the nodes that are not included in any cycle. We summarize
+the argument shortly: It must hold that ρ(w) and ρ1(w) are contained in a cycle, and π(ρ(w)) and
+π(ρ1(w)) as well. Now, π is injective if the domain is restricted to nodes that are only contained in
+cycles. Hence, ρ1 = ρ.
+We continue this subsection by introducing the concept of a bag extension in the context of tree-
+decomposed graphs. This deﬁnition formalizes the notion of one tree-decomposed graph being an
+extension of another.
+Deﬁnition 29 (Deﬁnition 20 in (Dell et al., 2018)). Let (F, T t) be a tree-decomposed graph. A
+bag extension of (F, T t) is a graph (H, T t) with V (H) = V (F) such that for every t ∈V (T t)
+the induced subgraph H[βT t(t)] is an extension of F[βT t(T)], i.e., if e ∈E (F[βT t(T)]), then
+e ∈E (H[βT t(T)]). We deﬁne bExt
+
+(F, T t), ( ˜F, ˜T s)
+
+as the number of bag extensions of (F, T t)
+that are isomorphic to ( ˜F, ˜T s).
+Intuitively, a bag extension of a tree-decomposed graph (F, T s) can be achieved by adding an arbitrary
+number of edges to F. Each added edge must be contained within a bag that corresponds to a node in
+the tree T s.
+Deﬁnition 30 (Deﬁnition C.28 in (B. Zhang et al., 2024)). Given a tree-decomposed graph (F, T r)
+and a graph G, a bag-strong homomorphism from (F, T s) to G is a homomorphism f from F to
+G such that, for all t ∈V (T r), f is a strong homomorphism from F[βT s(t)] to G[f(βT s(t))], i.e.,
+{u, v} ∈E (F[βT s(t)]) iff {f(u), f(v)} ∈E (G[f(βT s(t))]). Denote BStrHom((F, T s), G) to be
+the set of all bag-strong homomorphisms from (F, T s) to G, and denote bStrHom((F, T s), G) =
+|BStrHom((F, T s), G)|.
+We continue with decomposing the number of homomorphism from a fan cactus graph to any graph.
+Lemma 7. Let r ∈N. For any tree-decomposed graph (F, T s) ∈Mr+2 and any graph G, it holds
+hom (F, G) =
+X
+( ˜
+F, ˜T t)∈Mr+2
+bExt
+
+(F, T s) ,
+
+˜F, ˜T t
+· bStrHom
+
+˜F, ˜T t
+, G
+
+.
+(14)
+36
+
+F
+F (1)
+G
+σ
+π
+h
+Figure 12: Visualization of proof idea of Lemma 6
+Proof. The proof follows the lines of Lemma C.29. in (B. Zhang et al., 2024). First, (14) is
+well-deﬁned as T s is ﬁnite, hence, there can only be ﬁnitely many bag extensions of (F, T s).
+Further, consider the set
+S =
+n
+˜F, ˜T t
+, (ρ, τ) , g
+
+|
+
+˜F, ˜T t
+∈Mr+2 , (ρ, τ) ∈BExt
+
+(F, T s) ,
+
+˜F, ˜T t
+,
+g ∈BstrHom
+
+˜F, ˜T t
+, G
+o
+.
+We consider the mapping σ from S to hom(F, G) via ((ρ, τ) , g) 7→g ◦ρ. We show that for every
+homomorphism h there exists a unique, up to automorphisms,
+
+˜F, ˜T t
+∈Mr+2, (ρ, τ) and g such
+that h = g ◦ρ.
+We begin with the existence part. For h ∈hom(F, G), we deﬁne
+
+˜F, ˜T t
+∈Mr+2, (ρ, τ) and g as
+follows.
+• We deﬁne ˜F by adding the edges given by
+{{u, v} | u, v ∈V (F), ∃t ∈T s s.t. {u, v} ∈βT s(t), {h(u), h(v)} ∈E(G)} .
+(15)
+37
+
+We deﬁne ˜T t := T s. Clearly,
+
+˜F, ˜T t
+∈Mr+2 and it is a bag extension as only edges are
+added that are contained within a bag that corresponds to a node in T s.
+• We deﬁne ρ and τ as the identity mappings on their respective domain, leading to (ρ, τ) ∈
+BExt
+
+(F, T s) ,
+
+˜F, ˜T t
+.
+• We deﬁne g = h. For x ∈˜T t, we show that g is a strong homomorphism from ˜F[β ˜T t(x)] to
+G[g (β ˜T t(x))]. Let {u, v} ∈E
+
+˜F[β ˜T t(x)]
+
+, then {g(u), g(v)} ∈E (G[g (β ˜T t(x))]) as h
+is a homomorphism with respect to the edges E(F) and in (15) only edge {u, v} were added
+that satisfy {h(u), h(v)} ∈E(G). On the other hand {g(u), g(v)} ∈E (G[g (β ˜T t(x))]),
+but {u, v} ̸∈E
+
+˜F[β ˜T t(x)]
+
+would contradict (15) as u, v are contained in the same bag
+β ˜T t(x). Hence, g ∈BstrHom
+
+˜F, ˜T t
+, G
+
+.
+We ﬁnally prove the uniqueness part, i.e., that σ
+
+( ˜F1, ˜T t1
+1 ), (ρ1, τ1), g1
+
+= h implies that there
+exists an isomorphism (˜ρ, ˜τ) from
+
+˜F1, ˜T t1
+1
+
+to
+
+˜F, ˜T t
+such that ˜ρ ◦ρ1 = ρ, ˜τ ◦τ1 = τ. We ﬁrst
+prove that ˜F1 ∼= ˜F and ˜T t1
+1 ∼= ˜T t.
+1. For any u, v ∈V (F), we obviously have ρ(u) = ρ(v) iff u = v iff ρ1(u) = ρ1(v) as ρ and
+ρ1 are injective mappings.
+2. Let u, v ∈V (F). Consider {ρ1(u), ρ1(v)} ∈E( ˜F1), we show that {ρ(u), ρ(v)} ∈E( ˜F).
+If {u, v} ∈E(F), then clearly {ρ(u), ρ(v)} ∈E( ˜F) as ρ is a homomorphism. Hence,
+assume that {u, v} ̸∈E(F). Then, u, v must be contained in the same bag of T s as ρ1 is a
+bag extension and only node pairs are added if they are in the same bag. Hence, ρ(u) and ρ(v)
+are contained in the same bag. As g1 is a homomorphism, we have {g1(ρ1(u)), g1(ρ1(v))} ∈
+E(G). But, then also {g(ρ(u)), g(ρ(v))} ∈E(G), and as g is a strong homomorphism (with
+respect to the bag in which ρ(u) and ρ(v) are contained), we have {ρ(u), ρ(v)} ∈E( ˜F).
+By symmetry of the argument, we have {ρ1(u), ρ1(v)} ∈E( ˜F1) iff {ρ(u), ρ(v)} ∈E( ˜F).
+3. Since ρ1 and ρ are bag extension, they are bijective on their respective domain. Hence,
+˜ρ = ρ ◦ρ−1
+1
+deﬁnes an isomorphism from ˜F1 to ˜F. On the other hand, ˜T t1
+1 ∼= ˜T t trivially
+holds, again with ˜τ = τ ◦τ −1
+1 .
+We have ˜ρ ◦ρ1 = ρ, ˜τ ◦τ1 = τ. We show that the tuple (˜ρ, ˜τ) is an isomorphism, i.e., it remains to
+show that for any b ∈˜T t1
+1 , we have ˜ρ(β ˜T t1
+1 (b)) = β ˜T t(˜τ(b)). Since τ1 is surjective, we can choose a
+such that τ1(a) = b. Then,
+˜ρ(β ˜T t1
+1 (τ1(a))) = ˜ρ(ρ1(βT s(a))) = ρ(βT s(a)) = β ˜T t(τ(a)) = β ˜T t(˜τ ◦τ1(a)) = β ˜T t(˜τ(b)).
+The ﬁrst and third equalities hold since (ρ1, τ1) and (ρ, τ) are bag extensions.
+Deﬁnition 31 (Deﬁnition 30 in (B. Zhang et al., 2024)). Given two tree-decomposed graphs (F, T s)
+and ( ˜F, ˜T t), a homomorphism (ρ, τ) from (F, T s) to ( ˜F, ˜T t) is called bag-strong surjective if ρ is
+a bag-strong homomorphism from (F, T s) to ˜F and is surjective on both vertices and edges, and
+τ is an isomorphism from T s to ˜T t such that for all x ∈V (T s), we have ρ(βT s(x)) = β ˜T t(τ(x)).
+Denote BStrSurj((F, T s), ( ˜F, ˜T t)) to be the set of all bag-strong subjective homomorphisms from
+(F, T s) to ( ˜F, ˜T t), and denote bStrSurj((F, T s), ( ˜F, ˜T t)) = |BStrSurj((F, T s), ( ˜F, ˜T t))|.
+Lemma 8. Let r ∈N. For any tree-decomposed graph (F, T s) ∈Mr+2 and any graph G, it holds
+bStrHom ((F, T s) , G) =
+X
+( ˜
+F, ˜T t)∈Mr+2
+bStrSurj
+
+(F, T s) ,
+
+˜F, ˜T t bIso
+
+˜F, ˜T t
+, G
+
+aut
+
+˜F, ˜T t
+
+,
+(16)
+where aut( ˜F, ˜T t) counts the number of automorphisms of ( ˜F, ˜T t).
+38
+
+Proof. The proof follows the lines of Lemma C.31. in (B. Zhang et al., 2024).
+Consider the set
+S =
+n
+˜F, ˜T t
+, (ρ, τ) , g
+
+|
+
+˜F, ˜T t
+∈Mr+2 , (ρ, τ) ∈BStrSurj
+
+(F, T s) ,
+
+˜F, ˜T t
+,
+g ∈BIso
+
+˜F, ˜T t
+, G
+o
+.
+We consider the mapping σ from S to BStrHom ((F, T s) , G) via ((ρ, τ) , g) 7→g ◦ρ. We show that
+for every bag-strong homomorphism h there exists a unique, up to automorphisms,
+
+˜F, ˜T t
+∈Mr+2,
+bag-strong surjective homomorphism (ρ, τ) and g such that h = g ◦ρ.
+We begin with the existence part.
+For h ∈BStrHom ((F, T s) , G), we deﬁne
+
+˜F, ˜T t
+∈
+Mr+2, (ρ, τ) and g as follows.
+We deﬁne ˜F by deﬁning an equivalence relation ∼on V (F): u ∼v if h(u) = h(v) and there exists
+a path P in T s with endpoints t1, t2 ∈V (T s) such that u ∈βT s(t1), v ∈βT s(t2), and all nodes t
+on the path P satisﬁes that h(u) = h(v) ∈h(βT s(t)). We then deﬁne ρ as the quotient map with
+respect to ∼and set ˜F = F/ ∼, i.e.,
+V ( ˜F) = {ρ(u) | u ∈V (F)} , E( ˜F) = {{ρ(u), ρ(v)} | {u, v} ∈E(F)} ,
+which is well-deﬁned as {u, v} ∈E(F) imples ρ(u) ̸= ρ(v) since h is a homomorphism. Then, ρ is
+surjective per construction.
+We deﬁne the mapping g : V ( ˜F) →V (G) such that g(ρ(u)) = h(u) for all u ∈V (F). This mapping
+g is well-deﬁned since ρ(u) = ρ(v) implies h(u) = h(v), and ρ : V (F) →V ( ˜F) is surjective.
+This leads to the equality h = g ◦ρ. To demonstrate that g is a homomorphism, consider any edge
+(x, y) ∈E( ˜F). There exists an edge (u, v) ∈E(F) such that ρ(u) = x and ρ(v) = y, which implies
+(h(u), h(v)) ∈E(G), since h is a homomorphism. Consequently, this means (g(x), g(y)) ∈E(G).
+We continue by deﬁning the tree ˜T t := (V (T), E(T), β ˜T t). We set t = s, and deﬁne τ to be the
+identity. Furthermore, we have β ˜T t(x) = ρ(βT s(x)) for all x ∈V (T). It remains to prove that
+( ˜F, ˜T t) ∈Mr+2 is a valid tree decomposition. For this, it sufﬁces to prove that for any vertex
+x ∈V ( ˜F) the subgraph B ˜T t(x) is connected. For this, let x ∈V ( ˜F) and t1, t2 ∈B ˜T t(x). Then,
+there exists u ∈βT s(t1), v ∈βT s(t2) such that ρ(u) = x, ρ(v) = x. Therefore, u ∼v. As such,
+there exists a path P ∈T s such that all nodes b on P satisfy h(u) ∈h(βT s(b)). Hence, for every
+b ∈P there exists some wb ∈βT s(b) such that h(wb) = h(u), and consequently wb ∼u. Finally,
+x = ρ(u) = ρ(wb) ∈ρ(βT s(b)) = β ˜T t(b) for all b in the path P. Hence,
+
+˜F, ˜T t
+∈Mr+2.
+It remains to prove that ρ is a bag-strong surjective homomorphism and g is a bag isomorphism.
+We begin by showing that ρ is a bag-strong surjective homomorphism. For this, let t ∈V (T s)
+and u, v ∈βT s(t). If {u, v} ̸∈E(F) , then {h(u), h(v)} ̸∈E(G) (since h is a bag-strong
+homomorphism). Therefore, {ρ(u), ρ(v)} ̸∈E( ˜F) since g is a homomorphism. Hence, ρ is a
+bag-strong surjective homomorphism.
+We show that g is a bag isomorphism. Let x ∈V ( ˜T t), and consider ˜u, ˜v ∈β ˜T t(x). Since ρ is
+surjective, there exist u, v ∈βT s(x) such that ρ(u) = ˜u and ρ(v) = ˜v. We have {ρ(u), ρ(v)} ̸∈
+E( ˜F) iff {h(u), h(v)} ̸∈E(G), since both ρ and h are bag-strong homomorphisms. Therefore, g is
+a bag isomorphism.
+We ﬁnally prove that σ
+
+( ˜F1, ˜T t1), (ρ1, τ1), g1
+
+= σ
+
+( ˜F, ˜T t), (ρ, τ), g
+
+implies there exists an
+isomorphism (˜ρ, ˜τ) from ( ˜F1, ˜T t1
+1 ) to ( ˜F, ˜T t) such that ˜ρ ◦ρ1 = ρ, ˜τ ◦τ1 = τ, g1 = g ◦˜ρ. Let
+h = g1 ◦ρ1 = g ◦ρ. We will only show that ˜F1 ∼= ˜F since the remaining procedure is almost the
+same as in previous proofs. It sufﬁces to prove that, for all u, v ∈V (F), ρ1(u) = ρ1(v) iff
+a) h(u) = h(v), and
+b) There exists a path P in T s with endpoints t1, t2 ∈V (T) such that u ∈βT s(t1), v ∈
+βT s(t2), and all node x on path P satisﬁes that h(u) ∈h(βT s(x)).
+39
+
+We begin by showing the ﬁrst direction, i.e., ρ1(u) = ρ1(v) implies Items a) and b). If ρ1(u) = ρ1(v),
+we clearly have h(u) = h(v) as g1 is well-deﬁned. Also, there exists x1 ∈BT s(u), x2 ∈BT s(v),
+i.e., u ∈βT s(x1) and v ∈βT s(x2). Hence, ρ(u) ∈ρ(βT s(x1)) ⊂β ˜T t1
+1 (τ1(x1)) and ρ1(u) =
+ρ1(v) ∈ρ1(βT s(x2)) ⊂β ˜T t1
+1 (τ1(x2)) since (ρ1, τ1) is a homomorphism. Hence, τ1(x1), τ1(x2) ∈
+B ˜T t1
+1 (ρ1(u)). Since ˜T t1
+1 [B ˜T t1
+1 (ρ1(u))] is connected, there is a path P in ˜T t1
+1 [B ˜T t1
+1 (ρ1(u))] with
+endpoints τ1(x1), τ1(x2) such that all nodes x on P satisﬁes ρ1(u) ∈β ˜T t1
+1 (x) = β ˜T t1
+1 (τ ◦τ −1(x)) =
+ρ1
+ βT s(τ −1
+1 (x))
+
+. We conclude h(u) = g1(ρ1(u)) ∈g1(ρ1(βT s(τ −1
+1 (x)))) = h(βT s(τ −1
+1 (x))).
+We continue by showing the second direction, i.e., ρ1(u) = ρ1(v) if Items a) and b). We prove this
+by contradiction, i.e., assume ρ1(u) ̸= ρ1(v) but the above items (a) and (b) hold. We consider two
+cases.First, assume that u and v are in the same bag of T s. Then, as (ρ1, τ1) is a homomorphism,
+the nodes ρ1(u) and ρ1(v) are in the same bag of ˜T t1
+1 . Since g1 is a bag isomorphism, we have
+g1(ρ1(u)) ̸= g1(ρ1(v)). This contradicts Item (a) above.
+Now, consider the second case. For this, assume that u and v are not in the same bag of T s.
+Then, there exist two adjacent nodes x1, x2 on path P such that u ∈βT s(x1), u ̸∈βT s(x2). We
+have βT s(x2) ⊂βT s(x1) as for every pair of nodes t1, t2 in a canonical tree decomposition with
+{t1, t2} ∈E(T s) we have either βT s(t1) ⊂βT s(t2) or βT s(t2) ⊂βT s(t1). Now, item (b) implies
+that there exists w ∈βT s(x2) such that w ̸= u and h(w) = h(u). Then, ρ1(w) ∈ρ1 (βT s(x2)) ⊂
+ρ1 (βT s(x1)) ⊂β ˜T t1
+1 (τ1(x1)). Therefore, ρ1(u) and ρ1(w) are two different nodes in β ˜T t1
+1 (τ1(x1))
+with g1(ρ1(u)) = h(u) = h(w) = g1(ρ1(w)). This contradicts the condition that g1 is a bag
+isomorphism. This yields the desired result that ˜F ∼= ˜F1.
+Finally, we restate Theorem 2, with its proof now being a straightforward corollary of the preceding
+results in this section.
+Theorem 2. Let r ≥0. Then, r-ℓWL can homomorphism-count Mr+2.
+Proof. According to Corollary 3, if cr(G) = cr(H), then cnt(F, G) = cnt(F, H) for every F ∈
+Mr+2. Utilizing Lemma 6, we extend this result to bag isomorphism counts: bIso(F, G) =
+bIso(F, H) holds for every F ∈Mr+2. Finally, invoking Lemma 7 and Lemma 8, we conclude that
+hom(F, G) = hom(F, H) for all F ∈Mr+2.
+H
+Implications of Theorem 2
+In this section, we discuss important implications of Theorem 2 and provide proofs for the results in
+Corollary 2.
+H.1
+Appendix on F-Hom-GNNs and Proof of Corollary 2 i)
+Recent work in the domain of MPNNs has explored enhancing the initial node features by incorporat-
+ing homomorphism counts (Barceló et al., 2021). We summarize this approach in this section and
+compare it to our r-ℓWL algorithm.
+Deﬁne F = {P s
+1 , . . . , P s
+l } as a collection of rooted graphs, termed as patterns. In F-Hom-MPNNs,
+the initial feature vector of a vertex v in a graph G combines a one-hot encoding of the label χG(v)
+with homomorphism counts corresponding to each pattern in F. The feature vector for each vertex v
+is recursively deﬁned over rounds of message passing as follows:
+x(0)
+F,G,v = (χG(v), hom(P s
+1 , Gv), . . . , hom(P s
+l , Gv))
+x(t+1)
+F,G,v = g(t+1) 
+x(t)
+F,G,v, f (t+1) 
+x(t)
+F,G,u | u ∈NG(v)
+
+(17)
+Here, g(t) and f (t) represent the update and aggregation functions at depth t, respectively.
+40
+
+H.1.1
+Expressivity of F-Hom-MPNNs
+In this section, we summarize known results about the expressivity of F-Hom-MPNNs. The main
+result from Barceló et al., 2021 can be summarized as follows.
+Theorem 6. For any two graphs G and H, it holds F-Hom-MPNNs can separate G and H if and
+only if hom(T, G) = hom(T, H), for every F-pattern tree.
+To understand the above theorem, we need to deﬁne the concept of F-pattern trees. For this, we
+deﬁne the graph join operator ∗as follows. Given two rooted graphs Gv and Hw, the join graph
+(G ∗H)v is obtained by taking the disjoint union of Gv and Hw, followed by identifying w with v.
+The root of the join graph is v. Further, if G is a graph and P r is a rooted graph, then joining a vertex
+v in G with P r results in the disjoint union of G and P r, where r is identiﬁed with v.
+Let F = {P1, . . . , Pl}. An F-pattern tree T r is constructed from a standard rooted tree Sr =
+(V, E, χ), which serves as the core structure, or the "backbone", of T r. To form T r, each vertex s ∈V
+of the backbone may be joined to any number of duplicates of any patterns from F. Conceptually,
+an F-pattern tree is a tree graph enhanced by attaching multiple instances of any pattern from F to
+the nodes of the backbone tree. However, it is important to note that additional patterns may not be
+attached to any node that already derives from a pattern in F. Our method can homomorphism-count
+graphs where this is allowed, see Appendix H.1.2.
+Examples of F-pattern trees for F =
+
+	
+are
+where grey vertices are part of the backbones of the F-pattern trees, black vertices are the joined
+node and white vertices are part of the attached patterns. We deﬁne the set of F-pattern trees by FTr.
+H.1.2
+Comparison with r-ℓWL
+We compare our proposed r-ℓGIN against Fr-Hom-MPNNs, where Fr = {C3, . . . , Cr+2} consists
+of cycle graphs up to length r + 2. Both MPNN variants exhibit equivalent preprocessing complexity.
+However, after the initial layer, the computational complexity of our method is marginally higher, yet
+it increases linearly with the number of cycles present in the underlying graph.
+According to Theorem 2, our method r-ℓGIN can homomorphism-count all fan (r + 2)-cactus graphs.
+In particular, r-ℓGIN can homomorphism-count all Fr-pattern trees. For example, there are inﬁnitely
+many fan r-cactus graphs that cannot be represented as Fr-pattern trees, e.g., for r = 1
+We restate Corollary 2 ii) and give a short proof.
+Corollary 4. Let r ∈N \ {0}. Then, r-ℓWL is more powerful than F-Hom-MPNNs, where
+F = {C3, . . . , Cr+2}.
+Proof. The proof of Corollary 2 ii) can be stated as a summary of all ﬁnding of the previous subsection:
+By Theorem 2, we have r-ℓWL ⊑hom(Mr+2, ·). By Theorem 6, we have F-Hom-MPNNs
+⊑hom(FTr, ·) and hom(FTr, ·) ⊑F-Hom-MPNNs. Clearly, FTr ⊂Mr+2. Hence, r-ℓWL
+⊑hom(Mr+2, ·) ⊑hom(FTr, ·). Hence, r-ℓWL is more powerful than F-Hom-MPNNs.
+H.2
+Appendix on Subgraph GNNs and Proof of Corollary 2 ii)
+Subgraph GNNs treat a graph as a collection of graphs {Gu | u ∈N(v)}, where Gu is a graph
+obtained by marking the corresponding node u. For every graph Gu it runs an independent WL-
+41
+
+algorithm, i.e.,
+x(0)
+Sub,Gu(v) = (χG(v), 1v=u(v))
+x(t+1)
+Sub,Gu(v) = g(t+1) 
+x(t)
+Sub,Gu(v), f (t+1) 
+x(t)
+Sub,Gu(w) | w ∈NG(v)
+
+.
+(18)
+Here, g(t) and f (t) represent the update and aggregation functions at depth t, respectively. The ﬁnal
+node representations after t rounds are then calculated by
+xt
+Sub,G(u) = h
+
+x(t)
+Sub,Gu(v) | v ∈V (G)
+
+.
+H.2.1
+Expressivity of Subgraph GNNs and Comparison with r-ℓWL
+The expressivity of subgraph GNNs is fully characterized by the class
+Fsub := {F | ∃u ∈V (F) s.t. F \ {u} is a forest} ,
+i.e., Subgraph GNNs can separate a pair of graphs G, H if and only if hom(Fsub, G) ̸=
+hom(Fsub, H). Furthermore, the set Fsub is the maximal set that satisﬁes this property (B. Zhang
+et al., 2024, Theorem 3.4). We restate Corollary 2 ii) and provide a proof.
+Corollary 5. 1-ℓWL is not less powerful than Subgraph GNNs. In particular, any r-ℓWL can separate
+inﬁnitely many graphs that Subgraph GNNs fail to distinguish.
+Proof. We show that already 1-ℓWL can separate inﬁnitely many graphs that Subgraph GNNs fail to
+distinguish. The other statements then follow as a simple corollary of Proposition 1.
+For clarity, we begin by demonstrating that there exists a pair of graphs that 1-ℓGIN can separate, but
+Subgraph GNNs cannot distinguish. Consider the graph F deﬁned as follows: F =
+
+	
+. It
+holds that F ∈M3 \ Fsub, where Fsub is the maximal set that Subgraph GNNs can homomorphism-
+count. Then, by (B. Zhang et al., 2024, Theorem 3.4), there exists a pair of graphs G(F) and
+H(F) such that hom(F, G(F)) ̸= hom(F, H(F)) and hom(Fsub, G(F)) = hom(Fsub, H(F)).
+Hence, Subgraph GNNs cannot separate G(F) and H(F). Since F ∈M3, by hom(F, G(F)) ̸=
+hom(F, H(F)) and Theorem 2, 1-ℓWL can separate G(F) and H(F).
+This argument can be repeated for every F ∈M3 \ Fsub. Since there are inﬁnitely many graphs in
+M3 \ Fsub, the corollary follows.
+We mention that the construction of the pair of graphs G(F) and H(F) in the previous proof is
+based on (twisted) Fürer graphs and is largely motivated by the constructions by Fürer (2001) and
+B. Zhang et al. (2024). More precisely, we can deﬁne G(F) as the Fürer graph of F and H(F) as the
+corresponding twisted Fürer graph. See Figure 7c for a visualization of F, G(F), and H(F).
+H.3
+Appendix on Subgraph k-GNNs and Proof of Corollary 2 iii)
+Qian et al. (2022) introduced a higher-order version of Subgraph GNNs that compute representations
+for subgraphs made of tuples of nodes. Speciﬁcally, Subgraph k-GNNs – referred to as vertex-
+subgraph k-OSANs in the original work (Qian et al., 2022) – treat a graph as a collection of graphs
+
+Gu | u ∈V (G)k	
+, where Gu is a graph obtained by marking the corresponding nodes u. For every
+graph Gu it runs an independent WL-algorithm, i.e.,
+x(0)
+Sub(k),Gu(v) = (χG(v), atp(u), 1v=u1(v), . . . , 1v=uk(v))
+x(t+1)
+Sub(k),Gu(v) = g(t+1) 
+x(t)
+Sub(k),Gu(v), f (t+1) 
+x(t)
+Sub(k),Gu(w) | w ∈NG(v)
+
+.
+(19)
+Here, g(t) and f (t) represent the update and aggregation functions at depth t, respectively. For every
+k-tuple u, the ﬁnal representations after t rounds are then calculated by
+x(t)
+Sub(k),G(u) = h
+
+x(t)
+Sub(k),Gu(v) | v ∈V (G)
+
+.
+The ﬁnal graph representation is then given by
+x(t)
+Sub(k)(G) = j
+
+x(t)
+Sub(k),G(u) | u ∈V (G)k
+.
+The homomorphism-expressivity of these GNNs is characterized as follows:
+42
+
+Theorem 7 (B. Zhang et al., 2024). The homomorphism-expressivity of Subgraph k-GNN is given by
+Fsub(k) = {F : ∃U ⊂VF s.t. |U| ≤k and F \ U is a forest }.
+Since the set Fsub(k) is the maximal set of graphs that Subgraph k-GNNs can homomorphism-count,
+we can derive the following corollary, which restates Corollary 2 iii) and provides a proof.
+Corollary 6. For any k ≥1, 1-ℓWL is not less powerful than Subgraph k-GNNs. In particular, any
+r-ℓWL can separate inﬁnitely many graphs that Subgraph k-GNNs fail to distinguish.
+Proof. The proof parallels the proof of Corollary 2. We present it here for completeness.
+Let k ≥1. We will show that there exists a pair of graphs that 1-ℓGIN can distinguish, but Subgraph
+k-GNNs cannot. Consider the graph F, deﬁned as the unique graph with k triangle graphs, all
+connected by an edge to a single node.
+It holds that F ∈M3 \ Fsub(k), where Fsub(k) is the maximal set that Subgraph k-GNNs can
+homomorphism-count. Then, by (B. Zhang et al., 2024, Theorem 3.8), there exists a pair of
+graphs G(F) and H(F) such that hom(F, G(F)) ̸= hom(F, H(F)) and hom(Fsub(k), G(F)) =
+hom(Fsub(k), H(F)). Hence, Subgraph k-GNNs cannot separate G(F) and H(F). Since F ∈M3,
+by hom(F, G(F)) ̸= hom(F, H(F)) and Theorem 2, 1-ℓWL can separate G(F) and H(F).
+This argument can be repeated for every F ∈M3 \ Fsub(k). Since there are inﬁnitely many
+non-isomorphic graphs in M3 \ Fsub(k), the corollary follows.
+H.4
+Proof of Corollary 2 iv)
+Proof of Corollary 2 iv). Given graphs F and G, it is well-known (see, e.g., (Neuen, 2024; Curtica-
+pean et al., 2017)) that sub(F, G) can be decomposed as:
+sub(F, G) =
+X
+F ′∈spasm(F )/∼
+α(F ′)hom(F ′, G).
+(20)
+Here, the sum ranges over all non-isomorphic graphs in spasm(F). The sum in (20) is ﬁnite since the
+homomorphic image of F has at most |V (F)| nodes. Per assumption, we have spasm(F) ⊂Mr+2,
+i.e., by Theorem 2, r-ℓWL can homomorphism-count spasm(F). In particular, if r-ℓWL cannot
+separate two graphs G and H, we have hom(spasm(F), G) = hom(spasm(F), H), and hence,
+sub(F, G) = sub(F, H).
+The result on subgraph-counting paths follows directly as the homomorphic image of a path Pr+3 of
+length r + 3 lies in Mr.
+I
+Appendix for Section 6
+Theorem 3. For ﬁxed t, r ≥0, t iterations of r-ℓWL are more powerful than r-ℓMPNN with t layers.
+Conversely, r-ℓMPNN is more powerful than r-ℓWL if the functions f (t), g(t) in (3) are injective.
+Proof of Theorem 3. We begin by proving that c(t)
+r
+⊑h(t)
+r . We argue by induction over t for any
+ﬁxed r ≥0.
+Initially, c(0)
+r
+= h(0)
+r
+as both labeling functions start with the same base labels. Now assume
+c(t+1)
+r
+(u) = c(t+1)
+r
+(v) for some u, v ∈V (G). By deﬁnition,
+HASH
+
+c(t)
+r (u),
+nn
+c(t)
+r (p) |p ∈N0(u)
+oo
+, . . .
+
+= HASH
+
+c(t)
+r (v),
+nn
+c(t)
+r (p) |p ∈N0(v)
+oo
+, . . .
+
+.
+This implies c(t)
+r (u) = c(t)
+r (v) and
+nn
+c(t)
+r (p) |p ∈Nk(u)
+oo
+=
+nn
+c(t)
+r (p) |p ∈Nk(v)
+oo
+,
+∀k ∈{0, . . . , r} ,
+as HASH is an injective function.
+43
+
+By induction hypothesis, we hence have h(t)
+r (u) = h(t)
+r (v) and
+nn
+h(t)
+r (p) |p ∈Nk(u)
+oo
+=
+nn
+h(t)
+r (p) |p ∈Nk(v)
+oo
+,
+∀k ∈{0, . . . , r} ,
+which implies that any function, in particular f (t+1)
+k
+and g(t+1) have to return the same result.
+Therefore, we have h(t+1)
+r
+(u) = h(t+1)
+r
+(v).
+We proceed to prove h(t)
+r
+⊑c(t)
+r
+if all message, update, and readout functions are injective in
+Deﬁnition 9. For this, we show that for each t ≥0 there exists an injective function φ such that
+h(t)
+r
+= φ ◦c(t)
+r . For t = 0, we can choose φ to be the identity function. Assume that for t −1 there
+exists an injective function φ such that h(t−1)
+r
+(v) = φ ◦c(t−1)
+r
+(v). Then, we can write
+h(t)
+r (v) = g(t) 
+h(t−1)(v), m(t)
+0 (v), . . . , m(t)
+r (v)
+
+= g(t) 
+φ ◦c(t−1)
+r
+(v), φ ◦m(t)
+0 (v), . . . , φ ◦m(t)
+r (v)
+
+,
+where for every q = 0, . . . , r, we set φ ◦m(t)
+q (v) :=
+nn
+(φ ◦c(t−1)
+r
+(p)) | p ∈Nq(v)
+oo
+and (φ ◦
+c(t−1)
+r
+(p)) = (φ ◦c(t−1)
+r
+(p1), . . . , φ ◦c(t−1)
+r
+(pq+1)) for p = {pi}q+1
+i=1 ∈Nq(v). By assumption, all
+message, update, and readout functions are injective in Deﬁnition 9. Since the concatenation of
+injective functions is injective, there exists an injective function ψ such that
+h(t)
+r (v) = ψ
+ 
+c(t−1)
+r
+(v),
+nn
+c(t−1)
+r
+(p) | p ∈N0(v)
+oo
+,
+nn
+c(t−1)
+r
+(p) | p ∈N1(v)
+oo
+,
+...
+nn
+c(t−1)
+r
+(p) | p ∈Nr(v)
+oo !
+.
+As HASH in Deﬁnition 7 is injective, the inverse HASH−1 exists and is also injective. Hence,
+h(t)
+r (v) = ψ ◦HASH−1 ◦HASH
+ 
+c(t−1)
+r
+(v),
+nn
+c(t−1)
+r
+(p) | p ∈N0(v)
+oo
+,
+nn
+(c(t−1)
+r
+(p) | p ∈N1(v)
+oo
+,
+...
+nn
+(c(t−1)
+r
+(p) | p ∈Nr(v)
+oo !
+= ψ ◦HASH−1 
+c(t)
+r (v)
+
+.
+Choosing φ = ψ ◦HASH−1 ﬁnishes the proof.
+We conclude this section with the following lemma that justiﬁes our architectural choice in (4).
+Lemma 9. Let x ∈Qr. Then there exist ε ∈Rr such that
+ϕ(x) =
+r
+X
+k=0
+εkxk
+(21)
+is an injective function.
+Proof. We prove this claim by induction. For r = 0, any x ̸= 0 ∈R fulﬁlls the claim. Now, let
+ε ∈Rr such that ϕ(x) : Qr →R is injective. The set Q[ε1, . . . , εr] = {Pr
+k=0 εkxk | x ∈Qr} is
+44
+
+countable and hence a proper subset of R. It follows that there exists εr+1 ∈R with εr+1 /∈Q[ε].
+Note that 0 ∈Q and hence εr+1 ̸= 0. We now prove our claim by contradiction.
+Assume there exist x ̸= x′ ∈Qr+1 with Pr+1
+k=0 εkxk = Pr+1
+k=0 εkx′
+k. We distinguish two cases:
+xi = x′
+i for all i ≤r and xr+1 ̸= x′
+r+1: Then immediately
+xr+1 ̸= x′
+r+1
+⇒
+εr+1xr+1 ̸= εr+1x′
+r+1
+⇒
+r
+X
+k=0
+εkxk + εr+1xr+1 ̸=
+r
+X
+k=0
+εkxk + εr+1x′
+r+1
+⇒
+r+1
+X
+k=0
+εkxk ̸=
+r+1
+X
+k=0
+εkxk .
+Pr
+k=0 εkxk ̸= Pr
+k=0 εkx′
+k: But then
+r
+X
+k=0
+εkxk + εr+1xr+1 =
+r
+X
+k=0
+εkx′
+k + εr+1x′
+r+1
+⇔
+r
+X
+k=0
+εkxk −
+r
+X
+k=0
+εkx′
+k = εr+1(x′
+r+1 −xr+1)
+The left hand side is an element of Q[ε1, . . . , εr]. However, εr+1(x′
+r+1 −xr+1) /∈Q[ε1, . . . , εr] by
+choice of εr+1, leading to a contradiction.
+45
+
+NeurIPS Paper Checklist
+1. Claims
+Question: Do the main claims made in the abstract and introduction accurately reﬂect the
+paper’s contributions and scope?
+Answer: [Yes]
+Justiﬁcation: We mention our main results in the abstract and introduction (see Section 1),
+and provide proofs for all claims (see Appendix E ff.) and code for all experiments (see our
+GitHub repository). We clearly state the scope of our theoretical results and emphasize that
+our method provides an expressive architecture suitable for sparse real-world graphs.
+Guidelines:
+• The answer NA means that the abstract and introduction do not include the claims
+made in the paper.
+• The abstract and/or introduction should clearly state the claims made, including the
+contributions made in the paper and important assumptions and limitations. A No or
+NA answer to this question will not be perceived well by the reviewers.
+• The claims made should match theoretical and experimental results, and reﬂect how
+much the results can be expected to generalize to other settings.
+• It is ﬁne to include aspirational goals as motivation as long as it is clear that these goals
+are not attained by the paper.
+2. Limitations
+Question: Does the paper discuss the limitations of the work performed by the authors?
+Answer: [Yes]
+Justiﬁcation: We describe the computational complexity of our method in a separate para-
+graph (see Section 6). We speciﬁcally address its preprocessing complexity on dense graphs
+in a separate paragraph (see Section 7). We also mention important future work that would
+complement our theoretical contributions in the conclusion section (see Section 8).
+Guidelines:
+• The answer NA means that the paper has no limitation while the answer No means that
+the paper has limitations, but those are not discussed in the paper.
+• The authors are encouraged to create a separate "Limitations" section in their paper.
+• The paper should point out any strong assumptions and how robust the results are to
+violations of these assumptions (e.g., independence assumptions, noiseless settings,
+model well-speciﬁcation, asymptotic approximations only holding locally). The authors
+should reﬂect on how these assumptions might be violated in practice and what the
+implications would be.
+• The authors should reﬂect on the scope of the claims made, e.g., if the approach was
+only tested on a few datasets or with a few runs. In general, empirical results often
+depend on implicit assumptions, which should be articulated.
+• The authors should reﬂect on the factors that inﬂuence the performance of the approach.
+For example, a facial recognition algorithm may perform poorly when image resolution
+is low or images are taken in low lighting. Or a speech-to-text system might not be
+used reliably to provide closed captions for online lectures because it fails to handle
+technical jargon.
+• The authors should discuss the computational efﬁciency of the proposed algorithms
+and how they scale with dataset size.
+• If applicable, the authors should discuss possible limitations of their approach to
+address problems of privacy and fairness.
+• While the authors might fear that complete honesty about limitations might be used by
+reviewers as grounds for rejection, a worse outcome might be that reviewers discover
+limitations that aren’t acknowledged in the paper. The authors should use their best
+judgment and recognize that individual actions in favor of transparency play an impor-
+tant role in developing norms that preserve the integrity of the community. Reviewers
+will be speciﬁcally instructed to not penalize honesty concerning limitations.
+46
+
+3. Theory Assumptions and Proofs
+Question: For each theoretical result, does the paper provide the full set of assumptions and
+a complete (and correct) proof?
+Answer: [Yes]
+Justiﬁcation: All theorems are numbered, and we refer to the formal proofs in the appendix
+(see Appendix E ff.).
+Guidelines:
+• The answer NA means that the paper does not include theoretical results.
+• All the theorems, formulas, and proofs in the paper should be numbered and cross-
+referenced.
+• All assumptions should be clearly stated or referenced in the statement of any theorems.
+• The proofs can either appear in the main paper or the supplemental material, but if
+they appear in the supplemental material, the authors are encouraged to provide a short
+proof sketch to provide intuition.
+• Inversely, any informal proof provided in the core of the paper should be complemented
+by formal proofs provided in appendix or supplemental material.
+• Theorems and Lemmas that the proof relies upon should be properly referenced.
+4. Experimental Result Reproducibility
+Question: Does the paper fully disclose all the information needed to reproduce the main ex-
+perimental results of the paper to the extent that it affects the main claims and/or conclusions
+of the paper (regardless of whether the code and data are provided or not)?
+Answer: [Yes]
+Justiﬁcation: All hyperparameters, hyperparameter ranges, and used resources are given
+in Appendix C. Our GitHub repository provides instructions on how to reproduce all
+experiments.
+Guidelines:
+• The answer NA means that the paper does not include experiments.
+• If the paper includes experiments, a No answer to this question will not be perceived
+well by the reviewers: Making the paper reproducible is important, regardless of
+whether the code and data are provided or not.
+• If the contribution is a dataset and/or model, the authors should describe the steps taken
+to make their results reproducible or veriﬁable.
+• Depending on the contribution, reproducibility can be accomplished in various ways.
+For example, if the contribution is a novel architecture, describing the architecture fully
+might sufﬁce, or if the contribution is a speciﬁc model and empirical evaluation, it may
+be necessary to either make it possible for others to replicate the model with the same
+dataset, or provide access to the model. In general. releasing code and data is often
+one good way to accomplish this, but reproducibility can also be provided via detailed
+instructions for how to replicate the results, access to a hosted model (e.g., in the case
+of a large language model), releasing of a model checkpoint, or other means that are
+appropriate to the research performed.
+• While NeurIPS does not require releasing code, the conference does require all submis-
+sions to provide some reasonable avenue for reproducibility, which may depend on the
+nature of the contribution. For example
+(a) If the contribution is primarily a new algorithm, the paper should make it clear how
+to reproduce that algorithm.
+(b) If the contribution is primarily a new model architecture, the paper should describe
+the architecture clearly and fully.
+(c) If the contribution is a new model (e.g., a large language model), then there should
+either be a way to access this model for reproducing the results or a way to reproduce
+the model (e.g., with an open-source dataset or instructions for how to construct
+the dataset).
+47
+
+(d) We recognize that reproducibility may be tricky in some cases, in which case
+authors are welcome to describe the particular way they provide for reproducibility.
+In the case of closed-source models, it may be that access to the model is limited in
+some way (e.g., to registered users), but it should be possible for other researchers
+to have some path to reproducing or verifying the results.
+5. Open access to data and code
+Question: Does the paper provide open access to the data and code, with sufﬁcient instruc-
+tions to faithfully reproduce the main experimental results, as described in supplemental
+material?
+Answer: [Yes]
+Justiﬁcation: All hyperparameters, hyperparameter ranges, and used resources are given in
+the appendix (see Appendix C). Our GitHub repository contains instructions to reproduce
+all experiments.
+Guidelines:
+• The answer NA means that paper does not include experiments requiring code.
+• Please see the NeurIPS code and data submission guidelines (https://nips.cc/
+public/guides/CodeSubmissionPolicy) for more details.
+• While we encourage the release of code and data, we understand that this might not
+be possible, so No is an acceptable answer. Papers cannot be rejected simply for not
+including code, unless this is central to the contribution (e.g., for a new open-source
+benchmark).
+• The instructions should contain the exact command and environment needed to run to
+reproduce the results. See the NeurIPS code and data submission guidelines (https:
+//nips.cc/public/guides/CodeSubmissionPolicy) for more details.
+• The authors should provide instructions on data access and preparation, including how
+to access the raw data, preprocessed data, intermediate data, and generated data, etc.
+• The authors should provide scripts to reproduce all experimental results for the new
+proposed method and baselines. If only a subset of experiments are reproducible, they
+should state which ones are omitted from the script and why.
+• At submission time, to preserve anonymity, the authors should release anonymized
+versions (if applicable).
+• Providing as much information as possible in supplemental material (appended to the
+paper) is recommended, but including URLs to data and code is permitted.
+6. Experimental Setting/Details
+Question: Does the paper specify all the training and test details (e.g., data splits, hyper-
+parameters, how they were chosen, type of optimizer, etc.) necessary to understand the
+results?
+Answer: [Yes]
+Justiﬁcation: Data splits, hyperparameters, hyperparameter grids (if used), optimizer, etc. are
+detailed in the main paper (see Section 7) and appendix (see Appendix C), with additional
+instructions provided in the anonymous GitHub link (see our GitHub repository).
+Guidelines:
+• The answer NA means that the paper does not include experiments.
+• The experimental setting should be presented in the core of the paper to a level of detail
+that is necessary to appreciate the results and make sense of them.
+• The full details can be provided either with the code, in appendix, or as supplemental
+material.
+7. Experiment Statistical Signiﬁcance
+Question: Does the paper report error bars suitably and correctly deﬁned or other appropriate
+information about the statistical signiﬁcance of the experiments?
+Answer: [Yes]
+48
+
+Justiﬁcation: We report error bars and conﬁdence intervals for our experimental results
+(see Section 7), capturing the variability due to different random seeds and initialization.
+Detailed information about statistical signiﬁcance tests is provided in the appendix.
+Guidelines:
+• The answer NA means that the paper does not include experiments.
+• The authors should answer "Yes" if the results are accompanied by error bars, conﬁ-
+dence intervals, or statistical signiﬁcance tests, at least for the experiments that support
+the main claims of the paper.
+• The factors of variability that the error bars are capturing should be clearly stated (for
+example, train/test split, initialization, random drawing of some parameter, or overall
+run with given experimental conditions).
+• The method for calculating the error bars should be explained (closed form formula,
+call to a library function, bootstrap, etc.)
+• The assumptions made should be given (e.g., Normally distributed errors).
+• It should be clear whether the error bar is the standard deviation or the standard error
+of the mean.
+• It is OK to report 1-sigma error bars, but one should state it. The authors should
+preferably report a 2-sigma error bar than state that they have a 96% CI, if the hypothesis
+of Normality of errors is not veriﬁed.
+• For asymmetric distributions, the authors should be careful not to show in tables or
+ﬁgures symmetric error bars that would yield results that are out of range (e.g. negative
+error rates).
+• If error bars are reported in tables or plots, The authors should explain in the text how
+they were calculated and reference the corresponding ﬁgures or tables in the text.
+8. Experiments Compute Resources
+Question: For each experiment, does the paper provide sufﬁcient information on the com-
+puter resources (type of compute workers, memory, time of execution) needed to reproduce
+the experiments?
+Answer: [Yes]
+Justiﬁcation: All information on the compute resources is given in the appendix (see
+Appendix C). For the real-world experiments, we provide run times, and for the synthetic
+experiments, the run times are negligible.
+Guidelines:
+• The answer NA means that the paper does not include experiments.
+• The paper should indicate the type of compute workers CPU or GPU, internal cluster,
+or cloud provider, including relevant memory and storage.
+• The paper should provide the amount of compute required for each of the individual
+experimental runs as well as estimate the total compute.
+• The paper should disclose whether the full research project required more compute
+than the experiments reported in the paper (e.g., preliminary or failed experiments that
+didn’t make it into the paper).
+9. Code Of Ethics
+Question: Does the research conducted in the paper conform, in every respect, with the
+NeurIPS Code of Ethics https://neurips.cc/public/EthicsGuidelines?
+Answer: [Yes]
+Justiﬁcation: We respect the NeurIPS Code of Ethics.
+Guidelines:
+• The answer NA means that the authors have not reviewed the NeurIPS Code of Ethics.
+• If the authors answer No, they should explain the special circumstances that require a
+deviation from the Code of Ethics.
+• The authors should make sure to preserve anonymity (e.g., if there is a special consid-
+eration due to laws or regulations in their jurisdiction).
+49
+
+10. Broader Impacts
+Question: Does the paper discuss both potential positive societal impacts and negative
+societal impacts of the work performed?
+Answer: [NA]
+Justiﬁcation: While our work has numerous potential societal consequences, none of which
+we feel must be explicitly emphasized here, its impact lies in providing a theoretical
+foundation for improved graph representation learning methodologies.
+Guidelines:
+• The answer NA means that there is no societal impact of the work performed.
+• If the authors answer NA or No, they should explain why their work has no societal
+impact or why the paper does not address societal impact.
+• Examples of negative societal impacts include potential malicious or unintended uses
+(e.g., disinformation, generating fake proﬁles, surveillance), fairness considerations
+(e.g., deployment of technologies that could make decisions that unfairly impact speciﬁc
+groups), privacy considerations, and security considerations.
+• The conference expects that many papers will be foundational research and not tied
+to particular applications, let alone deployments. However, if there is a direct path to
+any negative applications, the authors should point it out. For example, it is legitimate
+to point out that an improvement in the quality of generative models could be used to
+generate deepfakes for disinformation. On the other hand, it is not needed to point out
+that a generic algorithm for optimizing neural networks could enable people to train
+models that generate Deepfakes faster.
+• The authors should consider possible harms that could arise when the technology is
+being used as intended and functioning correctly, harms that could arise when the
+technology is being used as intended but gives incorrect results, and harms following
+from (intentional or unintentional) misuse of the technology.
+• If there are negative societal impacts, the authors could also discuss possible mitigation
+strategies (e.g., gated release of models, providing defenses in addition to attacks,
+mechanisms for monitoring misuse, mechanisms to monitor how a system learns from
+feedback over time, improving the efﬁciency and accessibility of ML).
+11. Safeguards
+Question: Does the paper describe safeguards that have been put in place for responsible
+release of data or models that have a high risk for misuse (e.g., pretrained language models,
+image generators, or scraped datasets)?
+Answer: [NA]
+Justiﬁcation: Our paper does not release data or models with a high risk for misuse.
+Guidelines:
+• The answer NA means that the paper poses no such risks.
+• Released models that have a high risk for misuse or dual-use should be released with
+necessary safeguards to allow for controlled use of the model, for example by requiring
+that users adhere to usage guidelines or restrictions to access the model or implementing
+safety ﬁlters.
+• Datasets that have been scraped from the Internet could pose safety risks. The authors
+should describe how they avoided releasing unsafe images.
+• We recognize that providing effective safeguards is challenging, and many papers do
+not require this, but we encourage authors to take this into account and make a best
+faith effort.
+12. Licenses for existing assets
+Question: Are the creators or original owners of assets (e.g., code, data, models), used in
+the paper, properly credited and are the license and terms of use explicitly mentioned and
+properly respected?
+Answer: [Yes]
+Justiﬁcation: All used assets are properly cited, and the licenses are mentioned.
+50
+
+Guidelines:
+• The answer NA means that the paper does not use existing assets.
+• The authors should cite the original paper that produced the code package or dataset.
+• The authors should state which version of the asset is used and, if possible, include a
+URL.
+• The name of the license (e.g., CC-BY 4.0) should be included for each asset.
+• For scraped data from a particular source (e.g., website), the copyright and terms of
+service of that source should be provided.
+• If assets are released, the license, copyright information, and terms of use in the
+package should be provided. For popular datasets, paperswithcode.com/datasets
+has curated licenses for some datasets. Their licensing guide can help determine the
+license of a dataset.
+• For existing datasets that are re-packaged, both the original license and the license of
+the derived asset (if it has changed) should be provided.
+• If this information is not available online, the authors are encouraged to reach out to
+the asset’s creators.
+13. New Assets
+Question: Are new assets introduced in the paper well documented and is the documentation
+provided alongside the assets?
+Answer: [Yes]
+Justiﬁcation: We introduce new assets in the form of code. All details about training,
+datasets, and models are given in the submitted paper and/or in our GitHub repository,
+including detailed instructions to run the code. The license is provided under the MIT
+license.
+Guidelines:
+• The answer NA means that the paper does not release new assets.
+• Researchers should communicate the details of the dataset/code/model as part of their
+submissions via structured templates. This includes details about training, license,
+limitations, etc.
+• The paper should discuss whether and how consent was obtained from people whose
+asset is used.
+• At submission time, remember to anonymize your assets (if applicable). You can either
+create an anonymized URL or include an anonymized zip ﬁle.
+14. Crowdsourcing and Research with Human Subjects
+Question: For crowdsourcing experiments and research with human subjects, does the paper
+include the full text of instructions given to participants and screenshots, if applicable, as
+well as details about compensation (if any)?
+Answer: [NA]
+Justiﬁcation: Our paper does not involve crowdsourcing or research with human subjects.
+Guidelines:
+• The answer NA means that the paper does not involve crowdsourcing nor research with
+human subjects.
+• Including this information in the supplemental material is ﬁne, but if the main contribu-
+tion of the paper involves human subjects, then as much detail as possible should be
+included in the main paper.
+• According to the NeurIPS Code of Ethics, workers involved in data collection, curation,
+or other labor should be paid at least the minimum wage in the country of the data
+collector.
+15. Institutional Review Board (IRB) Approvals or Equivalent for Research with Human
+Subjects
+51
+
+Question: Does the paper describe potential risks incurred by study participants, whether
+such risks were disclosed to the subjects, and whether Institutional Review Board (IRB)
+approvals (or an equivalent approval/review based on the requirements of your country or
+institution) were obtained?
+Answer: [NA]
+Justiﬁcation: Our paper does not involve crowdsourcing or research with human subjects.
+Guidelines:
+• The answer NA means that the paper does not involve crowdsourcing nor research with
+human subjects.
+• Depending on the country in which research is conducted, IRB approval (or equivalent)
+may be required for any human subjects research. If you obtained IRB approval, you
+should clearly state this in the paper.
+• We recognize that the procedures for this may vary signiﬁcantly between institutions
+and locations, and we expect authors to adhere to the NeurIPS Code of Ethics and the
+guidelines for their institution.
+• For initial submissions, do not include any information that would break anonymity (if
+applicable), such as the institution conducting the review.
+52
+
