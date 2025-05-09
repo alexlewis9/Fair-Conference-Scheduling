@@ -1,0 +1,975 @@
+Published as a conference paper at ICLR 2021
+ASYNC-RED: A PROVABLY CONVERGENT ASYN-
+CHRONOUS BLOCK PARALLEL STOCHASTIC METHOD
+USING DEEP DENOISING PRIORS
+Yu Sun1, Jiaming Liu1, Yiran Sun1, Brendt Wohlberg2, Ulugbek S. Kamilov1
+1Washington University in St. Louis, 2Los Alamos National Laboratory
+{sun.yu,jiaming.liu,yiran.s,kamilov}@wustl.edu, brendt@ieee.org
+ABSTRACT
+Regularization by denoising (RED) is a recently developed framework for solving
+inverse problems by integrating advanced denoisers as image priors. Recent work
+has shown its state-of-the-art performance when combined with pre-trained deep
+denoisers. However, current RED algorithms are inadequate for parallel processing
+on multicore systems. We address this issue by proposing a new asynchronous
+RED (ASYNC-RED) algorithm that enables asynchronous parallel processing of
+data, making it signiﬁcantly faster than its serial counterparts for large-scale inverse
+problems. The computational complexity of ASYNC-RED is further reduced by
+using a random subset of measurements at every iteration. We present complete
+theoretical analysis of the algorithm by establishing its convergence under explicit
+assumptions on the data-ﬁdelity and the denoiser. We validate ASYNC-RED on
+image recovery using pre-trained deep denoisers as priors.
+1
+INTRODUCTION
+Imaging inverse problems seek to recover an unknown image x 2 Rn from its noisy measurements
+y 2 Rm. Such problems arise in many ﬁelds, ranging from low-level computer vision to biomedical
+imaging. Since many imaging inverse problems are ill-posed, it is common to regularize the solution
+by using prior information on the unknown image. Widely-adopted image priors include total
+variation, low-rank penalties, and transform-domain sparsity (Rudin et al., 1992; Figueiredo &
+Nowak, 2001; 2003; Hu et al., 2012; Elad & Aharon, 2006).
+There has been considerable recent interest in plug-and-play priors (PnP) (Venkatakrishnan et al.,
+2013; Sreehari et al., 2016) and regularization by denoising (RED) (Romano et al., 2017), as frame-
+works for exploiting image denoisers as priors for image recovery. The popularity of deep learning has
+led to a wide adoption of deep denoisers within PnP/RED, leading to their state-of-the-art performance
+in a variety of applications, including image restoration (Mataev et al., 2019), phase retrieval (Metzler
+et al., 2018), and tomographic imaging (Wu et al., 2020). Their empirical success has also prompted
+a follow-up theoretical work clarifying the existence of explicit regularizers (Reehorst & Schniter,
+2019), providing new interpretations based on ﬁxed-point projections (Cohen et al., 2020), and
+analyzing their coordinate/online variants (Sun et al., 2019a; Wu et al., 2020). Nonetheless, current
+PnP/RED algorithms are inherently serial. As illustrated in Fig. 1, this makes them suboptimal on
+multicore systems that are often required for processing large-scale datasets (Recht et al., 2011), such
+as those involving biomedical (Ong et al., 2020) and astronomical images (Akiyama et al., 2019)
+We address this gap by proposing a novel asynchronous RED (ASYNC-RED) algorithm. The
+algorithm decomposes the inference problem into a sequence of partial (block-coordinate) updates
+on x executed asynchronously in parallel over a multicore system. ASYNC-RED leads to a more
+efﬁcient usage of available cores by avoiding synchronization of partial updates. ASYNC-RED is also
+scalable in terms of the number of measurements, since it processes only a small random subset of y
+at every iteration. We present two new theoretical results on the convergence of ASYNC-RED based
+on a uniﬁed set of explicit assumptions on the data-ﬁdelity and the denoiser. Speciﬁcally, we establish
+its ﬁxed-point convergence in the batch setting and extend this analysis to the randomized minibatch
+scenario. Our results extend recent work on serial block-coordinate RED (BC-RED) (Sun et al.,
+1
+
+Published as a conference paper at ICLR 2021
+Core 1
+Core 2
+Core 3
+y1
+y2
+y3
+x
+Core 1
+Core 2
+Core 3
+k0
+k2
+(a)
+y{
+x2
+x3
+x5
+k0
+k1
+k2
+k3
+k4
+k5
+k6
+Core 1
+Core 2
+Core 3
+y1
+y2
+y3
+Core 1
+Core 2
+Core 3
+(c)
+x
+y{
+k0
+k1
+k2
+Core 1
+Core 2
+Core 3
+y1
+y2
+y3
+x1
+x2
+x3
+Core 1
+Core 2
+Core 3
+(b)
+x
+y{
+x2
+x3
+x5
+k0
+k1
+k2
+k3
+k4
+k5 k6
+k7
+k8k9
+Core 1
+Core 2
+Core 3
+y1
+y2
+y3
+Core 1
+Core 2
+Core 3
+(d)
+x
+y{
+Figure 1: Visual illustration of serial and parallel image recovery on a multicore system. (a) Serial
+processing uses only one core of the system for every iteration. (b) Synchronous parallel processing
+has to wait for the slowest core to ﬁnish before starting the next iteration. (c) Asynchronous parallel
+processing can continuously iterate using all the cores without waiting. (d) Asynchronous parallel
+processing using the stochastic gradient leads to additional ﬂexibility. (a), (b), and (c) use all the
+corresponding measurements at every iteration, while (d) uses only a small random subset at a time.
+ASYNC-RED adopts the schemes shown in (c) and (d).
+2019a) and are fully consistent with the traditional asynchronous parallel optimization methods (Lian
+et al., 2015; Sun et al., 2017). We numerically validate ASYNC-RED on image recovery from linear
+and noisy measurements using pre-trained deep denoisers as image priors.
+2
+BACKGROUND
+Inverse problems. Inverse problems are traditionally formulated as a composite optimization problem
+bx = arg min
+x2Rn g(x) + h(x),
+(1)
+where g is the data-ﬁdelity term that ensures consistency of x with the measured data y and h is
+the regularizer that infuses the prior knowledge on x. For example, consider the smooth `2-norm
+data-ﬁdelity term g(x) = ky −Axk2
+2, which assumes a linear observation model y = Ax + e, and
+the nonsmooth TV regularizer h(x) = ⌧kDxk1, where ⌧> 0 is the regularization parameter and D
+is the image gradient (Rudin et al., 1992).
+Regularization by denoising (RED). RED is a recent methodology for imaging inverse problems
+that seeks vectors x⇤2 Rn satisfying
+G(x⇤) = rg(x⇤) + ⌧(x⇤−Dσ(x⇤)) = 0
+,
+x⇤2 zer(G) := {x 2 Rn : G(x) = 0}
+(2)
+where rg denotes the gradient of the data-ﬁdelity term and Dσ : Rn ! Rn is an image denoiser
+parameterized by σ > 0. Under additional technical assumptions, the solutions x⇤2 zer(G)
+can be associated with an explicit objective function of form (1). Speciﬁcally, when Dσ is locally
+homogeneous and has a symmetric Jacobian satisfying strong passivity (Romano et al., 2017; Reehorst
+& Schniter, 2019), H(x) := x −Dσ(x) corresponds to the gradient of a convex regularizer
+h(x) = 1
+2xT(x −Dσ(x)).
+(3)
+A simple strategy, known as GM-RED, for computing x⇤2 zer(G) is based on the ﬁrst-order
+ﬁxed-point iteration
+xt = xt−1 −γG(xt−1),
+with
+G : Rn ! Rn,
+(4)
+where γ > 0 denotes the stepsize. In this paper, we extend this ﬁrst-order RED algorithm to design
+ASYNC-RED. Since many denoisers do not satisfy the assumptions necessary for having an explicit
+objective (Reehorst & Schniter, 2019), our theoretical analysis considers a broader setting where
+Dσ does not necessarily correspond to any explicit regularizer. The beneﬁt of our analysis is that it
+accommodates powerful deep denoisers (such as DnCNN (Zhang et al., 2017a)) that have been shown
+to achieve the state-of-the-art performance (Sun et al., 2019a; Wu et al., 2020; Cohen et al., 2020).
+2
+
+Published as a conference paper at ICLR 2021
+Plug-and-play priors (PnP) and other related work. There are other lines of works that combine
+the iterative methods with advanced denoisers. One closely-related framework is known as the
+deep mean-shift priors (Bigdeli et al., 2017). It develops an implicit regularizer whose gradient is
+speciﬁed by a denoising autoencoder. Another well-known framework is PnP, which generalizes
+proximal methods by replacing the proximal map with an image denoiser (Venkatakrishnan et al.,
+2013). Applications and theoretical analysis of PnP are widely studied in (Sreehari et al., 2016; Zhang
+et al., 2017b; Sun et al., 2019; Zhang et al., 2019; Ahmad et al., 2020; Wei et al., 2020) and (Chan
+et al., 2017; Meinhardt et al., 2017; Buzzard et al., 2018; Sun et al., 2019b; Tirer & Giryes, 2019;
+Teodoro et al., 2019; Ryu et al., 2019; Xu et al., 2020), respectively. In particular, Buzzard et al.
+(2018) proposed a parallel extension of PnP called Consensus Equilibrium (CE), which enables
+synchronous parallel updates of x. Note that while we developed ASYNC-RED as a variant of RED,
+our framework and analysis can be also potentially applied to PnP/CE. The plug-in strategy can be
+also applied to another family of algorithms known as approximate message passing (AMP) (Metzler
+et al., 2016a;b; Fletcher et al., 2018). The AMP-based algorithms are known to be nearly-optimal for
+random measurement matrices, but are generally unstable for general A (Rangan et al., 2014; 2015).
+Asynchronous parallel optimization. There are two main lines of work in asynchronous parallel
+optimization, the one involving the asynchrony in coordinate updates (Iutzeler et al., 2013; Liu et al.,
+2015; Peng et al., 2016; Bianchi et al., 2015; Sun et al., 2017; Hannah & Yin, 2018; Hannah et al.,
+2019), and the other focusing on the study of various asynchronous stochastic gradient methods (Recht
+et al., 2011; Lian et al., 2015; Liu et al., 2018; Zhou et al., 2018; Lian et al., 2018).
+Our work contributes to the area by developing a novel deep-regularized asynchronous parallel
+method with provable convergence guarantees.
+3
+ASYNCHRONOUS RED
+ASYNC-RED allows efﬁcient processing of data by simultaneously considering the asynchronous
+partial updates of solution x and the use of randomized subset of measurements y. In this section,
+we introduce the algorithmic details of our method. We start with the basic batch formulation of
+ASYNC-RED (ASYNC-RED-BG) followed by its minibatch variant (ASYNC-RED-SG).
+3.1
+ASYNC-RED USING BATCH GRADIENT
+When the gradient uses all the measurements y 2 Rm, ASYNC-RED-BG is the asynchronous
+extension of the recent block-coordinate RED (BC-RED) algorithm (Sun et al., 2019a). Consider the
+decomposition of the variable space Rn into b ≥1 blocks
+x = (x1, · · · , xb) 2 Rn1 ⇥· · · ⇥Rnb = Rn
+with
+n = n1 + n2 + · · · + nb,
+For each i 2 {1, . . . , b}, we introduce the operator Ui : Rni ! Rn that injects a vector in Rni into
+Rn and its transpose UT
+i that extracts the ith block from a vector in Rn. This directly implies that
+I = U1UT
+1 + · · · + UbUT
+b
+and
+kxk2
+2 = kx1k2
+2 + · · · + kxbk2
+2
+with
+xi = UT
+i x.
+(5)
+In analogy to the RED operator G in (2), we deﬁne the block-coordinate operator Gi as
+Gi(x) := UiUT
+i G(x),
+with
+x 2 Rn
+and
+Gi : Rn ! Rn.
+(6)
+Due to the asynchrony in the block updates, the iterate might be updated several times by different
+cores during a single update cycle of a core, which means that the evaluation of xk+1 relies on a stale
+iterate exk
+xk+1  xk −γGik(exk),
+with
+exk = xk +
+k−1
+X
+s=k−∆k
+(xs −xs+1),
+∆k λ.
+(7)
+Here, we assume that the stale iterate exk exits as a state of x in the shared memory, and the delay
+between them is bounded by a ﬁnite number λ 2 Z+. These two assumptions are often referred
+to as the consistent read (Recht et al., 2011) and the bounded delay (Liu & Wright, 2015) in the
+traditional asynchronous block coordinate optimization. Although we implement the consistent read
+in ASYNC-RED, the algorithm never imposes a global lock on xk. We refer to Supplement A for the
+related discussion.
+3
+
+Published as a conference paper at ICLR 2021
+Algorithm 1 ASYNC-RED-BG
+1: input: x0 2 Rn, γ > 0, ⌧> 0.
+2: setup: A multicore system with one shared memory storing x and global iteration k.
+3: for global k = 1, 2, 3, . . . do
+4:
+exk  read(x)
+5:
+Gik(exk)  UikUT
+ikG(exk)
+with random ik 2 {1, . . . , b}
+. Block Operation
+6:
+xk  read(x)
+7:
+xk+1  xk −γGik(exk)
+8:
+update x in the shared memory using xk+1
+9: end for
+The ﬁrst variant, ASYNC-RED-BG, is summarized in Algorithm 1, where read(·) reads a block from
+the shared memory to the local memory. When the algorithm is run on a single core system without
+parallelization (that is to say exk = xk), it reduces to the normal BC-RED algorithm. Hence, our
+analysis is also applicable to BC-RED.
+We speciﬁcally consider the random block selection strategy in ASYNC-RED-BG, namely that
+every block index ik is selected as an i.i.d random variable uniformly distributed over {1, . . . , b}.
+Such a strategy is commonly adopted for simplifying the convergence analysis. Nevertheless, our
+method and analysis can be generalized to the scenario where ik follows some arbitrary probability
+P(ik = i) = pi speciﬁed by the user.
+Compared with serial RED algorithms, ASYNC-RED-BG enjoys considerable scalability by dividing
+the computation of the full operator G into b parallel evaluation of Gi distributed across all cores.
+Thus, without any modiﬁcation to the algorithmic design, one can easily improve the performance
+of the algorithm by simply integrating more cores into the system. In Section 5, we experimentally
+demonstrate the signiﬁcant speed-up and scale-up in solving the context of image recovery.
+3.2
+ASYNC-RED USING STOCHASTIC GRADIENT
+The scale of measurements is another important factor inﬂuencing the computational complexity
+in the large-scale inference tasks. ASYNC-RED-SG improves the applicability of ASYNC-RED to
+these cases by further considering the decomposition of the measurement space Rm into ` ≥1 blocks
+y = (y1, · · · , y`) 2 Rm1 ⇥· · · ⇥Rm` = Rm
+with
+m = m1 + m2 + · · · + m`.
+Hence, ASYNC-RED-SG considers the following data-ﬁdelity g and its gradient rg
+g(x) = 1
+`
+`
+X
+j=1
+gj(x)
+)
+rg(x) = 1
+`
+`
+X
+j=1
+rgj(x),
+(8)
+where each gj is evaluated on the subset yj 2 Rmj of the full y. From (8), we know that the
+computation of rg(x) is proportional to the total number `. To reduce the per-iteration cost, we
+follow the idea of stochastic optimization to approximate the batch gradient by using the stochastic
+gradient that relies on a minibatch of w ⌧` measurements
+brg(x) = 1
+w
+w
+X
+s=1
+rgjs(x),
+(9)
+where js is picked from the set {1, . . . , `} as i.i.d uniform random variable. Based on the minibatch
+gradient, we deﬁne the block stochastic operator bGi : Rn ! Rn as
+bGi := UiUT
+i bG(x),
+with
+bG := brg(x) + ⌧(x −Dσ(x)),
+bG : Rn ! Rn.
+(10)
+Note that the computation of bGi is now dependent on the minibatch size w that is adjustable to cope
+with the computation resources at hand. ASYNC-RED-SG is summarized in Algorithm 2.
+The operation minibatchG(·) computes the estimate of G based on w randomly selected measurements.
+We clarify the difference between ASYNC-RED-SG and ASYNC-RED-BG via a speciﬁc example.
+4
+
+Published as a conference paper at ICLR 2021
+Algorithm 2 ASYNC-RED-SG
+1: input: x0 2 Rn, γ > 0, ⌧> 0.
+2: setup: A multicore system with one shared memory storing x and global iteration k.
+3: for global k = 1, 2, 3, . . . do
+4:
+exk  read(x)
+5:
+bG(exk)  minibatchG(exk, w)
+with random jw 2 {1, . . . , `}
+. Minibatch Gradient
+6:
+bGik(exk)  UikUT
+ik bG(exk)
+with random ik 2 {1, . . . , b}
+. Block Operation
+7:
+xk  read(x)
+8:
+xk+1  xk −γbGik(exk)
+9:
+update x in the shared memory using xk+1
+10: end for
+Consider the least-squares g with a block-friendly operator A and a block-efﬁcient denoiser Dσ. We
+can write the update of ASYNC-RED-BG regarding a single iteration as
+Gi(ex) = AT
+i (Aiex −yi) + ⌧(exi −D(exi)),
+(11)
+where ex is the delayed iterate for x, and Ai 2 Rm⇥ni is a submatrix of A consisting of columns
+corresponding to the ith blocks. Although the per-iteration complexity is reduced by roughly
+b = n/ni times by working with Ai instead of A, ASYNC-RED-BG still needs to work with all the
+measurements yi related to the ith block at every iteration. Consider the corresponding update of
+ASYNC-RED-SG with one measurement used at a time
+bGi(ex) = AT
+ji(Ajiex −yji) + ⌧(exi −D(exi)),
+(12)
+where yji denotes the jth measurement of xi, and Aji 2 Rmj⇥ni is the submatrix crossed by the
+rows and columns corresponding to the jth measurement and the ith blocks. This indicates that the
+reduction of the per-iteration complexity from ASYNC-RED-BG to ASYNC-RED-SG can be up to
+` = m/mj times. In the practice, it is common to use w > 1 measurements at a time to optimize the
+total runtime. Note that if U = UT = I, ASYNC-RED-SG becomes the asynchronous stochastic RED
+algorithm. In the next section, we will present a complete analysis of ASYNC-RED and theoretically
+discuss its connection to the related algorithms.
+4
+CONVERGENCE ANALYSIS OF ASYNC-RED
+The proposed analysis is based on the following explicit assumptions. Note that these assumptions
+serve as sufﬁcient conditions for the convergence.
+Assumption 1. We assume bounded maximal delay λ < 1. Hence, during any update cycle of an
+agent, the estimate x in the shared memory is updated at most λ 2 Z+ times by other cores.
+The value of λ is often dependent on the number of cores involved in the computation (Wright, 2015).
+If every core takes a similar amount of time to compute its update, λ is expected to be a multiple of
+the number of cores. Related work has investigated the convergence with unbounded maximal delays
+in the context of traditional optimization (Hannah & Yin, 2018; Peng et al., 2019; Zhou et al., 2018).
+Assumption 2. The operator G is such that zer(G) 6= ?, and the distance of the initial x0 2 Rn to
+any element in zer(G) is bounded, that is kx0 −x⇤k R0 for all x⇤2 zer(G) with R0 < 1.
+This assumption ensures the existence of a solution for the RED problem and is related to the existence
+of minimizers in traditional coordinate minimization (Nesterov, 2012; Beck & Tetruashvili, 2013)
+Assumption 3. (a) Every component function gi is convex differentiable and has a Lipschitz continu-
+ous gradient of constant Li > 0. (b) At every update, the stochastic gradient is unbiased estimator of
+rg that has a bounded variance:
+E
+h
+brg(x)
+i
+= g(x),
+E
+h
+kbrg(x) −rg(x)k2i
+⌫2
+w ,
+x 2 Rn,
+⌫> 0.
+The ﬁrst part of the assumption implies that g is also convex and has Lipschitz continuous gradient
+with constant L = max{L1, . . . , L`}. The second part is a standard assumption on the unbiasedness
+5
+
+Published as a conference paper at ICLR 2021
+0
+35
+0
+8000
+SNR (dB)
++
+UQ9HA2bI=">AM3icjZbtGEIaZ9JRYPSQtetWbhQ0DuC6klGg6EWB2HJiGzAE1YfESJUYS2pJLk
+xy6d2lJZngS/S2fY0+TNG7ord9h86S3CFpqUJ2Bx+M7OHf2YpumnEle73f3/w8L3P/jwo0eP13of/Lp
+Z0+efv5KiUx67MITkZCXLlUs4gm70FxH7DKVjMZuxF6710Pjf3LpOIiOdeLlL2NaZBwn3tUA7o8G52Sr
+en+s6snG/2dfnmRZWNQGxtOfY2vnva+nEyFl8Us0V5Elfp0E/125xKzb2IFWuTLGUetc0YLkrxLWmri
+pIdW2SVAqfKbMqGn19k9GI6wWBkIipTiaNlS8S3cp0I3C5gsopiakOiVrEroiWsgy2SZB1S2UidMiToBOY
+cI/5knrN8J6IwantsMQXkgy+2d0mTHs7ndyYe1IYSQuba4kIJE3DRVeCuHgM1ybhGjbrERh82gnwuGZFG
+RFIkaUEnsSdXdWjsy9eWECfR5k8p5gRhMtYOVBKx+3TRJwm5u1rsaRYGQXIew6AIi8VGtjiruC2xYuV
+wdMiHZvTyWZDFsKC5XoQUJ6S0jEdOaSWJ8TK7YXJxFmksxa6oBmQFLTDBb1R2AsohKUON/hYehOSX3diIX
+UxVGSbnQqYAFTomJUoQnhFajdBLm5Zkr1tY2NzfJWArhwyRWA72IWJ5GlCeFaXJjkB/qkm+TKfN5ws2+A
+UoR02RtkrBZnZzDmUiFKv1FPm49dKaQYr8oLE7MfW9yM9ro+ONWBzTIj8pbx2PJ6SIQNBFkQ/R7ETAQc
+/itJp9r7G7o8C2Ye5heat0EqkpipAgFazf/CX5ZHtiO3OyXVQOKoOYg8t0sUiru/KhSMFkGxF0Yqj83+J
+o3OMi3i8FAQM/FAeMLiu4lZNWs1H6oAVs1UT1QEqS5cCgOFKeOIv+YGhH4o/R4d5wC2IoFm6Cy+YxIx2
+Bb7vBkFbIunykc8gUa0/CAZjkZU6TyfaDbXeflcvJsAKurSeXBKNYVXcJVxYpTIT6a4TRPFqTSok7pvO
+LKcrkxzAD/KO7XtchF5FnkIWIWMUShRSEiZFCNLeo6YXAogDRwqIFojuL7hBJiySiG4tuECUWNV2aWZQh
+OrHoBNGtRbeIZhbNEImYBShj9YQ+OHi68ZVPRatPhKHw17dsz8buYdiBRQeIji06XlVYMoNfBQJ9wiSfo
++ZVK5Wy2yayQqNr0XdtVx3dZbmi6kGqcCG5JmfMqMZUtdZyqa1P16Di2KvXqOmztr47NGhjZupHjZxi
+8RH7XxEeJRG48QH7bxYSNzGx8jHrfxGPFpG58ivmji/9YCVP6xuqFHdLMa2I8An8MrvwsfisSh9Wua6
+bD3F+RKcWvUD0AhVANLoDaI3+GaB6tbfM/V8QOr1GmvYKNp1tDTtOhpV97uOfeyM5qV04Fpx3Hatj9q4K
+ephGzfz7LWxOU7wIT24/9m8bLza3Rl8u/P9j7sbz/frT+pHzlfOurPlDJzvnOfOkTN2LhzPiZyfnV+cX3
+u/9f7o/dn7qwp9+KDO+cLpXL2/wGxJXq7</latexit>
+time (second)
+29.00 dB
+0
+500
+10-8
+100
+kG(xk)k2/kG(x0)k2
+iteration (k)
+Async-RED-BG(nc = 2)
+Async-RED-BG(nc = 4)
+Async-RED-BG(nc = 6)
+Async-RED-BG(nc = 8)
+BC-RED(nc = 1)
+10-8
+100
+0
+8000
+time (second)
+kG(xk)k2/kG(x0)k2
+Figure 2: Convergence of ASYNC-RED-BG for different numbers of accessible cores nc 2
+{2, 4, 6, 8}. The left ﬁgure plots the average normalized distance to zer(G) against the iteration
+number; the middle and right ﬁgures plot these values, as well as SNR, plotted against the actual
+runtime in seconds. The shaded areas represent the range of values attained over the test images.
+and variance of the stochastic gradient (Lian et al., 2015; Ghadimi & Lan, 2016). Our ﬁnal assumption
+is related to the deep denoiser used in ASYNC-RED.
+Assumption 4. The denoiser Dσ is a nonexpansive operator kDσ(x) −Dσ(y)k kx −yk.
+Compared with the conditions stated in Section 2 (namely, that it is locally homogeneous with a
+symmetric Jacobian), our requirement on the denoiser is milder. One can train a nonexpansive Dσ
+by constraining the Lipschitz constant of Dσ via the spectral normalization, which is an active area
+of research in deep learning (Miyato et al., 2018; Sedghi et al., 2019; Anil et al., 2019; Terris et al.,
+2020).
+We can now state the theorems on ASYNC-RED.
+Theorem 1. Let Assumptions 1-4 hold true. Run ASYNC-RED-BG for t > 0 iterations with uniform
+i.i.d block selection using a ﬁxed step-size γ 2 (0, 1/((1 + 2λ)(L + 2⌧))]. Then, the iterates of the
+algorithm satisfy
+min
+0kt−1 E
+⇥
+kG(xk)k2⇤
+
+D
+b + 2
+) (L + 2⌧)b
+γt
+R2
+0.
+(13)
+where D = 2λ2/(1 + λ)2 is a constant.
+Theorem 1 establishes the convergence of ASYNC-RED-BG to the ﬁxed-point set zer(G) at the rate
+of O(1/t). Our result is consistent with the existing results in the literature. In particular, when the
+algorithm adopts serial block updates, that is λ = 0 and exk = xk, the recovered convergence is
+nearly the same as BC-RED (Sun et al., 2019a) scaled by some constant. On the other hand, our
+convergence rate O(1/t) is also consistent with the rate proved for the asynchronous block coordinate
+descent in nonconvex optimization (Sun et al., 2017).
+Theorem 2. Let Assumptions 1-4 hold true. Run ASYNC-RED-SG for t > 0 iterations with uniform
+i.i.d selections of blocks and measurements using a ﬁxed step-size γ 2 (0, 1/((1 + 2λ)(L + 2⌧))].
+Then, the iterates of the algorithm satisfy
+min
+0kt−1 E
+⇥
+kG(xk)k2⇤
+
+D
+b + 2
+) (L + 2⌧)b
+γt
+R2
+0 +
+2D
+b
++ 2
+) γ
+wC
+(14)
+where C = (L + 2⌧)(1 + λ)⌫2 and D = 2λ2/(1 + λ)2 are constants.
+Theorem 2 states that ASYNC-RED-SG approximates the solution obtained by ASYNC-RED-BG up
+to a ﬁnite error that decreases for larger values of the minibatch size w. This relationship is consistent
+with the recent theoretical results on the online PnP and RED algorithms (Sun et al., 2019b; Wu
+et al., 2020). In practice, the selection of w must balance the actual memory capacity of the system
+and the desired runtime for obtaining a reasonable solution. Our numerical evaluation in Section 5
+demonstrates the excellent approximation of ASYNC-RED-SG to the batch-gradient solution by
+using a small subset of data.
+By carefully choosing the stepsize γ, we can state the following remark on Theorem 2.
+Remark 1. Set the stepsize to be γ = 1/
+p
+wt. If the maximal delay satisﬁes λ (1/2)[
+p
+wt/(L +
+2⌧) −1], then after t > 0 iterations we have
+min
+0kt−1 E
+⇥
+kG(xk)k2⇤
+
+D
+b + 2
+) (L + 2⌧)b
+p
+wt
+R2
+0 +
+2D
+b
++ 2
+)
+C
+p
+wt.
+(15)
+6
+
+Published as a conference paper at ICLR 2021
+10-5
+100
+0
+500
+Async-RED-SG(w=1120)
+Async-RED-SG(w=2240)
+Async-RED-SG(w=3360)
+kG(xk)k2/kG(x0)k2
+2
+2cFD31Qtgx4ACu2sU6ClA7HViGzCMrWPXQbqJQWkpibAkyiTl3bWgJ+m1fY2+R+89Fr32qEkjqRdt6gAW8NvZsjhzFBLN4240v3+7/fuP/jo408+fhopfZ518Xn3y9EclMumxc09EQr51qWIRT9i5
+5jpib1PJaOxG7MK9Ghr9xQ2TiovkTM9T9j6mQcJ97lEN6HL1MdMljLZfHb17Pnl6np/u18+ZFkY1MK6Uz+jye9r8YT4WUxS7QXUaV+GvRT/T6nUnMvYsXKOFMspd4VDVjuCnGlqasKUj0bJXCZ8qER6
+NvrjMacT0nYBIx1fGksfJFoluebgQqV1A5ITHVIVHz2BXRkpfB1gm8bqhMhA5EnQME+4xX1Kvmd4TMSi1nZb4QpLBtztbhGlvu+Mbc08Kk9vC+loiAknTcN5NQVw8gmeDcA2b9QhMPukYeFCRorQIpMhSA
+uOyPt2dlTNzb1YQ58HmVxImMmJFhB5ZQHRr5luSdj19Vo3R1EgJNchBF2AJQ7V3VbFYoINK8PVIROSLfixJIthQ3EZhRYkpDeMRExD1xGjq5tvIfYs0lyKaVMN8AxYozZXd0BKIuohGz8L/MwNMdlYSd
+yPlFhlJSBTgQEOCHGShGeEFrN0nGYlYevWFnZ2NgIymED4vYHOh5xPI0ojwpTJMbgbyoS75FJsznCS8P3QsiRUyTlXHCprVzDmciFarUF/moNehYNZMU+X4jd2zqd5Gf1UJHG7E4pkV+XL46Gk9IEUFC50
+U+RLFjAQc9i9Nq9d1G7s4C24a1h+WrypNITVGEhFRB/OYvycdbY9uZ462iUlAZxBxUpotFWr2VD0UKxlugKIqWHZ39ix2doV3E4yUjYKCH8oDAdWV316LVeqQ2uGO1aqHaQGXpkgEwjIQn/pIeGOqh+DNU
+mAFuQRN6CKw+JZJxCBb7PNmFpAtnigf8Rga0fL9ZHhyQpXO87FmM52X4+LDGFBRl86DU6opfIrj2OTifz4splO82ROqlzULp1PXFkuN4YV4B/F/boWuYg8izxEzCKGKLQoRKQsUohmFjW9EFgUIJpbNE
+d0a9EtImRHRt0TWixKmSzOLMkTHFh0jurHoBtHUoikiEbMA01iNUAcHTze6clS0+kQYCn9y3at7S6a7Vu0j+jIoqO7Ckum8KtAoE+Y5DPMedVKZdptE9lEo2reVd2VLfd1ltaLqQalwIZnKZ8woxkS
+17KprU/XoGLYq9eoabe9PGb5o0tHGTitdt/BrxYRsfIj5p4xPEB2180KS5jY8Qj9p4hPi0jU8Rn7fx+X8EWKWndYcqk7upmFZE+AR+mV24NT6v3IeVr+vmQ1wf0alFrxC9wgwgOrHoHaJ3+GWB6tb3mXo
+9IHW8Rho2Ge0qWjntKpqs7nUVe9gZzUdp37XJcdu1PmzjpqgHbdys9vG5jBRXqweG1eFi52tgfbQ8GP+ysv9yr79QPna+dNWfTGTjfOy+dQ2fknDuekzk/O784v/Z+6/3R+7P3V2V6/17t86XTeXp/w
+OfJH5I</latexit>iteration (k)
+Sync-RED(8-core)
+3p/
+37n/w4Ucf/Lg4VLn0aefb78+IuXgiXcIecOCxh/bWNBAhqRc0lQF7HnODQDsgr+3Ko7K+uCReURWcyjcm7EHsRd
+amDJaCL5a8nksylcLTNHKenuyN8vXtpw7j5MnF8mqvu7W9vflsgHrdwdbWZl81eptbg+/6qN/tFdeqV3ji8edryZT5iQhiaQTYCHe9nuxfJdhLqkTkHxpkgSY+cSeySzGbuU2BY5Kq81FHPmEqEWioOnVwkOqEwRuAREtCJxKFwWyUakHYDJZphPUYilj0Qa2iy4E6WwDoKoa8wjJn0aeS3HiDrE5diph3dYCEaph0Uu46j/7WADEel0W7EhdThTKuc6VhPmcRz7aVuCM
+H8I1xqiEjbrIBh82nJwqCR54eFxlsQI+kXW2jsrRqbOPFeOLvUSfkswpYlksPLSA1a/ouomIldXK2NAo9xKn1YdA6episWe+W3BVasWK70CVTQrTgSJSFsKCxWIRny8TVBAZGScKRshC/YXJgEknI2q7MBkR6JlDNZVB2AkgBzUON/ufu+Oji3dsLTqfCDqFjolMECp0h5CUQjhMtRWgHz4hjmS0tra2tozBlzYRKtgUwDksUBplGuilw10I9VyjfQlLg0omrfAD
+kLcbQ0icisCs7gTMRMFPY8Gzc6La96kDwb1e2WT3XPs7Oq0bIGJAxnh0Vt5YFHgUsAEHTPBuaZsDnoSxuXsO3W7PQpsG+Y
+eFrdSJxarpDAOUsH61S/KJhsTXZmTjbw0YO6FEyqilc3oULSfImG2DI84Yfnr/HD8+NX0DO07AwA7pgQaVpd+iScv5UOWwYLZyospBJPEdB2BmJTRy79iBGTskf24MqmO2wLx6czT+IZwg6GtsUvrUaCt8VS4Bk+gEDUfRcPjYyxklhVvhqzo5z9PAOV6hw4pRLDI7iMOFJKZEcX9XCSRikqtahCWo+4Il12CDPAHzb7tTWyDXI0cgwiGhGDfI18g4RGwqC5RnUteBp5BqUapQbdaHRjENeIG3Sl0ZVBkUZ1lSYaJQYdaXRk0LVG1wbNJoZxELiGRnLnrHBwZO1rejljTphisKvp9mO9t0xb
+iONRgYdanS4KLFoBm8FBHVCOJ0bzctSKmTXRaSFNqa0bpmG7apXdnOh9LMxW0IWhGp0S1dKqrSIGjql
+7PoERNrZ6ZzZ028WktQxPXUrxo4hcGHzTxgcHTXxs8H4T79cyN/GhweMmHht80sQnBp838fl/LCUp/ENVYi7LogUiLkI3sw2fD8+KcOHZaxtZ0Mzv0EnGu0ZtGcUMOhYozcGvTFPFshu9T1TzQekWq9qDWtF24aGpm1Drepu27BrKqN+KI1sLY7dzPVBE9dJ3W/iep6dJlbHCT6k9dcyen/j5aDbf9b94afB6vPd6pP6gfWNtWKtW3re+u5dWCNrXPLsX6xfrV+s37v/NH5q/N35/
+S9f69KuZLq3U9sv4FgkaBxA=</latexit>
+0
+2500
+time (second)
+29.00 dB
+0
+35
+SNR (dB)
+Gm-RED(1-core)
+SjcDkciw
+mKMYqRHIeuzy6E6WxCYKoaywYVyFlQcuRUY/4Anv18B6PwajMsMjnAvW/2dpARHndVmxMPcG1xrmJNYQHAifhvC1BnD+Eaw1RBZv1EAw+aTl4VJG8AgETxME/SJn7Z0VI1NvlmtHnwapuCWY1kRxWHnpAatf0VXDyNXVSlujKOCqhAWnYOn7crFXvltgTUrlqtCAhV0K46wNIYNxcUqFEchviYoIkoRgbSNiAWbi9NIUcGndTYgMiBMO5NF1QEojbANf6XexjqY3NrJ2I+kWHEioVOCxwgrSXRJQhXI7SCpgVhzBfWlpbW0
+MjwbkPkxgN1DwiWRJhynJd5LqBfqhSvoEmxKeM6n0DFDzGbGnMyLQKzuBMJFwW9jwbNTotr3qQPBvW7ZPdc+zs6rRskYkjnGeHRe3lgUeBTwCQed5NrDNlgc9DROytl363Z7FNg2zD0obqVOPNFJ4QKkgvXrH8vG2NTmeONvDRgEcQUTLqKeVLepQ9JCsYbYMjzh+evcMPz6xfROM7TsDADumBlWl36Jy/lQ5bBgtnKiykGmyR0HYHYlPl37MCsHZI/swbdsVvgQb10Hh8Q4TF0DbYp/Uo0DZ4In2Lx1CIhg/Z4OQES5VlxXshK/r5z2NAeZU6D06pwvAILiOtRLZ8U9nKJsjkotqpDWI65IlxvDPCH7X5dg1yLPIM8i4hBxKLQoNAiaZC0aGZQXQuBQYFc4PmFt0YdGORMEhYdGXQlUXMoLpKU4NSi4NOrbo2qBri6YGTS3iMQmsjGXP2uDgqdpW9PJGnXBN4dczbNf47lq3oUFDi4MO
+lqUWDSFtwKCOiGCzqzmZSkVspsiMkJb07xtumYbtqld2e6ECs7FbQhaEonRLdMqtIiVlVr2dQorZWz+zmXjTx
+i1qGJq6leN7Ezy0+bOJDi0+a+MTigyY+qGVu4iOLR08svi0iU8tPm/i8/9YClP4xuqEHdEiUR9xG8mV34enxchg/KWNfNBnZ+i04N2rdo3ypg0YlBbyx6Y58skN3qe6aD0i1Xt0a1Iq2DQ1N24Za1b2Yc9WRv1QGrpGHLeZ68MmrpN60MT1PLtNrI8TfEibr2X07sbLrW5/u/v0x63VZ3vVJ/UD52tnxVl3+s6O8w5dEbOueM5ufOL86vzW+f3zp+dvzp/l67371UxXzitq/Pv4Ogco=</latexit>
+Async-RED-SG(8-core)
+sJ
+sdSiIlJe4wAbI3zmH/9zKMlNIipVt/vnvfsfPjwo48fPlroP7k08Wn3z+UvJUeOTc4xEXr10sSUQZOVdUReR1IgiO3Yi
+8ci/72v7qmghJOTtTs4S8i3HAqE89rABdLH49UmSqpJftyBnz1k/2Bun+/nq1rHBXl6sbjc3Xj27fdb29uou9EtLt3o/dDrbqFeRZad6hpePOl8ORpzL40JU16EpXzb6ybqXYaFol5E8oVRKkmCvUsckMzl/FJhV+aovFZQIrhPpF4sjtavUhxRNUPgEhHZisSx9DlT
+jUg3ApPLsRijGKsQyVns8uhOlMYmCKusWBchZQFLUdGPeIL7NXDezwGozLDIp8L1Ptmcw0R5W20YmPqCa6Vzk2sITwQOAlnbQni/BFcK4gq2KyHYPBxy8GjiuSFRyB4miDoF5lr76wYmXrTXDv6NEjFLcG0JorDyksPWP2Srh1Grq6W2hpFARdUhbDoHDxtV873ym8LrFmxXBUSqKBbcYSlMWwoLlahOArxNUERUYoIpG1EzNlcnEaKCj6pswGRAWHamcyrDkBphAWo8b/cw1Afnls7EbOxDCN
+WLHTMYF
+jpL0kogzhcpRWwLQ4ivnCwsrKChoKzn2YxGigZhHJkghTlusi1w30Y5XyNTQmPmVU7xug4DFmCyNGJlVwBmci4bKw59mw0Wl51YPk2aBut3yqe56dVY2WNSJxjPsqLi1LPAo4BEIOsuzvm2POCgp3FSzr5Tt9ujwLZh7n5xK3XiU4KFyAVrF/WDZaG5nKHK3lpQGLIKZg0lXMk/IufUhSMFoDQ543/PD0PX54av0iGt9xAgZ2SA80qCr95k1azocqhzmzlRNVDjJN7jgAsyuhzL9jB2btkPypNeiO3
+QIP6qXzwOAbIiyGtsE+rUeBtsFj6Vs8gkI0fMD6x8dYqiwr3g5Z0c9/HgHKq9R5cEoVhkdwGXGklciOLurhFGUzVGpRhbQecUW63BhmgD9s9+sa5FrkGeRZRAwiFoUGhRZJg6RFU4PqWgMCiyaGTSz6MagG4uEQcKiK4OuLGIG1VWaGpRadGTQkUX
+XBl1bNDFoYhGPSWBlLHvWBgdP1bailzfqhGsKv65hO8Z3x7oNDBpYdGjQ4bzEogm8FRDUCRF0ajUvS6mQ3RSREdqaZm3TcN0y69O9OFWNmpoA1B
+EzomumVSXUVKzKp6PYMStbV6Zjd32sSntQxNXEvxolfWHzQxAcWHzfxscX7Tbxfy9zEhxYPm3ho8UkTn1h83sTn/7HAUp7GN1Qh7qokSiLuI3gzu/AN+bQM75exrpv17fwWnRi0Z9GeVcCiY4PeWPTGPlkgu9X3TDUfkGq9utWvFW0bGpq2DbWqu23Drq2M+qE0cI04bjPXB01cJ3W/iet5dpYHyf4kDZfy+j9jZebG73vNrZ/2lx+vlt9Uj90vnKWnFWn5zxznjsHztA5dznF+dX5zfn984fnb86f3
+f+KV3v36tivnBa1+MH/wKEa4MJ</latexit>
+Async-RED-BG(8-core)
+AJ
+ArRA4tlp0DQXA5rYaRIgCLw0aYvWXUDJlExEIhWSiq0IutrT7HZ7jb3AXmN3w252KImUlKTDBNgif+cfvzPoSQ3DqlUvd6fd+5+cu/Tz6/2Ch8/CL79afPT1a8kT4ZFTj4dcvHWxJCFl5FRFZK3sSA4ckPyxj0faPubSyIk5e
+xEpTH5EOGAUZ96WAE6W/x+rMhcS/blinz1o53h2s7e/nj52seF+TJ2eJyr/v86eaz/jPU625s9Te3NqHR7z3d2FhH/W6vuJad6hqdPep8O5wL4k
+IU16IpXzf78XqQ4aFol5I8oVxIkmMvXMckMzl/FxhV+aovFZQLhPpF4sDtcuE
+hxSlSJwCYlsReJI+pypRqQbgsnlWExQhNUyTRyeXgjSmMTBFGXWDCupQFLUdGPeIL7NXDezwCozLDIp8L1P9hfRUR5XVbsRH1BNdK5ybWEB4IHE/TtgR/gCuFUQVbNZDMPik5eBRfLCIxA8iRH0i8y1d1aMTL15rh19GiTimB
+aE8Vh5aUHrH5J1w4jFxdLbY3CgAuqprDoHDxtV97ulV8XWLNiuWpKoIKuxRGWRLChqFiF4miKLwkKiVJEIG0j4pbNRUmoqOCzOhsQGRCmnclt1QEoCbEANf6X+3SqD8+1nYh0IqchKxY64bDACdJeElGcDlK2BeHMV8YWFlZQWNBO
+c+TGI0UGlIsjElOW6yHUD/VilfBVNiE8Z1fsGKHiE2cKYkVkVnMGZiLks7Hk2anRaXvUgeTas2y2f6p5nJ1WjZQ1JFOE8OyxuLQs8CngIgqZ5NrDNlgc9CSKy9m363Z7FNg2zD0obqVOPNZJ4QKkgvXrH8vGq2NTmePVvDRgEUQU
+TLqKeVzepQ9JCsarYMjzh+ef8QPz61fSKMbTsDADumBlWl32TlvOhyuGW2cqJKgeZxDcgNmVUObfsAOzdkj+3Bp0x26B/XSeWDwFREWQ9tgn9ajQNvgifQtHkMhGj5kg6MjLFWFW+HrOjnP48B5VXqPDilCsM
+juIw41Epkh2f
+1cIqyFJVaVCGtR1yRLjeCGeAP2/26BrkWeQZ5FhGDiEVTg6YWSYOkRXOD6loIDAosSg1KLboy6MoiYZCw6MKgC4uYQXWVJgYlFh0adGjRpUGXFs0MmlnEIxJYGcuetcHBU7Wt6OWNOuGawq9n2Lbx3bZuQ4OGFh0YdHBbYtEM3goI6
+oQIOreal6VUyG6KyAhtTWnbdNUwXbVL78Z0U6zsVNCGoBmdEN0yqa4iJWZVvZ5AidpaPbGbe9XEr2oZmriW4mUTv7R4v4n3LT5q4iOL95p4r5a5iQ8sHjXxyOLjJj62+LSJT/9jgaU8jW+oQtzHkiJuI/gzezCN+STMnxQxrpuNrDz
+W3Rs0K5Fu1YBi4MemfRO/tkgexW3zPVfECq9erWoFa0bWho2jbUqu60DTu2MuqH0tA14rjNXO83cZ3UvSau59luYn2c4EPafC2jzder3f7G92tn9aX+xUn9T3ne+cJex03c2nRfOvjNyTh3P+cX51fnN+b3zR+evzt+df0rXu3
+eqmG+c1vXw3r/gGIMR</latexit>
+Table 1: Speed-up of Async-RED compared with GM-RED
+Method
+SNR
+time
+speed-up
+Gm-RED(1-core)
+29.01 dB
+1.8 hr
+-
+Sync-RED(8-core)
+29.00 dB
+38.9 min
+2.8⇥
+Async-RED-BG(8-core)
+29.01 dB
+17.9 min
+6.1⇥
+Async-RED-SG(8-core)
+28.08 dB
+13.0 min
+8.4⇥
+Figure 3: Left: Evolution of the convergence accuracy of ASYNC-RED-SG as the minibatch size
+w increases. The average distance is plotted against the number of iterations with the shaded areas
+representing the range of values attained over the test images. Middle & Right: Comparison of
+convergence speed between ASYNC-RED-BG/SG and other baselines. The right table summarizes
+the total runtime and the speed-up compared with GM-RED for all algorithms.
+This establishes the ﬁxed-point convergence to the set zer(G) at the rate of O(1/
+p
+wt) under speciﬁc
+conditions. If we treat entire x as a block, namely that U = UT = I and b = 1, ASYNC-RED-SG
+then becomes the asynchronous stochastic RED algorithm. Hence, the proposed remark immediately
+holds true for the later. Note that our convergence rate O(1/
+p
+wt) is consistent with the rate proved
+for the serial (Nemirovski et al., 2009) and parallel (Dekel et al., 2012; Lian et al., 2015) stochastic
+gradient methods.
+All the proofs are presented in the supplement. We note that the analysis above does not assume the
+existence of an explicit regularizer associated with the operator Dσ. Moreover, it does not require Dσ
+to be a Gaussian denoiser. Our analysis is hence applicable to all nonexpansive operators, such as the
+traditional proximal operators or the more recent artifact-removal operators (Zhang et al., 2019).
+5
+NUMERICAL VALIDATION
+We now present a numerical validation of ASYNC-RED. Our goals are ﬁrst to validate the proposed
+theorems in Section 4 and then to demonstrate the effectiveness and the efﬁciency of our algorithm on
+the large-scale problem. We consider two image recovery tasks that have the form y = Ax+e, where
+the measurement matrix A corresponds to either the random matrix in compressive sensing (CS) or
+the Radon transform in computed tomography (CT), and the noise e is assumed to be additive white
+Gaussian (AWGN). In particular, the random matrix is implemented with the block-diagonal structure
+A = diag([Ai, ..., Ab]) for fast validation, while the Radon transform is used as its full matrix form
+to demonstrate the effectiveness of ASYNC-RED for overcoming the computation bottleneck. Our
+deep neural net prior adapts the DnCNN architecture (Zhang et al., 2017a). We used the signal-
+to-noise ratio (dB) to quantify the quality of the reconstructed images. For each experiments, we
+selected the denoiser that achieves the best SNR performance from the ones corresponding to ﬁve
+noise levels σ 2 {5, 10, 15, 20, 25}. The value of σ is ﬁxed across all iterations of the algorithm.
+Supplement D provides additional technical details.
+5.1
+CONVERGENCE BEHAVIOR
+We validate our theorems on the CS task with 6 test images selected from the Set 12 dataset (Zhang
+et al., 2017a). Each test image is rescaled to the size of 240 ⇥240 pixels (see Fig. 6 in the supplement
+for the visualization). The block-diagonal matrix A is set to consist of 9 submatrices, corresponding
+to a 3 ⇥3 grid of blocks with the size of 80 ⇥80 pixels in every image. The elements in A
+are i.i.d zero-mean Gaussian random variables of variance of 1/m, and the compression ratio is
+set to be m/n = 0.7, which indicates that the total number of measurements is 4480 for each
+block. We obtain the measurements by multiplying A with each vectorized image and adding
+additional noise corresponding to the input SNR of 30 dB. Finally, we use the normalized distance
+kG(xk)k2
+2/kG(x0)k2
+2 to quantify the ﬁxed-point convergence, with b block updates grouped as one
+iteration. The distance is expected to approach zero as the algorithm converges to a ﬁxed point. The
+average performance of all methods is obtained by running a single trial for each image.
+Theorem 1 establishes the convergence of ASYNC-RED-BG to the ﬁxed point set zer(G). This
+is illustrated in Fig. 2 for four different numbers of accessible cores nc 2 {2, 4, 6, 8}. In the left
+ﬁgure, the average normalized distance is plotted against the iteration number, while the middle and
+7
+
+Published as a conference paper at ICLR 2021
+2
+EMfV7ldrb2u7Pe6FSBAgBbLMDtbtaUATp2kCBIGXxmvRuQ0omZKISKJCUrEdQU/DXve81+0f2N+z/2ZHSTxJsTdMgK3j5+7I45cnW24acaUHg7/v3f/gw48+/uTBw17/08+f/
+T4yRc/KZFJj08EQn5xqWKRTxhE81xN6ktHYjdhr92pk/K9vmFRcJBd6mbJ3MQ0S7nOPakDvjw7GZHv4bPfZd2R28PTy8eZgd1BeZNUY1samU1/jye9v6Yz4WUxS7QXUaV+
+Hg5S/S6nUnMvYkVvmimWUu+KBix3hbjS1FUFqa4tkrhM2Vqo9HX1xmNuF4SCImY6mTSWPki0a1MNwKXK6ickZjqkKhl7IpoJctgmwRZN1QmQoc8CTqBCfeYL6nXTO+JGJzaTk
+t8Icnwm70dwrS328mNuSeFEbawuZaIQNI0XHYliIuHcG0RrmGzHoHJZ50Aj2tWlBGBFlKYFweVHdn5czcWxQm0OdBJu8IZjTRAiqvIqD6DdMqCbu+3uhqFAVCch1C0QVE4lCtj
+yruCmxYWa4OmZDsTh5Lshg2FJdVaEFCesNIxLRmkhgfk2s2F2eR5lLMm9OAzIAlJpit6w5AWUQlqPG/wsPQPCt3diKXMxVGSVnoTECBM2KiFOEJodUsnYRF+eQVvd7W1hYZSyF
+8WMRqoJcRy9OI8qQwTW4M8kN95DtkxnyecLNvgFLENOlNEzavk3N4JlKhSn+Rj1uDTlQzSZEfNnYnpr4X+UVtdLwRi2Na5KflrePxhBQRCLos8hGanQh40LM4rVbfb+zuLBtW
+HtU3iqdRGoORUiQCuo3nySf7kxtZ053ispBZRBzcJkuFml1Vz4cUjDdAUdRtOLo4l/i6ALjIh6vBAEDPxwPGFxXcesWrdYjdcCa1aqF6gCVpSsBwLASnvgrfmDoh8NfoMcAs
+iaEoXgcW3TCIG2KfN7OAbfFM+Yin0IiWHyajszOqdJ5PNVvovBwX76eAivroPHhKNYWf4Crj1CiRn14202meLEmlRZ3S+Ykrj8uNYQX4orhf1yIXkWeRh4hZxBCFoWIlEUK0c
+KiphcCiwJES4uWiG4tukUkLZKIri26RpRY1HRpZlG6NSiU0Q3Ft0gmls0RyRiFqCM1Qh98ODpxleOilafCEPhM7Bs38buY9ihRYeITiw6WXewZA7/CgT6hEm+QM2rViplt01k
+hUbXsu6blu623slxINS4FNiTN+YwZyx51naloUvfrBbQo9uoFbu5VG79qZGjRoqjNj5CfNzGx4jP2vgM8cs2ftnI3MYniMdtPEZ83sbniCdtPmPAit5Wu9QpbjbimlFhE
+/gn9mFV8anVfqoynXdfITrIzq36AWiF6gAojOL3iJ6i78scLr1+0y9HpC6XmONGkW7jpamXUej6kHXcQAOeMUd3n2hXTVe7+0Ov90dDn/c23x+UL/tPnC+cjacbWfofO8d46d
+sTNxPEc6vzt/OH/2J/28/0v/1yr0/r0650unc/V/+wfwtFSb</latexit>FBP (15.56 dB)
+k
+arvAanHkQjgiqbXfbzgwIS4nLv6rqj39Ve+wmEZVqMPj0eP3v/gw4/WnvT6Tz/+5NP1Z5/9IHkqPHLh8YiLNy6WJKMXCiqIvImEQTHbkQu3eux9l/eEiEpZ+cqS8i7GAeM+tTDCtDVOpopslDSy/dkxrwXZweTF/uHRW97NodfYPm+8+v1jcHu4PyQsvGsDY2nfqaXj3rfzGbcy+NCVNehKX8cThI1LscC0W9iBS9WSpJgr1rHJDc5fxaYVcWqLq2UCK4T6R
+eL45e3KQ4oipDEBIR2cnEsfQ5U61MNwKXy7GYoxirEMksdnm0lKWxSYKsWywYVyFlQSeQUY/4AnvN8B6PwanMsMjnAg2/Gu0gorzdTm5MPcG12IXJNYQHAidh1pUgLp7AtYWogs16CAafdwI8qkhRgSCpwmC57J43Z2VI1NvUehAnwapeCY1kRxWHkVAavf0O3DyM3NRlejKOCqhAWXUCkfZSro4qHAmtWLleFhAvyI+wNIYNxeUqFEchviUoIkoRgbSPiBWb
+i9NIUcHvmpAZkCYDiarugNQGmEBavyv8DU5+fBTkQ2l2HEyoXOSxwjnSURJQhXI3SViUp7Ho9ba2tBUcO7DJEYDlUkTyJMWaGbXBvou7rkO2hOfMqo3jdAwWPMejNG7urkHM5EwmXpL/Jp6ET1QxS5JPG7sTU9yI/r42ONyJxjIv8pLx1PB4XPAJBsyIfW7MTAQc9jZNq9r3G7o4C24a5x+Wt0oknuihcgFSwfv3H8tnOzHTmbKeoHFgEMQWX7mKeVHfp
+Q5GC2Q4iqIVhxf/EocXNi6i8VIQMPBDecCgqopbNWk1H6oDVsxWTVQHyDRZCgBmV0KZv+QHZv1Q/IV16Ae7BR40S+eBwfdEWAy2wT5tRgHb4Ln0LZ5BIxo+YePTUyxVnpc/EHn5XPw0A1TUpfPglCoMr+Aq40QrkZ9cNcMpyjJUaVGndF5xZbncGaAf9ju1zXItcgzyLOIGEQsCg0KLZIGSYsWBjW9EBgUWJQZlFl0b9C9RcIgYdGNQTcWMYOaLk0NSi06MejEo
+luDbi26M+jOIh6TwMpYPVkfHDzV+MqnotUnXFP4Gxi2Z2L3bNjEoIlFxwYdryosuoNfBQR9QgRdWM2rViplN01khLaurOu6b7nu623NF2IlZ0KbEi6o3OiLVPqOlNiVvfrObSo7dVzu7nXbfy6kaGNGyletfEri4/a+Mji0zY+tfiwjQ8bmdv42OJpG08tPmvjM4sv2vjiPxZYydP6hirF3ZEScR9BL/MLnxGPq/Sx1Wu6+ZjO79FZwYdWHRgFbDo1KC3Fr21b
+xaobv09U8HpF6vtsaNol1HS9Ouo1F1v+vYt53RvJQmrhHbdf6qI2boh62cTPXhvr4wQf0sOHn83LxuVod/j17nD4/Wjz5X79Tb3mfOlsONvO0PnWekcOVPnwvGcn51fnF+d3/q/9/s/9X/uwp9/KjO+dzpXE/X/gEfFILF</latexit>Async-RED-BG (22.25 dB)
+Z
+beA0egafgEnHGdtzbGcXhKXEx79znz8zxmv3TiSvd6fzx4+N7H3z40aPHK6tPv7k07Wn/2gRCY9duGJSMg3LlUs4gm70FxH7E0qGY3diF261wPjv7xlUnGRnOt5yt7FNEi4z2qAV2tfTnWbKaVlx/Gz8OhgXZ2u3vPiGTPafXa1t9HZ65UWjX5tbDj1Nbp6uvrFeCK8LGaJ9iKq1I/9Xqrf5VRq7kWsWBlniqXUu6YBy10hrjV1VUGqa5OkUvhMmZX
+S6PlNRiOu5wRCIqY6mTRWvkh0K9ONwOUKickpjokah67IlrIMtgmQdYtlYnQIU+CTmDCPeZL6jXDeyIGp7bDEl9I0v96d5sw7e10cmPuSWFkLmyuJSKQNA3nXQni4jFcm4Rr2KxHYPBJ8DjmhVlRCBFlhJ4LsvW3Vk5MvdmhQn0eZDJe4IZTbSAlVcRsPp10zgJu7lZ72oUBUJyHcKiC4jER7U8qrgvsGHlcnXIhGT38liSxbChuFyFiSkt4xETGsmifExuWRz
+cRZpLsW0qQZkBiwxwWxZdwDKIipBjf8VHobm5NzbiZxPVBgl5UInAhY4ISZKEZ4QWo3SZiV57BYWdnc3CQjKYQPk1gN9DxieRpRnhSmyY1BvqtLvk0mzOcJN/sGKEVMk5VxwqZ1cg5nIhWq9Bf5qPXQiWoGKfJhY3di6nuRn9dGxuxOKZFflLeOh5PSBGBoPMiH6DZiYCDnsVpNfteY3dHgW3D3IPyVukUlMUIUEqWL/5S/Lx9th25ni7qBxUBjEHl+likVZ3
+5UORgvE2OIqiFUdn/xJHZxgX8XghCBj4oTxgcF3FLZu0mo/UAUtmqyaqA1SWLgQAw5XwxF/wA0M/FH+GDvOAWxBs3QRWHzHJGKwLfZ5MwrYFk+Uj3gMjWj5MBmcnlKl87z8acjL5+KnMaCiLp0Hp1RTeAVXGSdGifzkqhlO82ROKi3qlM4riyXG8M8I/ifl2LXESeR4iZhFDFoUIlIWKUQzi5peCwKEM0tmiO6s+gOkbRIrqx6AZRYlHTpZlFGaITi04Q3
+Vp0i2hq0RSRiFmAMlZP6IODpxtf+VS0+kQYCn89y/Zs7B6GDS0aIjq26HhZYckUfhUI9AmTfIaV61Uym6byAqNrnXdy3XVb2G6kGqcCmxImvIJM5YtdZ2paFL36zm0KPbqOW7udRu/bmRo40aKV238CvFRGx8hPm3jU8SHbXzYyNzGx4hHbTxCfNbGZ4gv2vjiPxZYydP6hirF3VJMKyJ8Ar/MLnxAPqvSB1Wu6+YDnB/RmUHiA5QAUSnFr1F9BbfLFDd+
+numng9IvV5jDRpFu46Wpl1Ho+p+17GPndG8lIauFcdt1/qojZuiHrZxM89eG5vjB/S/fufzYvG5e5O/8VOv/97sbL/fqb+pHzlbPubDl951vnpXPkjJwLx3N+dn5xfnV+W/19c/Vv1b/rkIfPqhzPnc615OH/wA/qICg</latexit>Gm-RED (21.45 dB)
+E
+EMe9yubWSAL4sSlShSVkqyMwEJcUDaZCabRIqiIQ92tcwStT1tuxW72+luZ8axfOXTcIWvwZkPwhFBte1u25kBYSlx+VdV/fhXtcduElGp+v0/Hj1+7/0Pvxo5clq7+nHn3
+y69uyzHyRPhUeuPB5x8cbFkSUkStFVUTeJILg2I3Ia/dmqP2v74iQlLNLlSXkXYwDRn3qYQXoeg1NFJkr6eX7MmPezvnhaOfiqEBbe1/t7n2LpgfPr9c2+rv98kKLxqA2Npz6
+Gl8/630xmXIvjQlTXoSl/HQT9S7HAtFvYgUq5NUkgR7Nzgucv5jcKuLFB1baJEcJ9IvV4c7dymOKIqQxASEdnJxLH0OVOtTDcCl8uxmKIYqxDJLHZ5tJClsUmCrDsGFchZU
+EnkFGP+AJ7zfAej8GpzLDI5wINXuxtI6K83U5uTD3BtdiFyTWEBwInYdaVIC6ewLWJqILNegGn3YCPKpIUYEgqcJgueyeN2dlSNTb17oQJ8GqXgmNZEcVh5FQGrX9ftw8jt7
+XpXoyjgqoQFl1ApH2Uy6OKhwJrVi5XhYQL8iCPsDSGDcXlKhRHIb4jKCJKEYG0j4glm4vTSFHBZ01IDMgTAeTZd0BKI2wADX+V3gY6vPzYCcim8owYuVCpxwWOEU6SiLKEK5
+G6STMy9NYrK5ubm6iseDch0mMBiqLSJ5EmLJCN7k20Hd1ybfRlPiUb1vgILHmK1OGJnVyTmciYTL0l/k49ZDJ6oZpMhHjd2Jqe9FflkbHW9E4hgX+Wl563g8LngEgmZFPrRmJ
+wIOehon1ez7jd0dBbYNcw/LW6UT3RuACpYP36j+WT7YnpzMl2UTmwCGIKLt3FPKnu0ociBZNtcBRFKw7P/yUOz21cROFIGDgh/KAQVUVt2zSaj5UByZrZqoDpBpshAzK6
+EMn/BD8z6ofhz69APdgs8aJbOA4PvibAYbIN92owCtsFT6Vs8gUY0fMSGZ2dYqjwvfyDy8rn4aQKoqEvnwSlVGF7BVcapViI/vW6GU5RlqNKiTum84spyuTHMAP+w3a9rkGuRZ5
+BnETGIWBQaFokDZIWzQ1qeiEwKLAoMyiz6N6ge4uEQcKiW4NuLWIGNV2aGpRadGrQqUV3Bt1ZNDNoZhGPSWBlrJ6sDw6eanzlU9HqE64p/PUN2zex+zZsZNDIohODTpYVFs3g
+VwFBnxB51bzqpVK2U0TGaGtK+u67lu+27rLUwXYmWnAhuSZnRKtGVKXWdKzOp+vYQWtb16aTd30cYXjQxt3Ejxqo1fWXzcxscWn7XxmcVHbXzUyNzGJxaP23hs8Xkbn1t81c
+ZX/7HASp7WN1Qp7pYkSiLuI/hlduEz8nmVPqxyXTcf2vktOjfo0KJDq4BFZwa9teitfbNAdevmXo+IPV6tTVsFO06Wp2HY2qB13Hge2M5qU0co04brvWx23cFPWojZt59tY
+Hyf4kB48/GxeNF7v7Q6+3h0Mvt/beHlQf1OvOF8686WM3C+cV46x87YuXI852fnF+dX57fe70/e3/1/q5CHz+qcz53OtfTlX8AJ46C8Q=</latexit>Async-RED-SG (23.29 dB)
+0.95
+0
+Figure 4: CT reconstruction with a time budget of 1 hour by ASYNC-RED-BG/SG and GM-RED.
+The colormap is adjusted for the best visual quality.
+right ﬁgures plot the corresponding distance and SNR values against the actual runtime in seconds.
+The shaded areas representing the range of values attained across all test images. We also plot the
+results of serial BC-RED using the dashed line as reference. ASYNC-RED-BG is implemented
+to be run asynchronously on multiple cores, while BC-RED can only use one core to perform the
+computation. The left ﬁgure highlights the ﬁxed-point convergence of ASYNC-RED-BG in iteration
+for different nc, with all variants agreeing with the serial BC-RED. Since ASYNC-RED-BG uses
+more cores, the middle and right ﬁgures demonstrate the signiﬁcantly faster in-time convergence
+of ASYNC-RED-BG than BC-RED to the same SNR value. Speciﬁcally, BC-RED takes 1.8 hours
+to achieve 29.00 dB, while ASYNC-RED-BG (nc = 8) takes only 17.9 minutes to obtain the same
+value, corresponding to a 6⇥improvement in computation time.
+Theorem 2 establishes the convergence of ASYNC-RED-SG to zer(G) up to some error term, which
+is inversely proportional to the minibatch size w. This is illustrated in Fig. 3 (left) for three different
+minibatch sizes w 2 {1120, 2240, 3360}. As before, we plotted the average distance against the
+iteration number with the shading area representing the variance. Note that the log-scale of y-
+axis highlights the change for smaller values. Fig. 3 demonstrates the improved convergence of
+ASYNC-RED-SG to zer(G) for larger w, which is consistent with our theoretical analysis. Fig. 3
+(middle) compares the convergence speed between ASYNC-RED-BG/SG, gradient-method RED
+(GM-RED), and synchronous parallel RED (SYNC-RED). For ASYNC-RED-SG, we use w = 1120.
+In particular, ASYNC-RED-SG takes fewer total runtime (from 17.9 min to 13.0 min) to obtain the
+similar result (29.01 dB and 28.03 dB) and achieves 8.4⇥speedup compared with GM-RED. The
+table in Fig. 3 summarizes the detailed results.
+5.2
+EFFECTIVENESS FOR COMPUTATIONAL IMAGING
+We additionally demonstrate the effectiveness of our algorithm by reconstructing a 800 ⇥800 CT
+image from its 180 projections. For block parallel updates, the image is decomposed into 16 blocks,
+each having the size of 200 ⇥200 pixels. The Radon matrix used in the experiment corresponds
+to 180 angles with 1131 detectors, and the noise level is set to 70 dB. We refer to Supplement D.2
+for additional technical details. Fig. 4 shows the visual illustration of the reconstructed images by
+ASYNC-RED-BG/SG and GM-RED. Each algorithm starts from the ﬁltered back-projection (FBP)
+of the measurements and runs for 1 hour. Here, ASYNC-RED-SG randomly uses one-third of the total
+measurements at every iteration. Given the same amount of time, ASYNC-RED-BG/SG successfully
+mitigates the noise-artifacts, while the result of GM-RED is still noisy. In particular, the per-iteration
+time cost of ASYNC-RED-BG/SG and GM-RED is 5.23, 3.21, and 19.19 seconds, respectively. This
+experiment clearly illustrates the fast processing speed of the asynchronous procedure.
+6
+CONCLUSION
+Asynchronous parallel methods have gained increasing importance in optimization for solving large-
+scale imaging inverse problems. We have introduced ASYNC-RED as an extension of the recent
+RED framework and theoretically analyze its convergence in batch and stochastic settings. We have
+8
+
+Published as a conference paper at ICLR 2021
+validated its convergence guarantees and demonstrated its effectiveness in CT image reconstruction.
+We note that this work is complementary to traditional acceleration strategies, such as Nesterov
+acceleration and variance-reduction, commonly used in optimization. Future work will investigate
+ASYNC-RED with Nesterov acceleration (as was done in (Hannah et al., 2019) for traditional
+asynchronous block-coordinate algorithms) and variance-reduction (as was done in (Johnson &
+Zhang, 2013) for traditional stochastic gradient method) to better understand the tradeoffs between
+acceleration and scalability in multicore systems. We will additionally investigate theoretical limits
+of ASYNC-RED in the unbounded maximal delay setting.
+ACKNOWLEDGEMENT
+Research presented in this article was supported by NSF award CCF-1813910 and the Laboratory
+Directed Research and Development program of Los Alamos National Laboratory under project
+number 20200061DR.
+REFERENCES
+R. Ahmad, C. A. Bouman, G. T. Buzzard, S. Chan, S. Liu, E. T. Reehorst, and P. Schniter. Plug-and-
+play methods for magnetic resonance imaging: Using denoisers for image recovery. IEEE Signal
+Processing Magazine, 37(1):105–116, 2020.
+K. Akiyama, A. Alberdi, W. Alef, K. Asada, R. Azulay, A.K. Baczko, D. Ball, M. Balokovi´c,
+J. Barrett, D. Bintley, et al. First m87 event horizon telescope results. iv. imaging the central
+supermassive black hole. The Astrophysical Journal Letters, 875(1):L4, 2019.
+C. Anil, J. Lucas, and R. Grosse. Sorting out Lipschitz function approximation. In Proc. 36th Int.
+Conf. Machine Learning (ICML), pp. 291–301, Long Beach, California, USA, 09–15 Jun 2019.
+H. H. Bauschke and P. L. Combettes. Convex Analysis and Monotone Operator Theory in Hilbert
+Spaces. Springer, 2 edition, 2017.
+A. Beck and L. Tetruashvili. On the convergence of block coordinate descent type methods. SIAM J.
+Optim., 23(4):2037–2060, October 2013.
+P. Bianchi, W. Hachem, and F. Iutzeler. A coordinate descent primal-dual algorithm and application
+to distributed asynchronous optimization. IEEE Transactions on Automatic Control, 61(10):
+2947–2957, 2015.
+S. A. Bigdeli, M. Jin, P. Favaro, and M. Zwicker. Deep mean-shift priors for image restoration. In
+Proc. Advances in Neural Information Processing Systems 30, Long Beach, CA, USA, Dec 2017.
+S. Boyd and L. Vandenberghe. Convex Optimization. Cambridge Univ. Press, 2004.
+G. T. Buzzard, S. H. Chan, S. Sreehari, and C. A. Bouman. Plug-and-play unplugged: Optimiza-
+tion free reconstruction using consensus equilibrium. SIAM J. Imaging Sci., 11(3):2001–2020,
+September 2018.
+S. H. Chan, X. Wang, and O. A. Elgendy. Plug-and-play ADMM for image restoration: Fixed-point
+convergence and applications. IEEE Trans. Comp. Imag., 3(1):84–98, March 2017.
+R. Cohen, M. Elad, and P. Milanfar. Regularization by denoising via ﬁxed-point projection (RED-
+PRO). arXiv:2008.00226 [eess.IV], 2020.
+O. Dekel, R. Gilad-Bachrach, O. Shamir, and L. Xiao. Optimal distributed online prediction using
+mini-batches. Journal of Machine Learning Research, 13(1):165–202, 2012.
+M. Elad and M. Aharon. Image denoising via sparse and redundant representations over learned
+dictionaries. IEEE Trans. Image Process., 15(12):3736–3745, December 2006.
+M. A. T. Figueiredo and R. D. Nowak. Wavelet-based image estimation: An empirical Bayes approach
+using Jeffreys’ noninformative prior. IEEE Trans. Image Process., 10(9):1322–1331, September
+2001.
+9
+
+Published as a conference paper at ICLR 2021
+M. A. T. Figueiredo and R. D. Nowak. An EM algorithm for wavelet-based image restoration. IEEE
+Trans. Image Process., 12(8):906–916, August 2003.
+A. K Fletcher, P. Pandit, S. Rangan, S. Sarkar, and P. Schniter. Plug-in estimation in high-dimensional
+linear inverse problems: A rigorous analysis. In Advances in Neural Information Processing
+Systems 31, pp. 7451–7460. Montreal, QC, Canada, Dec. 2018.
+S. Ghadimi and G. Lan. Accelerated gradient methods for nonconvex nonlinear and stochastic
+programming. Math. Program. Ser. A, 156(1):59–99, March 2016.
+R. Hannah and W. Yin. On unbounded delays in asynchronous parallel ﬁxed-point algorithms.
+Journal of Scientiﬁc Computing, 76(1):299–326, Jul 2018.
+R. Hannah, F. Feng, and W. Yin. A2BCD: Asynchronous acceleration with optimal complexity. In
+International Conference on Learning Representations, 2019.
+Y. Hu, S. G. Lingala, and M. Jacob. A fast majorize-minimize algorithm for the recovery of sparse
+and low-rank matrices. IEEE Trans. Image Process., 21(2):742–753, February 2012.
+F. Iutzeler, P. Bianchi, P. Ciblat, and W. Hachem. Asynchronous distributed optimization using a
+randomized alternating direction method of multipliers. In 52nd IEEE conference on decision and
+control, pp. 3671–3676. IEEE, 2013.
+R. Johnson and T. Zhang. Accelerating stochastic gradient descent using predictive variance reduction.
+In Advances in Neural Information Processing Systems, volume 26, pp. 315–323, 2013.
+D. Kingma and J. Ba. Adam: A method for stochastic optimization. In International Conference on
+Learning Representations (ICLR), 2015. arXiv:1412.6980 [cs.LG].
+X. Lian, Y. Huang, Y. Li, and J. Liu. Asynchronous parallel stochastic gradient for nonconvex
+optimization. In Advances in Neural Information Processing Systems 28, pp. 2737–2745. Montreal,
+QC, Canada, 2015.
+X. Lian, W. Zhang, C. Zhang, and J. Liu. Asynchronous decentralized parallel stochastic gradient
+descent. In Proc. 35th Int. Conf. Machine Learning (ICML), pp. 3043–3052, Stockholmsm¨assan,
+Stockholm Sweden, 10–15 Jul 2018.
+J. Liu and S. J. Wright. Asynchronous stochastic coordinate descent: Parallelism and convergence
+properties. SIAM Journal on Optimization, 25(1):351–376, 2015.
+J. Liu, S. J. Wright, C. R´e, V. Bittorf, and S. Sridhar. An asynchronous parallel stochastic coordinate
+descent algorithm. J. Mach. Learn. Res., 16(1):285–322, January 2015.
+T. Liu, S. Li, J. Shi, E. Zhou, and T. Zhao. Towards understanding acceleration tradeoff between mo-
+mentum and asynchrony in nonconvex stochastic optimization. In Advances in Neural Information
+Processing Systems 31, pp. 3682–3692. Montreal, QC, Canada, Dec 2018.
+D. Martin, C. Fowlkes, D. Tal, and J. Malik. A database of human segmented natural images and its
+application to evaluating segmentation algorithms and measuring ecological statistics. In Proc.
+IEEE Int. Conf. Comp. Vis. (ICCV), pp. 416–423, Vancouver, Canada, July 7-14, 2001.
+G. Mataev, P. Milanfar, and M. Elad. Deepred: Deep image prior powered by red. In Proceedings of
+the IEEE/CVF International Conference on Computer Vision (ICCV) Workshops, Oct 2019.
+T. Meinhardt, M. Moeller, C. Hazirbas, and D. Cremers. Learning proximal operators: Using
+denoising networks for regularizing inverse imaging problems. In Proc. IEEE Int. Conf. Comp. Vis.
+(ICCV), pp. 1799–1808, Venice, Italy, October 22-29, 2017.
+C. Metzler, P. Schniter, A. Veeraraghavan, and R. Baraniuk. prDeep: Robust phase retrieval with
+a ﬂexible deep network. In Proc. 35th Int. Conf. Machine Learning (ICML), pp. 3501–3510,
+Stockholmsm¨assan, Stockholm Sweden, 10–15 Jul 2018.
+C. A. Metzler, A. Maleki, and R. Baraniuk. BM3D-PRGAMP: Compressive phase retrieval based
+on BM3D denoising. In Proc. IEEE Int. Conf. Image Proc. (ICIP), pp. 2504–2508, Phoenix, AZ,
+USA, September 25-28, 2016a.
+10
+
+Published as a conference paper at ICLR 2021
+C. A. Metzler, A. Maleki, and R. G. Baraniuk. From denoising to compressed sensing. IEEE Trans.
+Inf. Theory, 62(9):5117–5144, September 2016b.
+T. Miyato, T. Kataoka, M. Koyama, and Y. Yoshida. Spectral normalization for generative adversarial
+networks. In International Conference on Learning Representations, 2018.
+A. Nemirovski, A. Juditsky, G. Lan, and A. Shapiro. Robust stochastic approximation approach to
+stochastic programming. SIAM J. Optim., 19(4):1574–1609, 2009.
+Y. Nesterov. Introductory Lectures on Convex Optimization: A Basic Course. Kluwer Academic
+Publishers, 2004.
+Y. Nesterov. Efﬁciency of coordinate descent methods on huge-scale optimization problems. SIAM J.
+Optim., 22(2):341–362, 2012.
+F. Ong, X. Zhu, J. Y. Cheng, K. M. Johnson, P. E. Z. Larson, S. S. Vasanawala, and M. Lustig.
+Extreme mri: Large-scale volumetric dynamic imaging from continuous non-gated acquisitions.
+Magnetic Resonance in Medicine, 84(4):1763–1780, 2020.
+Z. Peng, Y. Xu, M. Yan, and W. Yin. Arock: An algorithmic framework for asynchronous parallel
+coordinate updates. SIAM Journal on Scientiﬁc Computing, 38(5):A2851–A2879, 2016.
+Z. Peng, Y. Xu, M. Yan, and W. Yin. On the convergence of asynchronous parallel iteration with
+unbounded delays. Journal of the Operations Research Society of China, 7(1):5–42, 2019.
+S. Rangan, P. Schniter, and A. Fletcher. On the convergence of approximate message passing with
+arbitrary matrices. In Proc. IEEE Int. Symp. Information Theory, pp. 236–240, Honolulu, HI, USA,
+June 29-July 4, 2014.
+S. Rangan, A. K. Fletcher, P. Schniter, and U. S. Kamilov. Inference for generalized linear models via
+alternating directions and Bethe free energy minimization. In Proc. IEEE Int. Symp. Information
+Theory, pp. 1640–1644, Hong Kong, June 14-19, 2015.
+B. Recht, C. Re, S. Wright, and F. Niu. Hogwild: A lock-free approach to parallelizing stochastic
+gradient descent. In Advances in Neural Information Processing Systems 24, pp. 693–701. Granada,
+Spain, Dec 2011.
+E. T. Reehorst and P. Schniter. Regularization by denoising: Clariﬁcations and new interpretations.
+IEEE Trans. Comput. Imag., 5(1):52–67, March 2019.
+R. T. Rockafellar and R. J-B Wets. Variational Analysis. Springer, 1998.
+Y. Romano, M. Elad, and P. Milanfar. The little engine that could: Regularization by denoising
+(RED). SIAM J. Imaging Sci., 10(4):1804–1844, 2017.
+L. I. Rudin, S. Osher, and E. Fatemi. Nonlinear total variation based noise removal algorithms.
+Physica D, 60(1–4):259–268, November 1992.
+E. K. Ryu and S. Boyd. A primer on monotone operator methods. Appl. Comput. Math., 15(1):3–43,
+2016.
+E. K. Ryu, J. Liu, S. Wang, X. Chen, Z. Wang, and W. Yin. Plug-and-play methods provably converge
+with properly trained denoisers. In Proc. 36th Int. Conf. Machine Learning (ICML), pp. 5546–5557,
+2019.
+H. Sedghi, V. Gupta, and P. M. Long. The singular values of convolutional layers. In International
+Conference on Learning Representations, 2019.
+S. Sreehari, S. V. Venkatakrishnan, B. Wohlberg, G. T. Buzzard, L. F. Drummy, J. P. Simmons, and
+C. A. Bouman. Plug-and-play priors for bright ﬁeld electron tomography and sparse interpolation.
+IEEE Trans. Comput. Imaging, 2(4):408–423, December 2016.
+T. Sun, R. Hannah, and W. Yin. Asynchronous coordinate descent under more realistic assumption. In
+Advances in Neural Information Processing Systems 30, pp. 6183–6191, Long Beach, California,
+USA, Dec. 2017.
+11
+
+Published as a conference paper at ICLR 2021
+Y. Sun, J. Liu, and U. S. Kamilov. Block coordinate regularization by denoising. In Advances in
+Neural Information Processing Systems 32, pp. 380–390. Vancouver, BC, Canada, Dec. 2019a.
+Y. Sun, B. Wohlberg, and U. S. Kamilov. An online plug-and-play algorithm for regularized image
+reconstruction. IEEE Trans. Comput. Imaging, 2019b.
+Y. Sun, S. Xu, Y. Li, L. Tian, B. Wohlberg, and U. S. Kamilov. Regularized fourier ptychography
+using an online plug-and-play algorithm. In Proc. IEEE Int. Conf. Acoustics, Speech and Signal
+Process. (ICASSP), pp. 7665–7669, Brighton, UK, May 12-17, 2019.
+A. M. Teodoro, J. M. Bioucas-Dias, and M. A. T. Figueiredo. A convergent image fusion algorithm
+using scene-adapted Gaussian-mixture-based denoising. IEEE Trans. Image Process., 28(1):
+451–463, January 2019.
+M. Terris, A. Repetti, J. Pesquet, and Y. Wiaux. Building ﬁrmly nonexpansive convolutional neural
+networks. In Proc. IEEE Int. Conf. Acoustics, Speech and Signal Process. (ICASSP), pp. 8658–
+8662, Barcelona, Spain, May 4-8 2020.
+T. Tirer and R. Giryes. Image restoration by iterative denoising and backward projections. IEEE
+Trans. Image Process., 28(3):1220–1234, Mar. 2019.
+S. V. Venkatakrishnan, C. A. Bouman, and B. Wohlberg. Plug-and-play priors for model based
+reconstruction. In Proc. IEEE Global Conf. Signal Process. and Inf. Process. (GlobalSIP), pp.
+945–948, Austin, TX, USA, December 3-5, 2013.
+K. Wei, A. Aviles-Rivero, J. Liang, Y. Fu, C.-B. Schnlieb, and H. Huang. Tuning-free plug-and-play
+proximal algorithm for inverse imaging problems. In Proc. 37th Int. Conf. Machine Learning
+(ICML), 2020.
+E. Williams, J. Moore, S. W Li, G. Rustici, A. Tarkowska, A. Chessel, S. Leo, B. Antal, R. K
+Ferguson, U. Sarkans, et al. Image data resource: a bioimage data integration and publication
+platform. Nature methods, 14(8):775–781, 2017.
+S. J. Wright. Coordinate descent algorithms. Math. Program., 151(1):3–34, June 2015.
+Z. Wu, Y. Sun, A. Matlock, J. Liu, L. Tian, and U. S. Kamilov. Simba: Scalable inversion in optical
+tomography using deep denoising priors. IEEE Journal of Selected Topics in Signal Processing,
+pp. 1–1, 2020.
+X. Xu, Y. Sun, J. Liu, B. Wohlberg, and U. S. Kamilov. Provable convergence of plug-and-play priors
+with mmse denoisers. IEEE Signal Processing Letters, 27:1280–1284, 2020.
+K. Zhang, W. Zuo, Y. Chen, D. Meng, and L. Zhang. Beyond a Gaussian denoiser: Residual learning
+of deep CNN for image denoising. IEEE Trans. Image Process., 26(7):3142–3155, July 2017a.
+K. Zhang, W. Zuo, S. Gu, and L. Zhang. Learning deep CNN denoiser prior for image restoration. In
+Proc. IEEE Conf. Computer Vision and Pattern Recognition (CVPR), pp. 3929–3938, Honolulu,
+USA, July 21-26, 2017b.
+K. Zhang, W. Zuo, and L. Zhang. Deep plug-and-play super-resolution for arbitrary blur kernels. In
+Proc. IEEE Conf. Computer Vision and Pattern Recognition (CVPR), pp. 1671–1681, Long Beach,
+CA, USA, June 2019.
+Z. Zhou, P. Mertikopoulos, N. Bambos, P. Glynn, Y. Ye, L. Li, and Li F. Distributed asynchronous
+optimization with unbounded delays: How slow can you go? In Proc. 35th Int. Conf. Machine
+Learning (ICML), pp. 5970–5979, Stockholmsm¨assan, Stockholm Sweden, 10–15 Jul 2018.
+12
+

@@ -1,0 +1,2461 @@
+Published as a conference paper at ICLR 2024
+GENERATIVE MODELING WITH PHASE STOCHASTIC
+BRIDGES
+Tianrong Chen1∗, Jiatao Gu2, Laurent Dinh2, Evangelos A. Theodorou1
+, Josh Susskind2, Shuangfei Zhai2
+1Georgia Tech, 2Apple
+{tianrong.chen, evangelos.theodorou}@gatech.edu, {jgu32,l dinh,jsusskind,szhai}@apple.com
+ABSTRACT
+We introduce a novel generative modeling framework grounded in phase space
+dynamics, taking inspiration from the principles underlying Critically damped
+Langevin Dynamics and Bridge Matching. Leveraging insights from Stochas-
+tic Optimal Control, we construct a more favorable path measure in the phase
+space that is highly advantageous for efficient sampling. A distinctive feature
+of our approach is the early-stage data prediction capability within the context
+of propagating generative Ordinary Differential Equations or Stochastic Differ-
+ential Equations. This early prediction, enabled by the model’s unique structural
+characteristics, sets the stage for more efficient data generation, leveraging addi-
+tional velocity information along the trajectory. This innovation has spurred the
+exploration of a novel avenue for mitigating sampling complexity by quickly con-
+verging to realistic data samples. Our model yields comparable results in image
+generation and notably outperforms baseline methods, particularly when faced
+with a limited Number of Function Evaluations. Furthermore, our approach rivals
+the performance of diffusion models equipped with efficient sampling techniques,
+underscoring its potential in the realm of generative modeling.
+1
+INTRODUCTION
+Diffusion Models (DMs;Song et al. (2020a); Ho et al. (2020)) constitute an instrumental technique
+in generative modeling, which formulate a particular Stochastic Differential Equation (SDE) linking
+the data distribution with a tractable prior distribution. Initially, a DM diffuses data towards the
+prior distribution via a predetermined linear SDE. In order to reverse the process, a neural network
+is used to approximate the score function which is analytically available. Subsequently, the approx-
+imated score is utilized to conduct time reversal (Anderson, 1982; Haussmann & Pardoux, 1986) of
+this diffusion process, ultimately generating data. Recently, the Critical-damped Langevin Dynam-
+ics (CLD;Dockhorn et al. (2021)) extends the SDE framework of DM into phase space (whereas
+DMs operate in the position space) by introducing an auxiliary velocity variable, which is defined
+by tractable Gaussian distributions at the initial and terminal time steps. This augmentation induces
+a trajectory in position space exhibiting enhanced smoothness, as stochasticity is solely introduced
+into the velocity space. The distinctive structure of CLD is shown to enhance the empirical per-
+formance and sample efficiency. However, despite the success of CLD, inefficient sampling still
+persists due to unnecessary curvature of the dynamics (Fig.1) as it has to converge to equilibrium
+for sampling from the tractable prior.
+The remarkable accomplishments of DM have also catalyzed recent advancements in generative
+modeling, leading to the development of Bridge Matching (BM;(Peluchetti, 2021; Liu et al., 2022;
+2023)) and Flow Matching (FM;models(Lipman et al., 2022)). These models leverage dynamic
+transport maps underpinned by the utilization of SDEs or ODEs. Unlike DM, Bridge and Flow
+Matching relaxes the reliance on a forward diffusion process with an asymptotic convergence to a
+prior distribution over an infinite time horizon. Moreover, they exhibit a heightened degree of ver-
+satility, enabling the construction of transport maps between two arbitrary distributions by drawing
+∗work done while Tianrong Chen is an intern at Apple
+1
+
+Published as a conference paper at ICLR 2024
+Figure 1: The pixel-wise trajectories comparison with CLD(Dockhorn et al., 2021). Left figures cor-
+respond to the trajectories over time w.r.t random sampled 16 pixels, for position and velocity. Our
+model is able to learn straighter trajectories which is beneficial for reducing sampling complexity.
+upon insights from domains such as optimal transport (Pooladian et al., 2023), normalizing flow
+(Tong et al., 2023b), and optimal control (Liu et al., 2023).
+In this paper, we focus on enhancing the sample efficiency of velocity based generative modeling
+(eg, CLD) by utilizing the Stochastic Optimal Control (SOC) theory. Specifically, we leverage the
+outcomes of stochastic bridge within the context of linear momentum systems (Chen & Georgiou,
+2015) to construct a path measure bridging the data and prior distribution. The resulting path ex-
+hibits a more straight position and velocity trajectory compared to CLD (fig.1), making it more
+amenable to efficient sampling. Within the broader landscape of dynamic generative modeling (ie,
+ODE/SDE based generative models), data point can often be represented as linear combinations of
+scaled intermediate data of dynamics and Gaussian noise. In our work, we re-establish this property,
+enabling the estimation of target data points by leveraging both state and velocity information. In
+the case of DM and FM, the estimation of target data is exclusively reliant on position information,
+whereas our method incorporates the additional dimension of velocity data, enhancing the preci-
+sion and comprehensiveness of our estimations. It is also worth noting that our model exhibits the
+capacity to generate high fidelity images at early time steps (fig.2). In addition, we propose a sam-
+pling technique which demonstrates competitive results with small Number of Function Evaluations
+(NFEs), eg, 5 to 10. Table.1 demonstrates the design differences among aforementioned models. In
+summary, our paper presents the following contributions:
+1. We propose Acceleration Generative Modeling (AGM) which is built on the SOC theory, en-
+abling the favorable trajectories for efficient sampling over 2nd-order momentum dynamics gen-
+erative modeling such as CLD.
+2. As a result of AGM structural characteristics, it becomes possible to estimate a realistic data point
+at an early time point, a concept we refer to as sampling-hop. This approach not only yields a
+significant reduction in sampling complexity but also offers a novel perspective on accelerating
+the sampling in generative modeling by leveraging additional information from the dynamics.
+3. We achieve competitive results compared to DM approaches equipped with specifically designed
+fast sampling techniques on image datasets, particularly in small NFE settings.
+2
+PRELIMINARY
+Notation: Let xt ∈Rd and vt ∈Rd denote the d-dimensional position and velocity variable of a
+particle mt = [xt, vt]T ∈R2d at time t. We denote the discretized time series as 0 ≤t0 < ...tn <
+tN < 1. The Wiener Process is denoted as wt. The identity matrix is denoted as Id ∈Rd×d. We
+define Σt as the covariance matrix of xt and vt at time step t.
+2.1
+DYNAMICAL GENERATIVE MODELING
+The generative modeling approaches rooted in dynamical systems, including ODE and SDE, have
+garnered significant attention. Here, we present three noteworthy dynamical generative models:
+Diffusion Model (DM), Flow Matching (FM) and Bridge Matching (BM).
+2
+
+Published as a conference paper at ICLR 2024
+Table 1: Comparison between models in terms of boundary distributions p0 and p1. Our AGM
+generalizes DM beyond Gaussian priors to phase space, similar to CLD. However, unlike CLD,
+AGM does not need to converge to the Gaussian at equilibrium which causes curved trajectory(see
+Fig.1), instead, velocity distribution will be the convolution of data distribution with Gaussian.
+Models
+DM/FM
+CLD
+AGM(ours)
+p0(·)
+pdata(x)
+pdata(x) × N(0, Id)
+N(0, Σ0 × I2d)
+p1(·)
+N(0, Id)
+N(0, Id) × N(0, Id)
+pdata(x) × pdata(x) ∗N(0, Σ1 ⊗I2d)
+Diffusion Model: In the framework of DM, given x0 drawn from a data distribution pdata, the
+model proceeds to construct a SDE,
+dxt = ft(xt)dt + g(t)dwt
+x0 ∼pdata(x)
+(1)
+whose terminal distributions at t = 1 approach an approximate Gaussian, i.e. x1 ∼N(0, Id). This
+accomplishment is realized through the careful selection of the diffusion coefficient gt and the base
+drift ft(xt). It is noteworthy that the time-reversal (Anderson, 1982) of (1) results in another SDE:
+dxt =
+
+ft(xt) −g2
+t ∇x log p(xt, t)
+
+dt + g(t)dwt,
+x1 ∼N(0, Id)
+(2)
+where p(·, t) is the marginal density of (1) at time t and ∇x log pt is known as the score function.
+SDE (2) can be regarded as the time-reversal of (1) in such a manner that the path-wise measure
+is almost surely equivalent to the one induced by (1). As a consequence, these two SDEs share
+identical marginal over time. In practice, it is feasible to analytically sample xt given t and x0.
+Additionally, we can leverage a neural network to learn the score function by regressing scaled Stein
+Score Ext,t∥sθ
+t(xt, t; θ)−∇x log p(xt, t|x0)∥2
+2 for the purpose of propagating (2). This learned score
+can then be integrated into the solution of the aforementioned SDE(2) to simulate the generation of
+data that adheres to the target data distribution from the prior distribution. Meanwhile, (2) also
+corresponds to an ODE which shares the same path-wise measure:
+dxt =
+
+ft(xt) −1
+2g2
+t ∇x log p(xt, t)
+
+dt,
+x1 ∼N(0, Id)
+(3)
+which motivates the popular sampler introduced in (Zhang & Chen, 2022; Zhang et al., 2022; Bao
+et al., 2022) to solve the ODE (2) efficiently.
+Bridge Matching and Flow Matching: An alternative approach to exploring the time-reversal of a
+forward noising process involves the concept of ’building bridges’ between two distinct distributions
+p0(·) and p1(·). This method entails the learning of a mimicking diffusion process, commonly
+referred to as bridge matching, as elucidated in previous works (Peluchetti, 2021; Shi et al., 2022).
+Here we consider the SDE in the form of:
+dxt = vt(x, t)dt + gtdwt
+s.t.
+(x0, x1) ∼Π0,1(x0, x1) := p0 × p1
+(4)
+which is pinned down at an initial and terminal point x0, x1 which are independently samples from
+predefined p0 and p1. This is commonly known as the reciprocal projection of x0 and x1 in the
+literature (Shi et al., 2023; Peluchetti, 2023; Liu et al., 2022; L´eonard et al., 2014). The construction
+of such SDE is accomplished by meticulous design of vt. A widely adopted choice for vt is vt :=
+(x1 −xt)/(1 −t), which induces the well-known Brownian Bridge (Liu et al., 2023; Somnath
+et al., 2023). Similar to the approach in DM and owing to the linear structure of the dynamics,
+one can efficiently estimate this drift by employing a neural network parameterized by weights θ
+for regression on: Ext,t∥vθ
+t (xt, t; θ) −vt(xt, t)∥2
+2 given x1 and t. As extensively discussed in
+previous studies (Liu et al., 2023; Shi et al., 2022), this bridge matching framework takes on the
+characteristics of FM (Lipman et al., 2022) when the diffusion coefficient gt tends to zero.
+Remark 1. The practice of constraining a stochastic process to specific initial and terminal condi-
+tions is a well-established setup in SOC. For a gentle introduction of it’s connection with Brownian
+Bridge, Schr¨odinger Bridge please see Appendix.C. From this perspective, one can derive Brownian
+Bridge, as elaborated in Appendix.D.1 for comprehensive elucidation. It is imperative to note that
+the SOC framework will serve as the fundamental basis upon which we will develop our algorithm.
+3
+
+Published as a conference paper at ICLR 2024
+3
+ACCELERATION GENERATIVE MODEL
+We apply SOC to characterize the twisted trajectory of momentum dynamics induced by
+CLD(Dockhorn et al., 2021). It becomes evident that the mechanisms encompassing flow matching,
+diffusion modeling, and Bridge matching collectively facilitate the construction of an estimated tar-
+get data point, denoted as x1, by utilizing the intermediate state of the dynamics, xt. Our additional
+objective is to expedite the estimation of a plausible x1 by incorporating additional dynamics-related
+information, such as velocity, thereby curtailing the requisite time integration.
+In this section, we introduce the proposed method, termed as the Acceleration Generative Model
+(AGM), rooted in SOC theory. Building upon (Chen & Georgiou, 2015), we extend the frame-
+work by incorporating a time-varying diffusion coefficient and accommodating arbitrary boundary
+conditions, ultimately arriving at an analytical solution suited for the generative modeling. We
+demonstrate its efficacy in rectifying the trajectory of CLD, concurrently showcasing its aptitude for
+accurately estimating the target data at an early timestep ti, thereby enabling expeditious sampling.
+As suggested by BM approach, there is a necessity to formulate a trajectory that bridges the two data
+points sampled from p0 and p1 respectively. Desirably, the intermediate trajectory should exhibit
+optimal characteristics that facilitate smoothness and linearity. This is essential for the ease of
+simulating the dynamics system to obtain the solution. In our endeavor to tackle this challenge and
+enhance the estimation of the data point x1 by incorporating velocity components, we encapsulate
+the problem within a SOC framework, specifically formulated in the phase space which reads:
+Definition 2 (Stochastic Bridge problem of linear momentum system (Chen & Georgiou, 2015)).
+min
+at
+Z 1
+τ
+∥at∥2
+2dt + (m1 −m1)TR(m1 −m1)
+s.t
+
+dxt
+dvt
+
+| {z }
+dmt
+=
+
+vt
+at(xt, vt, t)
+
+|
+{z
+}
+f(m,t)
+dt +
+
+0
+0
+0
+gt
+
+|
+{z
+}
+gt
+dwt,
+mτ :=
+
+xτ
+vτ
+
+=
+
+xτ
+vτ
+
+,
+R =
+
+r
+0
+0
+r
+
+⊗Id,
+x1 ∼pdata.
+(5)
+In this context, the matrix R is recognized as the terminal cost matrix, serving to assess the proximity
+between the propagated m1 and the ground truth m1 at the terminal time t = 1. As the parameter
+r approaches positive infinity, the trajectory converges toward the state x1, prompting a transition to
+constrained dynamics wherein the system becomes constrained by two predetermined boundaries,
+namely m0 and m1. This configuration aligns seamlessly with the principles of constructing a
+feasible bridge, as advocated by the tenets of BM. It is worth noting that this interpolation approach
+essentially represents a natural extension (Chen & Georgiou, 2015) of the well-established concept
+of the Brownian Bridge (Revuz & Yor, 2013), which has been employed in trajectory inference
+(Somnath et al., 2023; Tong et al., 2023a) and image inpainting tasks (Liu et al., 2023) and its
+connection with Diffusion has been discussed in Liu et al. (2023). Indeed, it is evident that the target
+velocity lacks a precise definition within this problem, allowing for flexibility in the design space
+for our approach. To address this, we opt for the linear interpolation of the intermediate point and
+the target point, represented as v1 = (x1 −xt)/(1 −t), as the chosen terminal velocity, which
+also is the optimal control in the original space (see Appendix..D.1). This choice is made due to
+its ability to construct a trajectory characterized by straightness. Conceptually, the acceleration at
+continually guides the dynamics towards the linear interpolation of the two data points, serving to
+mitigate the impact of introduced stochasticity. In contrast to previous bridge matching frameworks,
+the velocity’s boundary condition in our approach varies over time since it depends on the state
+xt and t. The velocity variable serves solely as an auxiliary component aimed at straightening the
+trajectories. Regarding this SOC problem formulation, the solution is,
+Proposition 3 (Phase Space Brownian Bridge). When r →+∞, The solution w.r.t optimization
+problem 5 is,
+a∗(mt, t) = g2
+t P11
+x1 −xt
+1 −t
+−vt
+
+where :
+P11 =
+−4
+g2
+t (t −1).
+(6)
+Proof. Please see Appendix.D.2.
+4
+
+Published as a conference paper at ICLR 2024
+Figure 2: Data estimation comparison with EDM (Karras et al., 2022). When the network is en-
+dowed with supplementary velocity, AGM gains the capacity to estimate the target data point during
+the early stages of the trajectory. One can use estimated image ˜x1 at ti < tN as generated results
+and allocated more NFE between time [0, ti] which results to smaller discretization error.
+Remark 4. P11 denotes the second diagonal component in the matrix Pt, a solution derived from
+the Lyapunov equation (see Lemma.9), serving as an implicit representation of the optimality of the
+control. This value is dependent upon the uncontrolled dynamics, where at is set to the zero vector
+in (5), and will vary accordingly when uncontrolled dynamics change.
+3.1
+TRAINING
+By plugging the optimal control (6) back to the dynamics (5), we can obtain the desired SDE.
+As been suggested by (Song et al., 2020b; Dockhorn et al., 2021), such SDE has a corresponding
+probablistic ODE which shares the same marginal over time in which the drift term will have an
+additional score term ∇v log p(mt, t). Here we summarize the force term for SDE and ODE as:
+
+dxt
+dvt
+
+=
+
+vt
+Ft
+
+dt +
+
+0
+0
+0
+ht
+
+dwt
+s.t
+m0 :=
+
+x0
+v0
+
+∼N(µ0, Σ0),
+Bridge Matching SDE : Ft := Fb
+t(mt, t) ≡a∗
+t (mt, t),
+h(t) := g(t),
+Probablistic ODE : Ft := Fp
+t (mt, t) ≡a∗
+t (mt, t) −1
+2g2
+t ∇v log p(m, t),
+h(t) := 0.
+(7)
+Henceforth, we refer to the dynamics associated with the Bridge Matching SDE as AGM-SDE, and
+its corresponding ODE counterpart as AGM-ODE. Meanwhile, the linearity of the system implies
+the intermediate state mt and the close form solution of score term are analytically available. In par-
+ticular, the mean µt and covariance matrix Σt of the intermediate marginal pt(mt|x1) = N(µt, Σt)
+of such a system can be analytically computed with Σt =
+
+Σxx
+t
+Σxv
+t
+Σxv
+t
+Σvv
+t
+
+⊗Id, and µt =
+
+µx
+t
+µv
+t
+
+, pro-
+vided we have the boundary conditions µ0 and Σ0 in place, as outlined in S¨arkk¨a & Solin (2019).
+Please see Appendix.D.3 for detail. In order to sample from such multi-variant Gaussian, one need
+to decompose the covariance matrix by Cholesky decomposition, and mt is reparamertized as:
+mt = µt + Ltϵ = µt +
+
+Lxx
+t ϵ0
+Lxv
+t ϵ0 + Lvv
+t ϵ1
+
+, ∇v log pt := −ℓtϵ1
+(8)
+where Σt = LtLT
+t ,ϵ =
+
+ϵ0
+ϵ1
+
+∼N(0, I2d) and ℓt =
+q
+Σxx
+t
+Σxx
+t Σvv
+t −(Σxv
+t )2 .
+5
+
+Published as a conference paper at ICLR 2024
+Parameterization: The Force term can be represented as a composite of the data point and Gaussian
+noise. Specifically,
+a∗(mt, t) = 4x1(1 −t)2 −g2
+t P11
+ Lxx
+t
+1 −t + Lxv
+t
+
+ϵ0 + Lvv
+t ϵ1
+
+.
+(9)
+We express the force term as Fθ
+t = sθ
+t · zt. Here, zt assumes the role of regulating the output of
+the network sθ
+t, ensuring that the variance of the network output is normalized to unity. For the
+detailed formulation of the normalizer zt, please refer to Appendix.D.8. In a manner similar to the
+BM approach, one can formulate the objective function for regressing the force term as follows:
+min
+θ
+Et∈[0,1]Ex1∼pdataEmt∼pt(mt|x1)λ(t)
+
+∥Fθ
+t (mt, t; θ) −Ft(mt, t)∥2
+2
+
+(10)
+Where λ(t) is known as the reweight of the objective function across the time horizon. We defer the
+derivation of ℓt and the presentation of Lt, λ(t) and at in Appendix.D.
+3.2
+SAMPLING FROM AGM
+Once the paramterized force term Fθ
+t is trained, we are ready to simulate the dynamics to generate
+the samples by plugging it back to the dynamics (7). One can use any type of SDE or ODE sampler
+to propagate the learnt system. Here we list our choice of sampler for AGM-SDE and AGM-ODE.
+Stochastic Sampler:
+To simulate the SDE, prior works are majorly relying on Euler-
+Maruyama(EM) (Kloeden et al., 1992) and related methods. We adopt the Symmetric Splitting
+Sampler(SSS) from Dockhorn et al. (2021) in our AGM-SDE. This selection is based on the com-
+pelling performance it offers when dealing with momentum systems.
+Deterministic Sampler: It is imperative to acknowledge that this system is inherently underactuated
+because the force term is exclusively injected into the velocity component, while velocity serves as
+the driving factor for the position—a variable of primary interest in generative modeling context.
+More specifically, at time step ti, the impact of force does not immediately manifest in the position
+but rather takes effect at a subsequent time step, denoted as ti+1 after discretizing time horizon. At
+time t0, it becomes undesirable to propagate the state x0 using an initially uncontrolled velocity over
+an extended time interval δ0. The presence of this delay phenomenon can also exert an influence
+when the time interval δt is large, thereby impeding our ability to reduce the NFE during sampling.
+We propose the adoption of an Exponential Integrator (EI) approach, as elaborated in Zhang & Chen
+(2022). Empirical evidence suggests that this method aligns well with our model. We provide an
+illustrative example of how the AGM-ODE, in conjunction with the EI technique, can be employed
+to inject the learnt network into both velocity and position channels simultaneously:
+
+xti+1
+vti+1
+
+= Φ(ti+1, ti)
+
+xt
+vt
+
++
+w
+X
+j=0
+"R ti+1
+ti
+(ti+1 −τ) zτ · Mi,j(τ)dτ · sθ
+t(mti−j, ti−j))
+R ti+1
+ti
+zτ · Mi,j(τ)dτ · sθ
+t(mti−j, ti−j)
+#
+Where Mi,j(τ) =
+Y
+k̸=j
+ τ −ti−k
+ti−j −ti−k
+
+,
+and
+Φ(t, s) =
+
+1
+t −s
+0
+1
+
+.
+(11)
+In Eq.11, Φ(s, t) denotes the transition matrix for our system, while Mi,j(τ) represents the w−order
+multistep coefficient (Hochbruck & Ostermann, 2010). For a comprehensive derivation of these
+terms, please refer to Appendix.D.9. It is worth noting that the mapping of sθ into both the po-
+sition and velocity channels significantly emulates the errors introduced by discretization delays.
+Sampling-hop: In the context of CLD (Dockhorn et al., 2021), their focus is on estimating the
+score function w.r.t. velocity, which essentially corresponds to estimating scaled ϵ1 in our notation.
+However, relying solely on the aforementioned information is not sufficient for estimating the data
+point x1. Additional knowledge regarding ϵ0 is also required in order to perform such estimation. In
+our case, the training objective implicitly includes both ϵ0 and ϵ1 (see eq.9), hence one can manage
+to recover x1 by Proposition.5. Remarkably, our observations have unveiled that when the network
+is equipped with additional velocity information, it acquires the capability to estimate the target
+data point during the early stages of the trajectory, as illustrated in fig.2. This estimation can be
+seamlessly integrated into AGM-SDE and AGM-ODE and we name it sampling-hop. Specifically,
+6
+
+Published as a conference paper at ICLR 2024
+Proposition 5 (Sampling-Hop). Given the state, velocity and trained force term Fθ
+t at time step t in
+sampling phase, The estimated data point ˜x1 can be represented as
+˜xSDE
+1
+= (1 −t)(Fθ
+t + vt)
+g2
+t P11
++ xt, or
+˜xODE
+1
+=
+Fθ
+t + g2
+t P11(αtxt + βtvt)
+4(t −1)2 + g2
+t P11(αtµx
+t + βtµv
+t )
+(12)
+for AGM-SDE and AGM-ODE dynamics respectively, and βt = Lvv
+t +
+1
+2P11 ,αt =
+(
+Lxx
+t
+1−t +Lxv
+t )−βtLxv
+t
+Lxx
+t
+.
+Proof. See Appendix.D.10
+This property empowers us to allocate the NFE budget selectively within the time interval t ∈[0, ti],
+where ti < tN, effectively reducing the discretization error while maintaining the sampling quality.
+This insight paves the way for efficient low NFE sampling strategies later. Here we summarized
+the training and sampling procedure of our method in Algorithm.1 and Algorithm.2 respectively.
+Algorithm 1 Training
+1: Input: data distribution pdata(·)
+2: while not converge do
+3:
+t ∼U([0, 1]), x1 ∼pdata(x1)
+4:
+Compute mean and covariance µt and Σt.
+(Appendix.D.3)
+5:
+Sample mt = µt + Ltϵ.(eq.8)
+6:
+Compute target Ft (eq.7) using optimal
+acceleration (eq.9)
+7:
+Compute loss E
+
+λ∥Fθ
+t −Ft∥2
+2
+
+(eq.10).
+8:
+Take gradient descent with respect to
+Fθ
+t(mt, t; θ).
+9: end while
+Algorithm 2 Sampling
+1: Input:
+trained F(·, ·; θ), discretized time
+step [t0,· · · ,ti], Choose the sampler from
+[SSS(SDE), EI(ODE)]. Choose prior mean
+and covariance µ0, Σ0
+2: Sample m0 ∼p0(m; µ0, Σ0).
+3: for n = 0 to i do
+4:
+estimate Fθ
+tn(mtn, tn)
+5:
+mtn+1 = Sampler(mtn, F θ
+tn, tn)
+6:
+reconstruct ˆx1 using Proposition.5.
+7: end for
+8: Return ˆx1
+4
+EXPERIMENTAL RESULTS
+Figure 3: The standard devia-
+ton σ of the terminal marginal
+for
+uncontrolled
+dynamics.
+We empirically selected the
+hyperparameter k = −0.2.
+This choice induces a termi-
+nal marginal distribution with
+σ that covers the data range
+with uncontrolled dynamics.
+Architectures and Hyperparameters: We parameterize sθ
+t(·, ·; θ)
+using modified NCSN++ model as provided in Karras et al. (2022).
+We employ six input channels, accounting for both position and
+velocity variables, as opposed to the standard three channels used
+in the CIFAR-10 (Krizhevsky et al., 2009), AFHQv2 (Choi et al.,
+2020) and ImageNet (Deng et al., 2009) which leads to a negligi-
+ble increase of network parameters. For the purpose of comparison
+with CLD in the toy dataset, we adopt the same ResNet-based ar-
+chitecture utilized in CLD. Throughout all of our experiments, we
+maintain a monotonically decreasing diffusion coefficient, given by
+g(t) = 3(1 −t). For the detailed experimental setup, please refer
+further to Appendix.E.
+Evaluation: To assess the performance and the sampling speed of
+various algorithms, we employ the Fr´echet Inception Distance score
+(FID;Heusel et al. (2017)) and the Number of Function Evaluations
+(NFE) as our metrics.
+For FID evaluation, we utilize reference
+statistics of all datasets obtained from EDM (Karras et al., 2022)
+and use 50k generated samples to evaluate. Additionally, we re-
+evaluate the FID of CLD and EDM using the same reference statis-
+tics to ensure consistency in our comparisons. For all other reported
+values, we directly source them from respective referenced papers.
+Selection of Σ0: The choice of initial covariance Σ0 directly influ-
+ences the path measure of the trajectory. In our case, we set Σ0 :=
+ 1 k
+k 1
+
+with hyperparameter k.
+We observe that trajectories tend to exhibit pronounced curvature under specific conditions: when
+7
+
+Published as a conference paper at ICLR 2024
+Figure 4: Comparison with EDM (Karras et al., 2022) on AFHQv2 dataset. AGM-ODE exhibits
+superior generative performance when NFE is exceedingly low, owing to its unique dynamics archi-
+tecture that incorporates velocity when predicting the estimated data point.
+Figure 5: We showcase that AGM can generate conditional results from an unconditional model by
+injecting the conditional information into the velocity v0, thus leading to new initial velocity vcond
+0
+.
+the k is positive, the absolute value of the position is large. This behavior is particularly notice-
+able when dealing with images, where the data scale ranges from -1 to 1. We aim for favorable
+uncontrolled dynamics, as this can potentially lead to better-controlled dynamics. Our strategy is to
+design k in such a way that the marginal distribution of uncontrolled dynamics at tN = 1 effectively
+covers the range of image data values meanwhile k keeps negative. We can express the marginal of
+uncontrolled dynamics by leveraging the transition matrix Φ(1, 0), which gives us x1 := x0 + v0.
+Figure 3 illustrates the standard deviation of x1 for various values of k. Based on our empirical
+observations, we choose k = −0.2 for all experiments, as it effectively covers the data range. The
+subsequent controlled dynamics (eq.7) will be constructed based on such desired uncontrolled dy-
+namics as established.
+Table 2:
+FID↓Comparison
+with CLD(Dockhorn et al.,
+2021) using same SSS Sam-
+pler on CIFAR-10.
+NFE↓CLD-SDE AGM-SDE
+20
+>100
+7.9
+50
+19.93
+3.21
+150
+2.99
+2.68
+1000
+2.44
+2.46
+Stochastic Sampling: In experiments, we emphasize the advan-
+tages of using the AGM-SDE compared with CLD. Firstly, we show
+that our model exhibits superior performance when NFE is signifi-
+cantly lower than that of CLD, particularly in toy dataset scenarios.
+For evaluation, we utilized the multi-modal Mixture of Gaussian
+and Multi-Swiss-Roll datasets. The results obtained from the toy
+dataset, as shown in Fig.8, demonstrate that AGM-SDE is capable
+of generating data that closely aligns with the ground truth, while
+requiring NFE that is around one order of magnitude lower than
+CLD. Furthermore, our findings reveal that AGM-SDE outperforms
+CLD in the context of CIFAR-10 image generation tasks, especially
+when faced with limited NFE, as illustrated in Table 2.
+Deterministic Sampling: We validate our algorithm on high-dimensional image generation with
+a deterministic sampler. We provide uncurated samples from CIFAR-10, AFHQv2 and ImageNet-
+64 with varying NFE in Appendix.H. Regarding the quantitative evaluation, Table.3 and Table.4
+summarize the FID together with NFE used for sampling on CIFAR-10 and ImageNet-64. Notably,
+AGM-ODE achieves 2.46 FID score with 50 NFE on CIFAR-10, and 10.55 FID score with 20 NFE
+in unconditional ImageNet-64 which is comparable to the existing dynamical generative modeling.
+8
+
+Published as a conference paper at ICLR 2024
+Table 3: Unconditional CIFAR-10 generative per-
+formance
+Model Name
+NFE↓FID↓
+ODE
+EDM (Karras et al., 2022)
+35
+1.84
+CLD+EI (Zhang et al., 2022) 50
+2.26
+FM-OT (Lipman et al., 2022) 142
+6.35
+AGM-ODE(ours)
+50
+2.46
+SDE VP (Song et al., 2020b)
+1000 2.66
+VE (Song et al., 2020b)
+1000 2.43
+CLD (Dockhorn et al., 2021) 1000 2.44
+AGM-SDE(ours)
+1000 2.46
+Table 4:
+Unconditional ImageNet-64
+generative performance
+Model
+NFE↓FID↓
+FM-OT(Lipman et al., 2022) 138
+14.45
+MFM(Pooladian et al., 2023) 132
+11.82
+MFM(Pooladian et al., 2023) 40
+12.97
+AGM-ODE(ours)
+40
+10.10
+AGM-ODE(ours)
+30
+10.07
+AGM-ODE(ours)
+20
+10.55
+Table 5: Performance comparing with fast sampling algorithm using FID↓metric on CIFAR-10
+NFE↓
+5
+10
+20
+Dynamics Order
+Model Name
+1st order
+dynamics
+EDM (Karras et al., 2022)
+> 100
+15.78
+2.23
+VP+EI (Zhang & Chen, 2022)
+15.37
+4.17
+3.03
+DDIM (Song et al., 2020a)
+26.91
+11.14
+3.50
+Analytic-DPM(Bao et al., 2022)
+51.47
+14.06
+6.74
+2nd order
+dynamics
+CLD+EI (Zhang et al., 2022)
+N/A
+13.41
+3.39
+AGM-ODE(ours)
+11.93
+4.60
+2.60
+We underscore the effectiveness of sampling-hop, especially when faced with a constrained NFE
+budget, in comparison to baselines. We validate it on the CIFAR-10 and AFHQv2 dataset respec-
+tively. Fig.4 illustrates that AGM-ODE is able to generate plausible images even when NFE= 5 and
+outperforms EDM(Karras et al., 2022) when NFE is extremely small (NFE<15) visually and nu-
+merically on AFHQv2 dataset. We also compare with other fast sampling algorithms built upon DM
+in table.5 on CIFAR-10 dataset where AGM-ODE demonstrates competitive performance. Notably,
+AGM-ODE outperforms the baseline CLD with the same EI sampler by a large margin. We suspect
+that the improvement is based on the rectified trajectory which is more friendly for the ODE solver.
+Conditional Generation We showcase the capability of AGM to generate conditional samples us-
+ing an unconditional model (fig.5) by incorporating conditional information into the prior velocity
+variable v0. Instead of employing a randomly sampled v0, we use a linear combination of v0 and
+the desired velocity v1 = (x1 −xt0)/(1 −t0), where x1 is conditioned data. Thus, t0, the initial
+velocity is defined as vcond
+0
+:= (1−ξ)v0 +ξv1, with ξ serving as a mixing coefficient. Fig.5 shows
+that AGM can generate conditional data without augmentation and additional fine-tuning. Such
+property can be extended to the inpainting task as well and the detail can be found in appendix.F.
+5
+CONCLUSION AND LIMITATION
+In this paper, we introduce a novel Acceleration Generative Modeling (AGM) framework rooted
+in SOC theory. Within this framework, we devise more favorable, straight trajectories for the mo-
+mentum system. Leveraging the intrinsic characteristics of the momentum system, we capitalize on
+additional velocity to expedite the sampling process by using the sampling-hop technique, signifi-
+cantly reducing the time required to converge to accurate predictions of realistic data points. Our
+experimental results, conducted on both toy and image datasets in unconditional generative tasks,
+demonstrate promising outcomes for fast sampling.
+However, it is essential to acknowledge that our approach’s performance lags behind state-of-the-art
+methods in scenarios with sufficient NFE. This observation suggests avenues for enhancing AGM
+performance. Such improvements could be achieved by enhancing the training quality through the
+adoption of techniques proposed in Karras et al. (2022) including data augmentation, fine-tuned
+noise scheduling, and network preconditioning, among others.
+9
+
+Published as a conference paper at ICLR 2024
+REFERENCES
+Brian DO Anderson. Reverse-time diffusion equation models. Stochastic Processes and their Ap-
+plications, 12(3):313–326, 1982.
+Fan Bao, Chongxuan Li, Jun Zhu, and Bo Zhang. Analytic-dpm: an analytic estimate of the optimal
+reverse variance in diffusion probabilistic models. arXiv preprint arXiv:2201.06503, 2022.
+Arthur Earl Bryson. Applied optimal control: optimization, estimation and control. CRC Press,
+1975.
+Tianrong Chen, Guan-Horng Liu, Molei Tao, and Evangelos A Theodorou. Deep momentum multi-
+marginal schr\” odinger bridge. arXiv preprint arXiv:2303.01751, 2023.
+Yongxin Chen and Tryphon Georgiou. Stochastic bridges of linear systems. IEEE Transactions on
+Automatic Control, 61(2):526–531, 2015.
+Yunjey Choi, Youngjung Uh, Jaejun Yoo, and Jung-Woo Ha. Stargan v2: Diverse image synthesis
+for multiple domains. In Proceedings of the IEEE/CVF conference on computer vision and pattern
+recognition, pp. 8188–8197, 2020.
+Valentin De Bortoli, Guan-Horng Liu, Tianrong Chen, Evangelos A Theodorou, and Weilie Nie.
+Augmented bridge matching. arXiv preprint arXiv:2311.06978, 2023.
+Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li, and Li Fei-Fei. Imagenet: A large-scale hi-
+erarchical image database. In 2009 IEEE conference on computer vision and pattern recognition,
+pp. 248–255. Ieee, 2009.
+Prafulla Dhariwal and Alex Nichol. Diffusion models beat gans on image synthesis. arXiv preprint
+arXiv:2105.05233, 2021.
+Tim Dockhorn, Arash Vahdat, and Karsten Kreis. Score-based generative modeling with critically-
+damped langevin diffusion. arXiv preprint arXiv:2112.07068, 2021.
+Ulrich G Haussmann and Etienne Pardoux. Time reversal of diffusions. The Annals of Probability,
+pp. 1188–1205, 1986.
+Jeremy Heng, Valentin De Bortoli, Arnaud Doucet, and James Thornton.
+Simulating diffusion
+bridges with score matching. arXiv preprint arXiv:2111.07243, 2021.
+Martin Heusel, Hubert Ramsauer, Thomas Unterthiner, Bernhard Nessler, and Sepp Hochreiter.
+Gans trained by a two time-scale update rule converge to a local nash equilibrium. Advances in
+neural information processing systems, 30, 2017.
+Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. arXiv preprint
+arXiv:2006.11239, 2020.
+Marlis Hochbruck and Alexander Ostermann. Exponential integrators. Acta Numerica, 19:209–286,
+2010.
+The MathWorks Inc. Matlab version: 9.13.0 (r2022b), 2022. URL https://www.mathworks.
+com.
+HJ Kappen. Stochastic optimal control theory. ICML, Helsinki, Radbound University, Nijmegen,
+Netherlands, 2008.
+Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of diffusion-
+based generative models. Advances in Neural Information Processing Systems, 35:26565–26577,
+2022.
+Donald E Kirk. Optimal control theory: an introduction. Courier Corporation, 2004.
+Peter E Kloeden, Eckhard Platen, Peter E Kloeden, and Eckhard Platen. Stochastic differential
+equations. Springer, 1992.
+10
+
+Published as a conference paper at ICLR 2024
+Alex Krizhevsky, Geoffrey Hinton, et al. Learning multiple layers of features from tiny images.
+2009.
+Christian L´eonard, Sylvie Rœlly, and Jean-Claude Zambrini.
+Reciprocal processes. a measure-
+theoretical point of view. 2014.
+Yaron Lipman, Ricky TQ Chen, Heli Ben-Hamu, Maximilian Nickel, and Matt Le. Flow matching
+for generative modeling. arXiv preprint arXiv:2210.02747, 2022.
+Guan-Horng Liu, Arash Vahdat, De-An Huang, Evangelos A Theodorou, Weili Nie, and Anima
+Anandkumar. I2sb: Image-to-image schr\” odinger bridge. arXiv preprint arXiv:2302.05872,
+2023.
+Xingchao Liu, Lemeng Wu, Mao Ye, and Qiang Liu. Let us build bridges: Understanding and
+extending diffusion generative models. arXiv preprint arXiv:2208.14699, 2022.
+Ilya Loshchilov and Frank Hutter.
+Decoupled weight decay regularization.
+arXiv preprint
+arXiv:1711.05101, 2017.
+Neil O’Connell. Conditioned random walks and the rsk correspondence. Journal of Physics A:
+Mathematical and General, 36(12):3049, 2003.
+Bernt Øksendal. Stochastic differential equations. In Stochastic differential equations, pp. 65–84.
+Springer, 2003.
+Kushagra Pandey, Maja Rudolph, and Stephan Mandt. Efficient integrators for diffusion generative
+models. arXiv preprint arXiv:2310.07894, 2023.
+Stefano Peluchetti. Non-denoising forward-time diffusions. 2021.
+Stefano Peluchetti. Diffusion bridge mixture transports, schr\” odinger bridge problems and gener-
+ative modeling. arXiv preprint arXiv:2304.00917, 2023.
+Aram-Alexandre Pooladian, Heli Ben-Hamu, Carles Domingo-Enrich, Brandon Amos, Yaron Lip-
+man, and Ricky Chen. Multisample flow matching: Straightening flows with minibatch couplings.
+arXiv preprint arXiv:2304.14772, 2023.
+Daniel Revuz and Marc Yor. Continuous martingales and Brownian motion, volume 293. Springer
+Science & Business Media, 2013.
+Simo S¨arkk¨a and Arno Solin. Applied stochastic differential equations, volume 10. Cambridge
+University Press, 2019.
+Yuyang Shi, Valentin De Bortoli, George Deligiannidis, and Arnaud Doucet. Conditional simulation
+using diffusion schr¨odinger bridges. In Uncertainty in Artificial Intelligence, pp. 1792–1802.
+PMLR, 2022.
+Yuyang Shi, Valentin De Bortoli, Andrew Campbell, and Arnaud Doucet. Diffusion schr\” odinger
+bridge matching. arXiv preprint arXiv:2303.16852, 2023.
+Vignesh Ram Somnath, Matteo Pariset, Ya-Ping Hsieh, Maria Rodriguez Martinez, Andreas Krause,
+and Charlotte Bunne. Aligned diffusion schr\” odinger bridges. arXiv preprint arXiv:2302.11419,
+2023.
+Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. arXiv
+preprint arXiv:2010.02502, 2020a.
+Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben
+Poole. Score-based generative modeling through stochastic differential equations. arXiv preprint
+arXiv:2011.13456, 2020b.
+Yang Song, Conor Durkan, Iain Murray, and Stefano Ermon. Maximum likelihood training of score-
+based diffusion models. arXiv e-prints, pp. arXiv–2101, 2021.
+Robert F Stengel. Optimal control and estimation. Courier Corporation, 1994.
+11
+
+Published as a conference paper at ICLR 2024
+Alexander Tong, Nikolay Malkin, Kilian Fatras, Lazar Atanackovic, Yanlei Zhang, Guillaume
+Huguet, Guy Wolf, and Yoshua Bengio. Simulation-free schr\” odinger bridges via score and
+flow matching. arXiv preprint arXiv:2307.03672, 2023a.
+Alexander Tong, Nikolay Malkin, Guillaume Huguet, Yanlei Zhang, Jarrid Rector-Brooks, Kilian
+Fatras, Guy Wolf, and Yoshua Bengio. Improving and generalizing flow-based generative models
+with minibatch optimal transport. In ICML Workshop on New Frontiers in Learning, Control, and
+Dynamical Systems, 2023b.
+Jiongmin Yong and Xun Yu Zhou. Stochastic controls: Hamiltonian systems and HJB equations,
+volume 43. Springer Science & Business Media, 1999.
+Qinsheng Zhang and Yongxin Chen. Fast sampling of diffusion models with exponential integrator.
+arXiv preprint arXiv:2204.13902, 2022.
+Qinsheng Zhang, Molei Tao, and Yongxin Chen. gddim: Generalized denoising diffusion implicit
+models. arXiv preprint arXiv:2206.05564, 2022.
+Qinsheng Zhang, Jiaming Song, and Yongxin Chen. Improved order analysis and design of expo-
+nential integrator for diffusion models sampling. arXiv preprint arXiv:2308.02157, 2023.
+12
+
+Published as a conference paper at ICLR 2024
+A
+SUPPLEMENTARY SUMMARY
+We state the assumptions in Appendix.B. We provide the technique details appearing in Section.3
+at Appendix.D. The details of the experiments can be found in Appendix.E. The visualization of
+generated figures can be found in Appendix.H.
+B
+ASSUMPTIONS
+We will use the following assumptions to construct the proposed method. These assumptions are
+adopted from stochastic analysis for SGM (Song et al., 2021; Yong & Zhou, 1999; Anderson, 1982),
+(i) p0 and p1 with finite second-order moment.
+(ii) gt is continuous functions, and |g(t)|2 > 0 is uniformly lower-bounded w.r.t. t.
+(iii) ∀t ∈[0, 1], we have ∇v log pt(mt, t) Lipschitz and at most linear growth w.r.t. x and v.
+Assumptions (i) (ii) are standard conditions in stochastic analysis to ensure the existence-uniqueness
+of the SDEs; hence also appear in SGM analysis (Song et al., 2021).
+C
+STOCHASTIC OPTIMAL CONTROL (SOC) IN THE WILD
+In this section, we are going to provide a gentle introduction of the Stochastic Optimal Control
+(SOC). Our work is majorly relying on the prior work Chen & Georgiou (2015) in which some
+technical details are missing. Here we first clarify some core derivations that may help the broader
+audience to understand Chen & Georgiou (2015) and our work.
+C.1
+LINEAR QUADRATIC STOCHASTIC OPTIMAL CONTROL
+SOC has wide applications in financial, robotics, and manufacturing. Here we will focus on Linear
+Quadratic SOC which usually refers to Linear Quadratic Regulator because the dynamic is linear
+and the objective function is quadratic (Bryson, 1975; Stengel, 1994). The problem states as:
+min
+ut
+Z 1
+0
+1
+2∥ut∥2
+2dt + xT
+1 Rx1
+s.t dxt = [A(t)xt + gtut]dt + gtdwt,
+x0 = x0.
+(13)
+In this formulation, xt means the state, and ut is the control variable. Conceptually, the SOC
+problem is aiming to design the controller ut to drive the system from point x0 to x1 ≡0 with
+minimum effort. In the case of first order system, the control will be the optimal vector field v∗
+t and
+for the second order system, the control is denoted as the optimal acceleration a∗
+t . The presence of
+stochasticity, introduced by the Wiener Process denoted as dwt, prevents the system from precisely
+converging to the Dirac mass x1. In order to strike a balance between the objective of converging to
+x1 and minimizing overall control effort
+R
+∥ut∥2
+2dt, the terminal cost xT
+1 Rx1 has been imposed.
+One special case is R →∞. Intuitively, it means the controlled dynamics should precisely converge
+to x1. However, one can notice that the stochastic trajectory which connects x0 and x1 is not unique
+in this case. Based on this constraint (pinned down at x1 and x0 at two boundaries), the optimization
+problem of SOC finds the optimal solution with minimum effort ut which can be understood as the
+regularization of the trajectories, hence, such stochastic trajectory is unique while the regularization
+of controller is still applied. One can also draw connection with such pinned-down SDE with well-
+known Doob-h transform. For the people who are not familiar with these, here are some interesting
+paper (Heng et al., 2021; O’Connell, 2003).
+The classical procedure to solve the SOC problem includes:
+1. write down the Hamilton–Jacobi–Bellman equation (HJB PDE) which explicitly represents
+the propagation of value function over time.
+2. Construct the Ricatti/Lyapunov Equation.
+3. Solve Ricatti/Lyapunov Equation and obtain the optimal control.
+13
+
+Published as a conference paper at ICLR 2024
+C.2
+VALUE FUNCTION, HAMILTON-JACOBIAN (HAMILTON–JACOBI–BELLMAN EQUATION)
+AND RICATTI EQUATION
+We adopt the classical notation in the SOC for the value function. Specifically, the underscript of the
+value function V represents for the partial derivative of it. For example, Vt, Vx and Vxx represent
+for the first order derivative of V w.r.t time t , state x and second order derivate of V w.r.t x. We
+first define the value function as:
+V (xt, t) = inf
+u E
+Z 1
+t
+1
+2∥ut∥2
+2dτ + xT
+1 Rx1
+
+and the dynamics is,
+dxt = (Axt + gtut)dt + gtdwt
+From Bellman’s principle to the value function, one can get:
+V (t, xt) = inf
+u E
+"
+V (t + dt, xt+dt) +
+Z t+dt
+t
+1
+2∥ut∥2
+2dτ
+#
+= inf
+u E
+1
+2∥ut∥2
+2dt + V (t, xt) + Vt(t, xt)dt + Vx(t, x)dx + 1
+2tr
+
+VxxggT
+dt
+
+= Plug in the dynamics dxt = · · ·
+= inf
+u E
+1
+2∥ut∥2
+2dt + V (t, xt) + Vt(t, xt)dt + Vx(t, x)T((Axt + gtut)dt + gdwt)
++1
+2tr
+
+VxxggT
+dt
+
+= inf
+u
+1
+2∥ut∥2
+2dt + V (t, xt) + Vt(t, xt)dt + Vx(t, x)T(Axt + gtut)dt
++1
+2tr
+
+VxxggT
+dt
+
+One obtain:
+Vt + inf
+u
+1
+2∥ut∥2
+2 + V T
+x (Axt + gtut)
+
++ 1
+2tr
+
+VxxggT
+= 0
+The optimal control can be obtained by
+u∗
+t = −gtVx
+Plugging it back, one can obtain the HJB PDE:
+Vt −1
+2VxggTVx + V T
+x Axt + 1
+2tr
+
+VxxggT
+= 0
+We assume that there exist certain matrix Q, s.t. V (x, t) ≡
+1
+2xTQx + Ξ(t). By matching the
+different power term of HJB, one can write:
+−˙Ξ −1
+2xT ˙Qx = −1
+2xTQggTQxT + xTATQx + 1
+2tr
+
+QggT
+(14)
+with boundary condition:
+Ξ(1) = 0,
+Q(1) = R
+(15)
+Due to the fact that xTATQx = xTQAx, one arrives Riccati Equation:
+−˙Q = ATQ + QA −QggTQ
+(16)
+Recall that the optimal solution is u∗
+t = −gtVx and V := 1
+2xTQx + Ξ(t), the optimal control can
+be expressed in the way of the solution of Ricatti equation: u∗
+t = −gTQ(t)xt.
+14
+
+Published as a conference paper at ICLR 2024
+C.3
+RICATTI EQUATION AND LYAPUNOV EQUATION
+Here we provide the connection between Ricatti Equation and Lyapunov Equation in the current
+setup.
+Lemma 6. Define P(t) := Q(t)−1 in which Q(t) is the solution of Ricatti equation (eq.16), Then
+P(t) solve the Lyapunov equation:
+˙P = AP + PAT −ggT
+(17)
+For notation consistency, we name the elements in P matrix as,
+P =
+
+P00
+P01
+P10
+P11
+
+Proof. By plugging in the Lyapunov equation P(t) := Q(t)−1, one can get:
+˙
+Q−1 = AQ−1 + Q−1AT −ggT
+⇔−Q−1 ˙QQ−1 = AQ−1 + Q−1AT −ggT
+⇔−˙Q = QA + ATQ −QggTQ
+By Lemma.6, the optimal control can also be represented as the solution of the Lyapunov equation:
+u∗
+t = −gTP(t)−1xt which is indeed the optimal control term used in Chen & Georgiou (2015) after
+adopting their notation, and it is same as the optimal control term we used in the Lemma.12 without
+base dynamics compensation.
+C.4
+SOC CONNECTION WITH SCHR ¨ODINGER BRIDGE
+The optimal control solution is also the solution of Schr¨odinger Bridge when the terminal condition
+degenerate to the point mass (see example of Brownian Bridge in Appendix.D.1). It is also the
+solution of the Schr¨odinger Bridge when the optimal pairing is available see proposition.2 De Bortoli
+et al. (2023).
+So in our case, we are not solving the momentum Schr¨odinger Bridge as shown in Chen et al.
+(2023) (also see. fig.6), even tough the problem formulation is similar. Specifically, AGM is a
+special case of momentum Schr¨odinger Bridge when the boundary conditions are degenerated to
+Dirac Distribtuions.
+Figure 6: momentum Schrodinger Bridge versus AGM.
+15
+
+Published as a conference paper at ICLR 2024
+D
+TECHNIQUE DETAILS IN SECTION.3
+D.1
+BROWNIAN BRIDGE AS THE SOLUTION OF STOCHASTIC OPTIMAL CONTROL
+We adopt the presentation form Kappen (2008). We consider the control problem:
+min
+ut
+Z 1
+t
+1
+2∥ut∥2
+2dt + r
+2∥x1 −x1∥2
+2
+s.t.
+dxt = utdt,
+x0 = x0
+Where r is the terminal cost coefficient. According to Pontryagin Maximum Principle (PMP;Kirk
+(2004)) recipe, one can construct the Hamiltonian:
+H(t, x, u, γ) = −1
+2∥ut∥2
+2 + γut
+By setting:
+∂H
+∂ut
+= 0,
+the optimized Hamiltonian is:
+H(t, x, u, γ)∗= 1
+2γ2,
+where
+ut = γ
+Then we solve the Hamiltonian equation of motion:
+dxt
+dt = ∂H∗
+∂γ
+= γ
+dγ
+dt = ∂H∗
+∂x = 0
+where
+x0 = x0
+and
+γ1 = −r · (x1 −x1)
+One can notice that the solution for γt is the constant γt = γ = −r · (x1 −x1), hence the solution
+for xt is xt = x1 + γt.
+γ = −r(x1 −x1) = −r(x0 + (1 −t)γ −x1)
+→
+u∗
+t := γ = r(x1 −x0)
+1 + r(1 −t)
+When r →+∞, we arrive the optimal control as u∗
+t = x1−x0
+1−t . Due to certainty equivalence, this is
+also the optimal control law for
+dxt = utdt + dwt
+By plugging it back into the dynamics, we obtain the well-known Brownian Bridge:
+dxt = x1 −xt
+1 −t dt + dwt
+Remark 7. If there is not stochasticity dwt, one can get ut := x1−xt
+1−t
+= x1 −x0 which is the vector
+field constructed by Lipman et al. (2022) during traning.
+D.2
+PROOF OF PROPOSITION.3
+Proposition 8. The solution of the stochastic bridge problem of linear momentum system (Chen &
+Georgiou, 2015) is
+a∗(mt, t) = g2
+t P11
+x1 −xt
+1 −t
+−vt
+
+where :
+P11 =
+−4
+g2
+t (t −1).
+(18)
+16
+
+Published as a conference paper at ICLR 2024
+Proof. From Lemma.12, one can get the optimal control for this problem is
+u∗
+t = −ggTP−1
+t
+(mt −Φ(t, 1)m1)
+where state transition function Φ can be obtained from Lemma.11 and Pt is the solution of Lyapunov
+equation and P−1
+t
+can be found in Lemma.9.
+Then we have:
+u∗
+t = −ggTP−1
+t
+(mt −Φ(t, 1)m1)
+= −ggTP−1
+t mt + ggTP−1
+t Φ(t, 1)m1
+= −
+
+0
+0
+0
+g2
+
+P−1
+t mt + ggTP−1
+t
+
+1
+t −1
+0
+1
+
+m1
+= −g2
+t
+
+0
+0
+P10
+P11
+
+mt +
+
+0
+0
+0
+g2
+t
+ 
+P00
+P01
+P10
+P11
+ 
+1
+t −1
+0
+1
+
+m1
+= −g2
+t
+
+0
+0
+P10
+P11
+
+mt + g2
+t
+
+0
+0
+P10
+P11
+ 
+1
+t −1
+0
+1
+
+m1
+= −g2
+t
+
+0
+0
+P10
+P11
+
+mt + g2
+t
+
+0
+0
+P10
+P10(t −1) + P11
+
+m1
+=
+
+0
+g2
+t P10(x1 −xt) + g2
+t P10(t −1) · v1 + g2
+t P11(v1 −vt)
+
+Plug in v1 := x1 −xt
+1 −t
+=
+"
+0
+g2
+t P11
+
+x1−xt
+1−t
+−vt
+
+#
+Lemma 9. The Lyapunov equation corresponding to the optimization problem showed in
+Lemma.12:
+u∗
+t ∈arg min
+ut∈U
+E
+"Z T
+0
+1
+2∥ut∥2
+#
+dt + xT
+1 Rx1
+s.t
+dmt =
+
+0
+1
+0
+0
+
+| {z }
+A
+mtdt + utdt + gdwt
+m0 = m0,
+m1 = m1
+is depited as
+˙P = AP + PAT −ggT .
+(19)
+When g =
+
+0
+g
+
+, the solution for Lyapunov equation above, with terminal condition
+P1 = R−1 = lim
+r→inf
+
+r
+0
+0
+r
+−1
+=
+
+0
+0
+0
+0
+
+(20)
+However, one does not need the force to converge exactly at v1 because we only care about the
+generate quality of x1. Here we give a general case in which the r keeps a small value ω for the
+velocity channel:
+P1 = R−1 =
+
+0
+0
+0
+ω
+
+(21)
+17
+
+Published as a conference paper at ICLR 2024
+Then the solution is given by
+Pt =
+
+ω(t −1)2 −1
+3g2(t −1)3
+ω(t −1) −1
+2g2(t −1)2
+ω(t −1) −1
+2g2(t −1)2
+g2(1 −t) + ω
+
+and the inverse of Pt is,
+P−1
+t
+=
+1
+g2(−4ω + g2(t −1))(t −1)
+"
+12(ω−g2(t−1))
+(t−1)2
+6(−2ω+g2(t−1))
+t−1
+6(−2ω+g2(−1+t))
+t−1
+12ω −4g2(t −1)
+#
+Thus,
+P10 =
+−12ω + 6g2(t −1)
+g2[−4ω + g2(t −1)](t −1)2 =
+−12ω
+g2[−4ω + g2(t −1)](t −1)2 +
+6
+[−4ω + g2(t −1)](t −1)
+P11 =
+12ω −4g2(t −1)
+g2[−4ω + g2(t −1)](t −1) =
+12ω
+g2[−4ω + g2(t −1)](t −1) +
+−4
+[−4ω + g2(t −1)]
+Proof. One can plug in the solution of Pt into the Lyapunov equation Pt and it validates Pt is
+indeed the solution.
+Remark 10. Here we provide a general form when the terminal condition of the Lyapunov function
+is not a zero matrix. It explicitly means that it allows that the velocity does not necessarily need to
+converge to the exact predefined v1. It will have the same results as shown in the paper by setting
+ω = 0.
+Lemma 11. The state transition function Φ(t, s) of following dynamics,
+dmt =
+
+0
+1
+0
+0
+
+mtdt
+is,
+Φ(t, s) =
+
+1
+t −s
+0
+1
+
+Proof. One can easily verify that such Φ satisfies ∂Φ/∂t =
+
+0
+1
+0
+0
+
+Φ.
+Lemma 12 (Chen & Georgiou (2015)). When R →∞, The optimal control u∗
+t of following prob-
+lem,
+u∗
+t =
+
+0
+at
+
+∈arg min
+ut∈U
+Z T
+0
+1
+2∥ut∥2dt + xT
+1 Rx1
+s.t
+dmt =
+
+0
+1
+0
+0
+
+mtdt + utdt + gtdwt
+m0 = m0
+is given by
+u∗
+t = −ggTP−1
+t
+(mt −Φ(t, 1)m1)
+Where Pt follows Lyapunov equation (eq.19) with boundary condition P1 = 0. and function Φ(t, s)
+is the transition matrix from time-step s to time-step t given uncontrolled dynamics.
+And it is indeed the stochastic bridge of following system:
+dmt =
+
+0
+1
+0
+0
+
+mtdt + utdt + gdwt
+(22)
+m0 = m0,
+m1 = m1
+(23)
+Proof. See page 8 in Chen & Georgiou (2015).
+18
+
+Published as a conference paper at ICLR 2024
+D.3
+MEAN AND COVARIANCE OF SDE
+By plugging the optimal control into the system, one can obtain the system as:
+dmt =
+
+vt
+Ft
+
+dt + gtdwt
+=
+"
+vt
+g2
+t P11
+
+x1−xt
+1−t
+−vt
+
+#
+dt + gtdwt
+=
+
+0
+1
+−g2
+t P11
+1−t
+−g2
+t P11
+
+|
+{z
+}
+˜
+Ft
+
+xt
+vt
+
+dt +
+
+0
+g2
+t P11
+1−t x1
+
+|
+{z
+}
+˜Dt
+dt + gtdwt
+We follow the recipe of S¨arkk¨a & Solin (2019). The mean µt and variance Σt of the matrix of
+random variable mt obey the following respective ordinary differential equations (ODEs):
+dµt = ˜Ftµtdt + ˜Dtdt
+dΣt = ˜FtΣtdt +
+h
+˜FtΣt
+iT
+dt + ggTdt
+One can solve it by numerically simulating two ODEs whose dimension is just two. Or one can use
+software such as Inc. (2022) to get analytic solutions. If you opt to the later approach, you can get:
+µx
+t = 1
+3x1t2(t2 −4t + 6)
+µv
+t = 4tx1
+3
+(t2 −3t + 3)
+Σxx
+t
+= −1
+9
+
+(−1 + t)2 [−9 + 2(−1 + k)t (3 + (−3 + t)t) (3 + t [3 + (−3 + t)t])]
+	
+Σxv
+t
+= 1
+9 {(−1 + t) [t (3 + (−3 + t)t) (9 + 8t (3 + (−3 + t)t)) + k (9 −t (3 + (−3 + t)t) (9 + 8t (3 + (−3 + t)t)))]}
+Σvv
+t
+= 1 −8
+9(−1 + k)t [3 + (−3 + t)t] {−3 + 4t (3 + (−3 + t)t)}
+Remark 13. The expressions above are too complicated. Hence, we provide the python functional
+bracket in Appendix.E.1 with general initial covariance and diffusion coefficient for easy copy-paste.
+Equations above are ones we used through this paper and feel free to play around with other hyper-
+parameters.
+D.4
+DERIVATION FROM SDE TO ODE FOR PHASE DYNAMICS
+One can represent the dynamics in the form of,
+
+dxt
+dvt
+
+=
+
+vt
+Ft
+
+dt +
+
+0
+0
+0
+gt
+
+dwt
+s.t
+m0 :=
+
+x0
+v0
+
+∼N(µ0, Σ0)
+(24)
+as
+dmt = f(mt)dt + gtdwt
+And its corresponding Fokker-Planck Partial Differential Equation Øksendal (2003) reads,
+∂pt
+∂t = −
+X
+d
+∂
+∂mi
+[fi(m, t)pt(mt)] + 1
+2
+X
+d
+∂2
+∂mimj
+"X
+d
+gtgT
+t pt(mt)
+#
+(25)
+19
+
+Published as a conference paper at ICLR 2024
+According to eq.(37) in Song et al. (2020b), One can rewrite such PDE,
+∂pt
+∂t = −
+X
+d
+∂
+∂mi
+
+fi(mt, t)pt(mt) −1
+2
+
+p(mt)∇m · (gtgT
+t ) + p(mt)gtgT
+t ∇m log p(mt)
+
+(26)
+due to the fact gt ≡
+
+0
+0
+0
+gt
+
+(27)
+= −
+X
+d
+∂
+∂mi
+
+fi(mt, t)pt(mt) −1
+2p(mt)
+
+g2
+t ∇v log p(mt)
+
+(28)
+Then one can get the equivalent ODE:
+dmt =
+
+f(mt, t) −1
+2g2
+t ∇v log p(m, t)
+
+dt
+(29)
+D.5
+DECOMPOSITION OF COVARIANCE MATRIX AND REPRESENTATION OF SCORE
+Here we follow the procedure in Dockhorn et al. (2021). Given the covariance matrix Σt, the
+decomposition of the positive definite symmetric matrix is,
+Σt = LT
+t Lt
+(30)
+Where,
+Lt =
+
+Lxx
+t
+Lxv
+t
+Lxv
+t
+Lvv
+t
+
+=
+"p
+Σxx
+t
+0
+Σxv
+t
+√
+Σxx
+t
+q
+Σxx
+t Σvv
+t −Σvv
+t
+Σxx
+t
+#
+(31)
+We borrow results from Dockhorn et al. (2021), the score function reads,
+∇m log p(mt|m1) = −∇mt
+1
+2(mt −µt)Σt
+−1(mt −µt)
+= −Σt
+−1(mt −µt)
+Cholesky decomposition of Σt
+= −L−T L−1(mt −µt)
+= −L−T ϵ
+The form of L reads,
+Lt =
+"p
+Σxx
+t
+0
+Σxv
+t
+√
+Σxx
+t
+q
+Σxx
+t Σvv
+t −(Σxv
+t )2
+Σxx
+t
+#
+and the transpose inverse of L reads,
+L−T
+t
+=
+
+
+1
+√
+(Σxx
+t +ϵxx)
+−Σxv
+t
+√
+(Σxx
+t ) √
+(Σxx
+t )(Σvv
+t +)−(Σxv
+t )2
+0
+√
+Σxx
+t
+√
+(Σxx
+t )(Σvv
+t )−(Σxv
+t )2
+
+
+Hence, the score function reads,
+∇v log p(mt|m1) = −
+p
+Σxx
+t
+p
+(Σxx
+t
++ ϵxx)(Σvv
+t
++ ϵvv) −(Σxv
+t )2
+|
+{z
+}
+ℓt
+ϵ1
+20
+
+Published as a conference paper at ICLR 2024
+D.6
+REPRESENTATION OF ACCELERATION at
+As been shown in Proposition.3, the optimal control can be represented as,
+a∗
+t = g2
+t P11
+x1 −xt
+1 −t
+−vt
+
+= g2
+t P11
+x1
+1 −t −g2
+t P11
+ xt
+1 −t + vt
+
+= g2
+t P11
+x1
+1 −t −g2
+t P11
+µx
+t + Lxx
+t ϵ0
+1 −t
++ (µv
+t + Lxv
+t ϵ0 + Lvv
+t ϵ1)
+
+= g2
+t P11
+x1 −µx
+t
+1 −t
+−µv
+t
+
+−
+ Lxx
+t
+1 −tϵ0 + Lxv
+t ϵ0 + Lvv
+t ϵ1
+
+solving eq.D.3 we can get : µx
+t = 1
+3x1t2(t2 −4t + 6), µv
+t = 4tx1
+3
+(t2 −3t + 3)
+Plug inxt, vt
+= g2
+t P11
+" 
+x1 −1
+3x1t2  6 −4t + t2
+1 −t
+−4tx1
+3
+(t2 −3t + 3)
+!
+−
+ Lxx
+t
+1 −tϵ0 + Lxv
+t ϵ0 + Lvv
+t ϵ1
+#
+= g2
+t P11
+(−t4 + 4t3 −6t2 + 3)
+3(1 −t)
+−4t
+3 (t2 −3t + 3)
+
+x1 −
+ Lxx
+t
+1 −tϵ0 + Lxv
+t ϵ0 + Lvv
+t ϵ1
+
+= g2
+t P11
+−(t −1)(t3 −3t2 + 3t + 3)
+3(1 −t)
+−4t
+3 (t2 −3t + 3)
+
+x1 −
+ Lxx
+t
+1 −tϵ0 + Lxv
+t ϵ0 + Lvv
+t ϵ1
+
+= g2
+t P11
+(t3 −3t2 + 3t + 3)
+3
+−1
+3(4t3 −12t2 + 12t)
+
+x1 −
+ Lxx
+t
+1 −tϵ0 + Lxv
+t ϵ0 + Lvv
+t ϵ1
+
+= g2
+t P11
+
+(1 −t)3x1 −
+ Lxx
+t
+1 −tϵ0 + Lxv
+t ϵ0 + Lvv
+t ϵ1
+
+= 4(1 −t)2x1 + g2
+t P11
+ Lxx
+t
+1 −tϵ0 + Lxv
+t ϵ0 + Lvv
+t ϵ1
+
+D.7
+LOSS REWEIGHT
+In practice, we use the following loss function
+L = min
+θ
+Et∈[0,1]Ex1∼pdataEmt∼pt(mt|x1)λ(t)
+
+∥Fθ
+t(mt, t; θ) −Ft(mt, t)∥2
+2
+
+(32)
+∝min
+θ
+Et∈[0,1]Ex1∼pdataEmt∼pt(mt|x1)
+1
+1 −t
+
+∥Fθ
+t (mt, t; θ) −Ft(mt, t)/zt∥2
+2
+
+(33)
+We admit that this might not be an optimal selection. The motivation behind this is simply increasing
+the weight of training when t →1 and normalize the label with normalizer zt.
+D.8
+NORMALIZER OF AGM-SDE AND AGM-ODE
+Since the optimal control term can be represented as,
+a∗(mt, t) = 4x1(1 −t)2 −g2
+t P11
+ Lxx
+t
+1 −t + Lxv
+t
+
+ϵ0 + Lvv
+t ϵ1
+
+.
+Then we introduce the normalizer as
+zSDE =
+v
+u
+u
+t(4(1 −t)2 · σdata)2 + g2
+t P11
+" Lxx
+t
+1 −t + Lxv
+t
+2
++ (Lvv
+t )2
+#
+zODE =
+v
+u
+u
+t(4(1 −t)2 · σdata)2 + g2
+t P11 + g2
+t P11
+ Lxx
+t
+1 −t + Lxv
+t
+2
++
+"
+g2
+t P11Lvv
+t
+−1
+2g2
+t ℓt
+2#
+21
+
+Published as a conference paper at ICLR 2024
+Where ℓ:=
+q
+Σxx
+t
+Σxx
+t Σvv
+t −(Σxv
+t )2
+D.9
+EXPONENTIAL INTEGRATOR DERIVATION
+As suggested by Zhang & Chen (2022), one can write the discretized dynamics as,
+
+xti+1
+vti+1
+
+= Φ(ti+1, ti)
+
+xt
+vt
+
++
+r
+X
+j=0
+Ci,j
+
+0
+sθ(mti−j, ti−j)
+
+Where Ci,j =
+Z t+δt
+t
+Φ(t + δt, τ)
+
+0
+0
+0
+zτ
+ Y
+k̸=j
+ τ −ti−k
+ti−j −ti−k
+
+dτ,
+Φ(t, s) =
+
+1
+t −s
+0
+1
+
+(34)
+After plugging in the transition kernel Φ(t, s), one can easily obtain the results shown in (11).
+Remark 14. In light of the momentum system, there are numerous methods for achieving high
+accuracy in its resolution. However, the practical performance in generative modeling remains
+untested. We recommend that readers consult the classical numerical physics text book or recent
+momentum dynamics solver (Pandey et al., 2023; Dockhorn et al., 2021).
+D.10
+PROOF OF PROPOSITION.5
+The estimated data point x1 can be represented as
+˜xSDE
+1
+= (1 −t)(Fθ
+t + vt)
+g2
+t P11
++ xt, or
+˜xODE
+1
+=
+Fθ
+t + g2
+t P11(αtxt + βtvt)
+4(t −1)2 + g2
+t P11(αtµx
+t + βtµv
+t )
+(35)
+for SDE and probablistic ODE dynamics respectively, and βt = Lvv
+t +
+1
+2P11 ,αt =
+(
+Lxx
+t
+1−t +Lxv
+t )−βtLxv
+t
+Lxx
+t
+.
+Proof. It is easy to derive the representation of x1 of the SDE due to the fact that the network is
+essentially estimating:
+Fθ
+t ≈g2
+t P11
+x1 −xt
+1 −t
+−vt
+
+⇔x1 ≈(1 −t)(Fθ
+t + vt)
+g2
+t P11
++ xt
+It will become slightly more complicated for probabilistic ODE cases. We notice that
+mt = µt + Lϵ
+⇔
+xt = µx
+t + Lxx
+t ϵ1,
+vt = µv
+t + Lxv
+t ϵ0 + Lvv
+t ϵ1
+In probabilistic ODE case, the force term can be represented as,
+F(mt, t) = 4x1(1 −t)2 −g2
+t P11
+ Lxx
+t
+1 −t + Lxv
+t
+
+ϵ0 + Lvv
+t ϵ1
+
+−1
+2g2
+t ℓϵ1
+In order to use linear combination of xt and vt to represent F one needs to match the stochastic
+term in Ft by using
+αtLxx
+t
++ βtLxv
+t
+= Lxx
+t
+1 −t + Lxv
+t
+|
+{z
+}
+ˆζt
+,
+βtLvv
+t
+= Lvv
+t
++
+1
+2P11
+|
+{z
+}
+ζt
+.
+The solution can be obtained by:
+βt = ζt
+Lvv
+t
+αt =
+ˆζt −βtLxv
+t
+Lxx
+t
+22
+
+Published as a conference paper at ICLR 2024
+By subsitute it back to Ft, one can get:
+F(mt, t) = 4x1(1 −t)2 −g2
+t P11 [αt(xt −µx
+t ) + βt(vt −µv
+t )]
+=
+
+4(1 −t)2 + g2
+t P11(αtµx
+t + βtµv
+t )
+
+x1 −g2
+t P11 [αtxt + βtvt]
+⇔x1 =
+Fθ
+t + g2
+t P11(αtxt + βtvt)
+4(t −1)2 + g2
+t P11(αtµx
+t + βtµv
+t )
+E
+EXPERIMENTAL DETAILS
+Training: We stick with hyperparameters introduced in the section.4. We use AdamW(Loshchilov
+& Hutter, 2017) as our optimizer and Exponential Moving Averaging with the exponential decay
+rate of 0.9999. We use 8 × Nvidia A100 GPU for all experiments. For further, training setup, please
+refer to Table.6.
+Table 6: Additional experimental details
+dataset
+Training Iter
+Learning rate
+Batch Size
+network architecture
+toy
+0.05M
+1e-3
+1024
+ResNet(Dockhorn et al., 2021)
+CIFAR-10
+0.5M
+1e-3
+512
+NCSN++(Karras et al., 2022)
+AFHQv2
+0.5M
+1e-3
+512
+NCSN++(Karras et al., 2022)
+ImageNet-64
+1.6M
+2e-4
+512
+ADM(Dhariwal & Nichol, 2021)
+Sampling: For Exponential Integrator, we choose the multistep order w = 2 consistently for all
+experiments. Different from previous work (Dockhorn et al., 2021; Karras et al., 2022; Zhang et al.,
+2023), we use quadratic timesteps scheme with κ = 2:
+ti =
+N −i
+N
+t
+1
+κ
+0 + i
+N t
+1
+κ
+N
+κ
+Which is opposite to the classical DM. Namely, the time discretization will get larger when the
+dynamics is propagated close to data. For numerical stability, we use t0 = 1E−5 for all experiments.
+For NFE = 5, we use tN = 0.5 and NFE = 10, TN = 0.7. For the rest of the sampling, we use
+tN = 0.999.
+Due to the fact that EDM(Karras et al., 2022) is using second-order ODE solver, in practice, we
+allow it to have an extra one NFE as reported for all the tables.
+E.1
+CODE EXAMPLE FOR COVARIANCE
+We will abuse the notation in this coding section. Here we provide the example code for compute
+the covariance matrix. Here we consider the general case where Σ0 :=
+
+m
+−k√mn
+−k√mn
+n
+
+and
+the diffusion coefficient is g(t) := p(tt −t) where p is the scaling coefficient and tt is the damping
+coefficient.
+def Sigmaxx(t,p,tt,m,n):
+return
+\
+(t - 1)**2*(30*m*(t**3 - 3*t**2 + 3*t + 3)**2\
+- 60*p**2*(t - 1)**3*torch.log(1 - t) \
+- t*(60*k*np.sqrt(m*n)*(t**5 - 6*t**4 + 15*t**3 - 15*t**2 + 9)\
+- 30*n*t*(t**2 - 3*t + 3)**2 + p**2*(t**5*(6*tt**2 + 3*tt + 1) \
+- 6*t**4*(6*tt**2 + 3*tt + 1)\
++ 15*t**3*(6*tt**2 + 3*tt + 1)\
+- 10*t**2*(9*tt**2 + 11) + 150*t - 60)))/270
+23
+
+Published as a conference paper at ICLR 2024
+def Sigmaxv(t,p,tt,m,n):
+return
+\
+(1/270 - t/270)*(30*k*np.sqrt(m*n)*(8*t**6 - 48*t**5\
++ 120*t**4 - 135*t**3 + 45*t**2 + 27*t - 9) +\
+150*p**2*(t - 1)**3*torch.log(1 - t)\
++ t*(-120*m*(t**5 - 6*t**4 + 15*t**3 - 15*t**2 + 9)\
+- 30*n*(4*t**5 - 24*t**4 + 60*t**3 - 75*t**2 + 45*t - 9)\
++ p**2*(4*t**5*(6*tt**2 + 3*tt + 1) - 24*t**4*(6*tt**2 + 3*tt + 1)\
++ 60*t**3*(6*tt**2 + 3*tt + 1) - 5*t**2*(81*tt**2 + 18*tt + 55)\
++ 15*t*(9*tt**2 + 25) - 150)))
+def Sigmavv(t,p,tt,m,n):
+return
+\
+n*(-4*t**3 + 12*t**2 - 12*t + 3)**2/9\
+- 8*p**2*(t - 1)**3*torch.log(1 - t)/9\
++ t*(-120*k*np.sqrt(m*n)*(4*t**5 - 24*t**4 + 60*t**3\
+- 75*t**2 + 45*t - 9) + 240*m*t*(t**2 - 3*t + 3)**2 \
++ p**2*(-8*t**5*(6*tt**2 + 3*tt + 1) + 48*t**4*(6*tt**2 + 3*tt + 1)\
+- 120*t**3*(6*tt**2 + 3*tt + 1) + 5*t**2*(180*tt**2 + 72*tt + 53)\
+- 15*t*(36*tt**2 + 9*tt + 20) + 135*tt**2 + 120))/135
+F
+CONDITIONAL GENERATION DETAILS
+Here we provide the detail of conditional generation details.
+F.1
+STORKE BASED GENERATION
+For stroke based generation, we provide two types of conditional generation.
+initial Velocity (IV):Please refer to section.4.
+Dynamics Velocity (dyn-V):Since the mean and variance of velocity and position are available, one
+can specify the velocity which is valid. In this case, we can set the velocity as
+vt = µvt|xt
+t
++ Σvt|xt
+t
+ϵ
+(36)
+In which,
+µvt|xt
+t
+= µv
+t + Σxv
+t
+Σxx
+t
+(xt −µx
+t )
+(37)
+Σvt|xt
+t
+= Σvv
+t
+−Σxv
+t
+2
+Σxx
+t
+(38)
+when t ≤c. The c is the guidance length. We typically set it to be c = 0.25.
+F.2
+INPAINTING
+In the inpainting case, we apply the similar strategy as dyn-V. Specifically, in this case, the ˜x1 will
+be represented as:
+ˆx1 := MASK ⊙µx
+t + (1 −MASK) ⊙˜x1
+(39)
+where MASK represents for the mask matrix which zero-out the pixel of the original image. Such
+ˆx1 will serve as the source to estimate µx
+t in eq.37.
+F.3
+INPAINTING BASED GENERATION
+For stroke based generation, we provide two types of conditional generation.
+24
+
+Published as a conference paper at ICLR 2024
+G
+ABLATION STUDY OF STOKE-BASED CONDITIONAL GENERATION
+In order to investigate the diversity and faithfulness of stoke-based conditional generation, we con-
+duct the ablation study with respect to the hyperparameter ξ.
+Figure 7: Ablation study for the stoke-based conditional generation. When ξ = 0, it is unconditional
+generation.Notably, the diversity of the generation will decay when we increase ξ. In order to
+achieve a balance between faithfulness and diversity, one needs to tune the hyperparameter ξ.
+H
+ADDITIONAL FIGURES
+We demonstrate the samples for different datasets with varying NFE.
+H.1
+TOY DATASET COMPARED WITH CLD
+CLD NFE=500, SDE
+AGM(ours) NFE=10, SDE
+Ground Truth
+CLD NFE=200, SDE
+AGM(ours) NFE=10, SDE
+Ground Truth
+Figure 8: The comparison with CLD(Dockhorn et al., 2021) using same network and stochastic
+sampler SSS, for Multi-Swiss-Roll and Mixture of Gaussian datasets. We achieve visually better
+results with one order less NFEs.
+25
+
+Published as a conference paper at ICLR 2024
+H.2
+AFHQV2 INPAINTING GENERATION
+Figure 9: AGM-ODE Uncured inpainting generation
+H.3
+AFHQV2 STROKE BASED GENERATION
+Figure 10: AGM-ODE Uncured stroke based generation
+26
+
+Published as a conference paper at ICLR 2024
+H.4
+CIFAR-10
+Figure 11: AGM-ODE Uncurated CIFAR-10 samples with NFE=5
+27
+
+Published as a conference paper at ICLR 2024
+Figure 12: AGM-ODE Uncurated CIFAR-10 samples with NFE=10
+28
+
+Published as a conference paper at ICLR 2024
+Figure 13: AGM-ODE Uncurated CIFAR-10 samples with NFE=20
+29
+
+Published as a conference paper at ICLR 2024
+Figure 14: AGM-ODE Uncurated CIFAR-10 samples with NFE=50
+30
+
+Published as a conference paper at ICLR 2024
+H.5
+AFHQV2
+Figure 15: AGM-ODE Uncurated AFHQv2 samples with NFE=5
+31
+
+Published as a conference paper at ICLR 2024
+Figure 16: AGM-ODE Uncurated AFHQv2 samples with NFE=10
+32
+
+Published as a conference paper at ICLR 2024
+Figure 17: AGM-ODE Uncurated AFHQv2 samples with NFE=20
+33
+
+Published as a conference paper at ICLR 2024
+Figure 18: AGM-ODE Uncurated AFHQv2 samples with NFE=50
+34
+
+Published as a conference paper at ICLR 2024
+H.6
+IMAGENET-64
+Figure 19: AGM-ODE Uncurated Imagenet-64 samples with NFE=10
+35
+
+Published as a conference paper at ICLR 2024
+Figure 20: AGM-ODE Uncurated Imagenet-64 samples with NFE=20
+36
+
+Published as a conference paper at ICLR 2024
+Figure 21: AGM-ODE Uncurated Imagenet-64 samples with NFE=50
+37
+

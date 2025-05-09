@@ -1,0 +1,5266 @@
+Published as a conference paper at ICLR 2024
+APPROXIMATING NASH EQUILIBRIA
+IN NORMAL-
+FORM GAMES VIA STOCHASTIC OPTIMIZATION
+Ian Gemp
+DeepMind
+London, UK
+imgemp@google.com
+Luke Marris
+DeepMind
+London, UK
+marris@google.com
+Georgios Piliouras
+DeepMind
+London, UK
+gpil@google.com
+ABSTRACT
+We propose the first loss function for approximate Nash equilibria of normal-form
+games that is amenable to unbiased Monte Carlo estimation. This construction
+allows us to deploy standard non-convex stochastic optimization techniques for
+approximating Nash equilibria, resulting in novel algorithms with provable guaran-
+tees. We complement our theoretical analysis with experiments demonstrating that
+stochastic gradient descent can outperform previous state-of-the-art approaches.
+1
+INTRODUCTION
+Nash equilibrium (NE) famously encodes stable behavioral outcomes in multi-agent systems and
+is arguably the most influential solution concept in game theory. Formally speaking, if n players
+independently choose n, possibly mixed, strategies (xk for k ∈[n]) and their joint strategy (x =
+Q
+k xk) constitutes a Nash equilibrium, then no player has any incentive to unilaterally deviate
+from their strategy. This concept has sparked extensive research in various fields, ranging from
+economics (Milgrom and Weber, 1982) to machine learning (Goodfellow et al., 2014), and has even
+inspired behavioral theory generalizations such as quantal response equilibria (QREs) which allow
+for more realistic models of boundedly rational agents (McKelvey and Palfrey, 1995).
+Unfortunately, when considering Nash equilibria beyond the 2-player, zero-sum scenario, two
+significant challenges arise. First, it becomes unclear how n independent players would collectively
+identify a Nash equilibrium when multiple equilibria are possible, giving rise to the equilibrium
+selection problem (Harsanyi et al., 1988). Secondly, even approximating a single Nash equilibrium is
+known to be computationally intractable and specifically PPAD-complete (Daskalakis et al., 2009).
+Combining both problems together, e.g., testing for the existence of equilibria with welfare greater
+than some fixed threshold is NP-hard, and it is in fact even hard to approximate (Austrin et al., 2011).
+From a machine learning practitioner’s perspective, such computational complexity results hardly give
+pause for thought as collectively we have become all too familiar with the unreasonable effectiveness
+of heuristics in circumventing such obstacles. Famously, non-convex optimization is NP-hard, even
+if the goal is to compute a local minimizer (Murty and Kabadi, 1985), however, stochastic gradient
+descent (SGD) and variants succeed in training billion parameter models (Brown et al., 2020).
+Unfortunately, computational techniques for Nash equilibrium have so far not achieved anywhere near
+the same level of success. In contrast, most modern NE solvers for n-player, m-action, general-sum,
+normal-form games (NFGs) are practically restricted to a handful of players and/or actions per
+player except in special cases, e.g., symmetric (Wiedenbeck and Brinkman, 2023) or mean-field
+games (Pérolat et al., 2022). For example, when running the suite of all 7 applicable methods from the
+hallmark gambit library (McKelvey et al., 2016) on a 4-player Blotto game, we find only brute-force
+pure-NE enumeration is able to return any NE within a 1 hour time limit. Scaling solvers to large
+games is difficult partially due to the fact that an NFG is represented by a tensor with an exponential
+nmn entries; even reading this description into memory can be computationally prohibitive. More to
+the point, any computational technique that presumes exact computation of the expectation of this
+tensor sampled according to x similarly does not have any hope of scaling beyond small instances.
+This inefficiency arguably lies at the core of the differential success between machine learning (ML)
+optimization and equilibrium computation. For example, numerous techniques exist that reduce the
+1
+
+Published as a conference paper at ICLR 2024
+problem of Nash computation to the minimization of the expectation of a random variable (Section 3).
+Unfortunately, unlike the source of randomness in ML applications where batch learning suffices to
+produce unbiased estimators, these techniques do not extend easily to game theory which incorporates
+non-linear functions such as maximum and best-response. This raises our motivating goal:
+Can we solve for Nash equilibria via unbiased stochastic optimization?
+Our results. Following in the successful steps of the interplay between ML and stochastic optimiza-
+tion, we reformulate the approximation of Nash equilibria in a normal-form game as a stochastic
+non-convex optimization problem admitting unbiased Monte-Carlo estimation. This enables the use
+of powerful solvers and advances in parallel computing to efficiently enumerate Nash equilibria for
+n-player, general-sum games. Furthermore, this re-casting allows practitioners to incorporate other
+desirable objectives into the problem such as “find an approximate Nash equilibrium with welfare
+above ω” or “find an approximate Nash equilibrium nearest the current observed joint strategy”
+resolving the equilibrium selection problem in an effectively ad-hoc and application tailored manner.
+Concretely, we make the following contributions by producing:
+• A loss Lτ(x) 1) whose global minima well approximate Nash equilibria in normal form games, 2)
+admits unbiased Monte-Carlo estimation, and 3) is Lipschitz and bounded.
+• Efficient randomized algorithms for approximating Nash equilibria in a novel class of games.
+The algorithms emerge by employing the family of X-armed bandit approaches to Lτ(x) and
+connecting their global stochastic optimization guarantees to global approximate Nash guarantees.
+• An empirical comparison of SGD against state-of-the-art baselines for approximating NEs in large
+games. In some games, vanilla SGD actually improves upon previous state-of-the-art; in others,
+SGD is slowed by saddle points, a familiar challenge in deep learning (Dauphin et al., 2014).
+Overall, this perspective showcases a promising new route to approximating equilibria at scale in
+practice. We conclude the paper with discussion for future work.
+2
+PRELIMINARIES
+In an n-player, normal-form game, each player k ∈{1, . . . , n} = [n] has a strategy set Ak =
+{ak1, . . . , akmk} consisting of mk pure strategies. These strategies can be naturally indexed, so we
+redefine Ak = [mk] as an abuse of notation. Each player k also has a utility function, uk : A =
+Q
+k Ak →[0, 1], (equiv. “payoff tensor”) that maps joint actions to payoffs in the unit-interval.
+We denote the average cardinality of the players’ action sets by ¯m = 1
+n
+P
+k mk and maximum by
+m∗= maxk mk. Player k may play a mixed strategy by sampling from a distribution over their pure
+strategies. Let player k’s mixed strategy be represented by a vector xk ∈∆mk−1 where ∆mk−1 is the
+(mk −1)-dimensional probability simplex embedded in Rmk. Each function uk is then extended to
+this domain so that uk(x) = P
+a∈A uk(a) Q
+j xjaj where x = (x1, . . . , xn) and aj ∈Aj denotes
+player j’s component of the joint action a ∈A. For convenience, let x−k denote all components of
+x belonging to players other than player k.
+The joint strategy x ∈Q
+k ∆mk−1 is a Nash equilibrium if and only if, for all k ∈[n], uk(zk, x−k) ≤
+uk(x) for all zk ∈∆mk−1, i.e., no player has any incentive to unilaterally deviate from x. Nash is
+typically relaxed with ϵ-Nash, our focus: uk(zk, x−k) ≤uk(x) + ϵ for all zk ∈∆mk−1.
+As an abuse of notation, let the atomic action ak = ek also denote the mk-dimensional “one-
+hot" vector with all zeros aside from a 1 at index ak; its use should be clear from the context.
+We also introduce ∇k
+xk as player k’s utility gradient. And for convenience, denote by Hk
+kl =
+Ex−kl[uk(ak, al, x−kl)] the bimatrix game approximation (Janovskaja, 1968) between players k
+and l with all other players marginalized out; x−kl denotes all strategies belonging to players
+other than k and l and uk(ak, al, x−kl) separates out l’s strategy xl from the rest of the players
+x−k. Similarly, denote by T k
+klq = Ex−klq[uk(ak, al, aq, x−klq)] the 3-player tensor approximation
+to the game. Note player k’s utility can now be written succinctly as uk(xk, x−k) = x⊤
+k ∇k
+xk =
+x⊤
+k Hk
+klxl = T k
+klqxkxlxq for any l, q where we use Einstein notation for tensor arithmetic. For
+convenience, define diag(z) as the function that places a vector z on the diagonal of a square
+matrix, and diag3 : z ∈Rd →Rd×d×d as a 3-tensor of shape (d, d, d) where diag3(z)lll = zl.
+2
+
+Published as a conference paper at ICLR 2024
+Loss
+Function
+Obstacle
+Exploitabilty (ϵ)
+maxk ϵk(x)
+max of r.v.
+Nikaido-Isoda (NI)
+P
+k ϵk(x)
+max of r.v.
+Fully-Diff. Exp
+P
+k
+P
+ak∈Ak[max(0, uk(ak, x−k) −uk(x))]2
+max of r.v.
+Gradient-based NI
+NI w/ BRk ←aBRk = Π∆
+
+xk + η∇xkuk(x)
+
+Π∆of r.v.
+Unconstrained
+Loss + Simplex Deviation Penalty
+sampling from xk ∈Rmk
+Table 1: Previous loss functions for NFGs and their obstacles to unbiased estimation. Note that
+ϵk(x) = maxz uk(z, x−k)−uk(x) contains a max operator (see equivalent definition in equation (1)).
+Following convention from differential geometry, let TvM be the tangent space of a manifold M at v.
+For the interior of the d-action simplex ∆d−1, the tangent space is the same at every point, so we drop
+the v subscript, i.e., T∆d−1. We denote the projection of a vector z ∈Rd onto this tangent space as
+ΠT ∆d−1(z) = [I −1
+d11⊤]z and call ΠT ∆d−1(∇k
+xk) a projected-gradient. We drop d −1 when the
+dimensionality is clear from the context. Finally, let U(S) denote a discrete uniform distribution over
+elements from set S.
+3
+RELATED WORK
+Representing the problem of computing a Nash equilibrium as an optimization problem is not new. A
+variety of loss functions and pseudo-distance functions have been proposed. Most of them measure
+some function of how much each player can exploit the joint strategy by unilaterally deviating:
+ϵk(x)
+def
+= uk(BRk, x−k) −uk(x) where BRk ∈arg max
+z
+uk(z, x−k).
+(1)
+As argued in the introduction, we believe it is important to be able to subsample payoff tensors of
+normal-form games in order to scale to large instances. As Nash equilibria can consist of mixed
+strategies, it is advantageous to be able to sample from an equilibrium to estimate its exploitability
+ϵ. However none of these losses is amenable to unbiased estimation under sampled play. Each
+of the functions currently explored in the literature is biased under sampled play either because 1)
+a random variable appears as the argument of a complex, nonlinear (non-polynomial) function or
+because 2) how to sample play is unclear. Exploitability, Nikaido-Isoda (NI) (Nikaidô and Isoda,
+1955) (also known by NashConv (Lanctot et al., 2017) and ADI (Gemp et al., 2022)), as well as
+fully-differentiable options (Shoham and Leyton-Brown, 2008, p. 106, Eqn 4.31) introduce bias
+when a max over payoffs is estimated using samples from x. Gradient-based NI (Raghunathan
+et al., 2019) requires projecting the result of a gradient-ascent step onto the simplex; for the same
+reason as the max, this projection is prohibitive because it is a nonlinear operation which introduces
+bias. Lastly, unconstrained optimization approaches (Shoham and Leyton-Brown, 2008, p. 106) that
+instead penalize deviation from the simplex lose the ability to sample from strategies when each
+iterate x is no longer a distribution (i.e., xk ̸∈∆mk−1). Table 1 summarizes these complications.
+4
+NASH EQUILIBRIUM AS STOCHASTIC OPTIMIZATION
+We will now develop our proposed loss function which is amenable to unbiased estimation. Sub-
+sections 4.1-4.4 provide a warm-up in which we assume an interior (fully-mixed) Nash equilibrium
+exists. Subsection 4.5 then shows how to relax that assumption allowing us to approximate partially
+mixed equilibria as well (including pure equilibria). Our key technical insight is to pay special
+attention to the geometry of the simplex. To our knowledge, prior works have failed to recognize the
+role of the tangent space T∆. Proofs are in the appendix.
+4.1
+STATIONARITY ON THE SIMPLEX INTERIOR
+Lemma 1. Assuming player k’s utility, uk(xk, x−k), is concave in its own strategy xk, a strategy in
+the interior of the simplex is a best response BRk if and only if it has zero projected-gradient1 norm.
+1Not to be confused with the nonlinear (biased) projected gradient operator in (Hazan et al., 2017).
+3
+
+Published as a conference paper at ICLR 2024
+In NFGs, each player’s utility is linear in xk, thereby satisfying the concavity condition of Lemma 1.
+4.2
+PROJECTED-GRADIENT NORM AS A LOSS
+An equivalent description of a Nash equilibrium is a joint strategy x where every player’s strategy
+is a best response to the equilibrium (i.e., xk = BRk so that ϵk(x) = 0). Lemma 1 states that any
+interior best response has zero projected-gradient norm, which inspires the following loss function
+L(x) =
+X
+k
+ηk||ΠT ∆(∇k
+xk)||2
+(2)
+where each ηk > 0 represents a scalar weight, or equivalently, a step size to be explained next.
+Proposition 1. The loss L is equivalent to NashConv, but where player k’s best response is approx-
+imated by a single step of projected-gradient ascent with step size ηk: aBRk = xk + ηkΠT ∆(∇k
+xk).
+This connection was already pointed out in prior work for unconstrained problems (Gemp et al., 2022;
+Raghunathan et al., 2019), but this result is the first for strategies constrained to the simplex.
+4.3
+CONNECTION TO TRUE EXPLOITABILITY
+In general, we can bound exploitability in terms of the projected-gradient norm as long as each
+player’s utility is concave (this result extends to subgradients of non-smooth functions).
+Lemma 2. The amount a player can gain by exploiting a joint strategy x is upper bounded by a
+quantity proportional to the norm of the projected-gradient:
+ϵk(x) ≤
+√
+2||ΠT ∆(∇k
+xk)||.
+(3)
+This bound is not tight on the boundary of the simplex, which can be seen clearly by considering xk
+to be part of a pure strategy equilibrium. In that case, this analysis assumes xk can be improved upon
+by a projected-gradient ascent step (via the equivalence pointed out in Proposition 1). However, that
+is false because the probability of a pure strategy cannot be increased beyond 1. We mention this to
+provide further intuition for why our “warm-up” loss L(x) is only valid for interior equilibria.
+Note that ||ΠT ∆(∇k
+xk)|| ≤||∇k
+xk|| because ΠT ∆is a projection. Therefore, this improves the naive
+bounds on exploitability and distance to best responses given using the “raw” gradient ∇k
+xk.
+Lemma 3. The exploitability of a joint strategy x, is upper bounded by a function of L(x):
+ϵ ≤
+r
+2n
+mink ηk
+p
+L(x)
+def
+= f(L).
+(4)
+4.4
+UNBIASED ESTIMATION
+As discussed in Section 3, a primary obstacle to unbiased estimation of L(x) is the presence of
+complex, nonlinear functions of random variables, with the projection of a point onto the simplex
+being one such example (see Π∆in Table 1). However, ΠT ∆, the projection onto the tangent space
+of the simplex, is linear! This is the insight that allows us to design an unbiased estimator (Lemma 5).
+Our proposed loss requires computing the squared norm of the expected value of the projected-
+gradient under the players’ mixed strategies, i.e., the l-th entry of player k’s gradient equals ∇k
+xkl =
+Ea−k∼x−kuk(akl, a−k). By analogy, consider a random variable Y . In general, E[Y ]2 ̸= E[Y 2]. This
+means that we cannot just sample projected-gradients and then compute their average norm to estimate
+our loss. However, consider taking two independent samples from two corresponding identically
+distributed, independent random variables Y (1) and Y (2). Then E[Y (1)]2 = E[Y (1)]E[Y (2)] =
+E[Y (1)Y (2)] by properties of expected value over products of independent random variables. This is
+a common technique to construct unbiased estimates of expectations over polynomial functions of
+random variables. Proceeding in this way, define ∇k(1)
+xk
+as a random, unbiased gradient estimate (see
+Table 2). Let ∇k(2)
+xk
+be independent and distributed identically to ∇k(1)
+xk . Then Lemma 5 shows
+L(x) = E[
+X
+k
+ηk( ˆ∇k(1)
+xk
+−1
+mk
+(1⊤ˆ∇k(1)
+xk )1
+|
+{z
+}
+projected-gradient 1
+)⊤( ˆ∇k(2)
+xk
+−1
+mk
+(1⊤ˆ∇k(2)
+xk )1
+|
+{z
+}
+projected-gradient 2
+)]
+(5)
+4
+
+Published as a conference paper at ICLR 2024
+Exact
+Sample Others
+Sample All
+Estimator of ∇k(p)
+xk
+[uk(akl, x−k)]l
+[uk(akl, a−k ∼x−k)]l
+mkuk(akl ∼U(Ak), a−k ∼x−k)el
+ˆ∇k(p)
+xk
+Bounds
+[0, 1]
+[0, 1]
+[0, mk]
+ˆ∇k(p)
+xk
+Query Cost
+Qn
+k=1 mk
+mk
+1
+ˆL Bounds
+±1/4 P
+k ηkmk
+±1/4 P
+k ηkmk
+±1/4 P
+k ηkm3
+k
+ˆL Query Cost
+n Qn
+k=1 mk
+2n ¯m
+2n
+Table 2: Examples and Properties of Unbiased Estimators of Loss and Player Gradients ( ˆ∇k(p)
+xk ).
+where ˆ∇k(p)
+xk
+is an unbiased estimator of player k’s gradient. This estimator can be constructed in
+several ways. The most expensive, an exact estimator, is constructed by marginalizing player k’s
+payoff tensor over all other players’ strategies. However, a cheaper estimate can be obtained at the
+expense of higher variance by approximating this marginalization with a Monte Carlo (MC) estimate
+of the expectation. Specifically, if we sample a single action for each of the remaining players, we
+can construct an unbiased estimate of player k’s gradient by considering the payoff of each of its
+actions against the sampled background strategy. Lastly, we can consider constructing an estimate of
+player k’s gradient by sampling only a single action from player k to represent their entire gradient.
+Each of these approaches is outlined in Table 2 along with the query complexity (Babichenko, 2016)
+of computing the estimator and bounds on the values it can take (Lemma 9).
+We can extend Lemma 3 to one that holds under T samples with probability 1 −δ by applying, for
+example, a Hoeffding bound: ϵ ≤f
+  ˆL(x) + O(
+q
+1
+T ln(1/δ)
+
+where ˆL is an MC estimate of L.
+4.5
+INTERIOR EQUILIBRIA
+We discussed earlier that L(x) captures interior equilibria. But some games may only have partially
+mixed equilibria, i.e., equilibria that lie on the boundary of the simplex. We show how to circumvent
+this shortcoming by considering quantal response equilibria (QREs), specifically, logit equilibria. By
+adding an entropy bonus to each player’s utility, we can
+• guarantee all equilibria are interior,
+• still obtain unbiased estimates of our loss,
+• maintain an upper bound on the exploitability ϵ of any approximate Nash equilibrium in the
+original game (i.e., the game without an entropy bonus).
+Define uτ
+k(x) = uk(x) + τS(xk) where Shannon entropy S(xk) = −P
+l xkl ln(xkl) is 1-strongly
+concave with respect to the 1-norm (Beck and Teboulle, 2003). It is known that Nash equilibria of
+entropy-regularized games satisfy the conditions for logit equilibria (Leonardos et al., 2021), which
+are solutions to the fixed point equation xk = softmax( 1
+τ ∇k
+xk). The softmax should make it
+clear to the reader that all probabilities have positive mass at positive temperature.
+Recall that in order to construct an unbiased estimate of our loss, we simply needed to construct
+unbiased estimates of player gradients. The introduction of the entropy term to player k’s utility is
+special in that it depends entirely on known quantities, i.e., the player’s own mixed strategy. We
+can directly and deterministically compute τ dS
+dxk = −τ(ln(xk) + 1) and add this to our estimator of
+∇k(p)
+xk : ˆ∇kτ(p)
+xk
+= ˆ∇k(p)
+xk
++ τ dS
+dxk . Consider our loss function refined from (2) with changes in blue:
+Lτ(x) =
+X
+k
+ηk||ΠT ∆(∇kτ
+xk)||2.
+(6)
+As mentioned above, the utilities with entropy bonuses are still concave, therefore, a similar bound
+to Lemma 2 applies. We use this to prove the QRE counterpart to Lemma 3 where ϵQRE is the
+exploitability of an approximate equilibrium in a game with entropy bonuses.
+5
+
+Published as a conference paper at ICLR 2024
+Figure 1: Effect of Sampled Play on a Biased Loss. The first row displays the expectation of the
+upper bound guaranteed by our proposed loss Lτ with ηk = 1 for all k. The second row displays the
+expectation of NashConv under sampled play, i.e., P
+k ϵk where ϵk = Ea−k∼x−k[maxak uτ
+k(a)] −
+Ea∼x[uτ
+k(a)]. To be consistent, we subtract the offset τ log(m2) from fτ(Lτ) per Lemma 13, which
+relates the exploitability at positive temperature to that at zero temperature. The resulting loss surface
+clearly shows NashConv fails to recognize any interior Nash equilibrium due to its inherent bias.
+Lemma 4. The entropy regularized exploitability, ϵQRE, of a joint strategy x, is upper bounded as:
+ϵQRE ≤
+r
+2n
+mink ηk
+p
+Lτ(x)
+def
+= f(Lτ).
+(7)
+Lastly, we establish a connection between quantal response equilibria and Nash equilibria that allows
+us to approximate Nash equilibria in the original game via minimizing our modified loss Lτ(x).
+Lemma 13 (Lτ Scores Nash Equilibria). Let Lτ(x) be our proposed entropy regularized loss
+function and x be an approximate QRE. Then it holds that
+ϵ ≤τ log
+ Y
+k
+mk
+
++
+r
+2n
+mink ηk
+p
+Lτ(x)
+def
+= fτ(Lτ).
+(8)
+This upper bound is plotted as a heatmap for a familiar Chicken game in the top row of Figure 1. First,
+notice how pure equilibria are not visible as minima for zero temperature, but appear for slightly
+warmer temperatures. Secondly, notice that NashConv in the bottom row is unable to capture the
+interior Nash equilibrium because of its high bias under sampled play. In contrast, our proposed loss
+Lτ is guaranteed to capture all equilibria at low temperature τ.
+5
+ANALYSIS
+In the preceding section we established a loss function that upper bounds the exploitability of an
+approximate equilibrium. In addition, the zeros of this loss function have a one-to-one correspondence
+with quantal response equilibria (which approximate Nash equilibria at low temperature).
+Here, we derive properties that suggest it is “easy” to optimize. While this function is generally
+non-convex and may suffer from a proliferation of saddle points (Figure 2), it is Lipschitz continuous
+(over the relevant subset of the interior) and bounded. These are two commonly made assumptions in
+the literature on non-convex optimization, which we leverage in Section 6. In addition, we can derive
+its gradient, its Hessian, and characterize its behavior around global minima.
+Lemma 14. The gradient of Lτ(x) with respect to player l’s strategy xl is
+∇xlLτ(x) = 2
+X
+k
+ηkB⊤
+klΠT ∆(∇kτ
+xk)
+(9)
+where Bll = −τ[I −
+1
+ml 11⊤]diag
+  1
+xl
+
+and Bkl = [I −
+1
+mk 11⊤]Hk
+kl for k ̸= l.
+6
+
+Published as a conference paper at ICLR 2024
+Figure 2: Analysis of Loss Landscape. We reapply the analysis of (Dauphin et al., 2014), originally
+designed to understand the success of SGD in deep learning, to “slices” of several popular extensive
+form games. To construct a slice (or meta-game), we randomly sample 6 deterministic policies
+and then consider the corresponding n-player, 6-action normal-form game at τ = 0.1 (with payoffs
+normalized to [0, 1]). The index of a critical point xc (∇xLτ(xc) = 0) indicates the fraction of
+negative eigenvalues in the Hessian of Lτ at xc; α = 0 indicates a local minimum, 1 a maximum,
+else a saddle point. We see a positive correlation between exploitability (y-axis), projected-gradient
+norm (x-axis), and α (color) indicating a lower prevalence of local minima at high exploitability.
+Lemma 16. The Hessian of Lτ(x) can be written
+Hess(Lτ) = 2
+ ˜B⊤˜B + TΠT ∆( ˜∇τ)
+
+(10)
+where ˜Bkl = √ηkBkl, ΠT ∆( ˜∇τ) = [η1ΠT ∆(∇1τ
+x1), . . . , ηnΠT ∆(∇nτ
+xn)], and we augment T (the
+3-player approximation to the game, T k
+lqk) so that T l
+lll = τdiag3
+  1
+x2
+l
+
+.
+At an NE, the latter term disappears because ΠT ∆(∇kτ
+xk) = 0 for all k (Lemma 1). If X was Rn ¯m,
+then we could simply check if ˜B is full-rank to determine if Hess ≻0, i.e., if Lτ is locally strongly-
+convex. However, X is a simplex product, and we only care about curvature in directions toward
+which we can update our strategy profile x. Toward that end, define M to be the n( ¯m + 1) × n ¯m
+matrix that stacks ˜B on top of a repeated identity matrix that encodes orthogonality to the simplex:
+M(x) =
+
+
+−τ√η1ΠT ∆( 1
+x1 )
+√η1ΠT ∆(H1
+12)
+. . .
+√η1ΠT ∆(H1
+1n)
+...
+...
+...
+...
+√ηnΠT ∆(Hn
+n1)
+. . .
+√ηnΠT ∆(Hn
+n,n−1)
+−τ√ηnΠT ∆( 1
+xn )
+1⊤
+1
+0
+. . .
+0
+...
+...
+...
+...
+0
+. . .
+0
+1⊤
+n
+
+
+(11)
+where ΠT ∆(z ∈Ra×b) = [Ia −1
+a1a1⊤
+a ]z subtracts the mean from each column of z and
+1
+xk is
+shorthand for diag
+  1
+xk
+
+. If M(x)z = 0 for a nonzero vector z ∈Rn ¯m, this implies there exists a z
+that 1) is orthogonal to the ones vectors of each simplex (i.e., is a valid equilibrium update direction)
+and 2) achieves zero curvature in the direction z, i.e., z⊤( ˜B⊤˜B)z = z⊤(Hess)z = 0, and so Hess
+is not positive definite. Conversely, if M(x) is of rank n ¯m for a quantal response equilibrium x, then
+the Hessian of Lτ at x in the tangent space of the simplex product (X = Q
+k Xk) is positive definite.
+In this case, we call x polymatrix-isolated: polymatrix because we only require information of the
+local polymatrix approximation of the game (i.e., the Hk
+kl matrices) to construct M and isolated
+because it implies x is not connected to any other equilibria.
+Definition 1 (Polymatrix-Isolated Equilibrium). A Nash equilibrium x∗is polymatrix-isolated iff x∗
+is isolated according to its local polymatrix game approximation.
+By analyzing the rank of M, we can confirm that many classical matrix games including Rock-
+Paper-Scissors, Chicken, Matching Pennies, and Shapley’s game all induce strongly convex Lτ’s at
+zero temperature (i.e., they have unique mixed Nash equilibria). In contrast, a game like Prisoner’s
+Dilemma has a unique pure strategy that will not be captured by our loss at zero temperature.
+6
+ALGORITHMS
+We have formally transformed the approximation of Nash equilibria in NFGs into a stochastic
+optimization problem. To our knowledge, this is the first such formulation that allows one-shot
+7
+
+Published as a conference paper at ICLR 2024
+Figure 3: Comparison of SGD on Lτ=0 against baselines on four games evaluated in (Gemp et al.,
+2022). The number of samples used to estimate each update iteration (i.e., minibatch size) is indicated
+by s. From left to right: 2-player, 3-action, nonsymmetric; 6-player, 5-action, nonsymmetric; 4-player,
+66-action, symmetric; 3-player, 286-action, symmetric. SGD struggles at saddle points in Blotto.
+unbiased Monte-Carlo estimation which is critical to introduce the use of powerful algorithms capable
+of solving high dimensional optimization problems. We explore two off-the-shelf approaches.
+6.1
+STOCHASTIC GRADIENT DESCENT
+Stochastic gradient descent is the workhorse of high-dimensional stochastic optimization. It is
+guaranteed to converge to stationary points (Cutkosky et al., 2023), however, it may converge to
+local, rather than global minima. It also enjoys implicit gradient regularization (Barrett and Dherin,
+2020), seeking “flat” minima and performs approximate Bayesian inference (Mandt et al., 2017).
+Despite the lack of global convergence guarantee, we find it performs well empirically in games
+previously examined by the literature: modified Shapley’s (Ostrovski and van Strien, 2014), GAMUT
+D7 (Nudelman et al., 2004), Blotto (Arad and Rubinstein, 2012). Figure 3 shows SGD is competitive
+with scalable techniques to approximating NEs: FTRL (Shalev-Shwartz and Singer, 2006; Shalev-
+Shwartz et al., 2012), Regret Matching (Hart and Mas-Colell, 2000), ADIDAS/yQREauto (Gemp
+et al., 2022). Shapley’s game induces a strongly convex L (see Section 5) leading to SGD’s strong
+performance. Blotto reaches low, but nonzero ϵ, demonstrating the challenges of saddle points.
+6.2
+HIGH PROBABILITY, GLOBAL POLYNOMIAL CONVERGENCE RATES VIA BANDITS
+We explore one other algorithmic approach to non-convex optimization based on minimizing regret,
+which enjoys finite time global convergence rates. X-armed bandits (Bubeck et al., 2011) system-
+atically explore the space of solutions by refining a mesh over the joint strategy space, trading off
+exploration versus exploitation of promising regions. Several approaches exist (Bartlett et al., 2019;
+Valko et al., 2013) with open source implementations, e.g., (Li et al., 2023). Applying X-armed
+bandits to our Lτ can be thought of as a stochastic generalization of the exclusion method and other
+bandit approaches for Nash equilibria (Berg and Sandholm, 2017; Zhou et al., 2017).
+Equipped with these techniques, we establish a high probability polynomial-time global convergence
+rate to Nash equilibria in n-player, general-sum games given all QREs(τ) are polymatrix-isolated.
+The quality of this approximation improves as τ →0, at the same time increasing the constant on the
+convergence rate via the Lipschitz constant
+p
+ˆL defined below. For clarity, we assume users provide
+a temperature in the form τ =
+1
+ln(1/p) with p ∈(0, 1) which ensures all equilibria have probability
+mass greater than
+p
+m∗for all actions (Lemma 11). Lower p corresponds with lower temperature.
+Theorem 4 (BLiN PAC Rate). Assume ηk = η = 2/ˆL, τ =
+1
+ln(1/p), and a previously pulled arm is
+returned uniformly at random (i.e., t ∼U([T])). Then for any w > 0
+ϵt ≤w
+h
+1
+ln(1/p) log
+  Y
+k
+mk
+
++ 2(1 + (4c2Cz)1/3)
+p
+2nˆL
+ln T
+T
+
+1
+2(dz+2) i
+(12)
+with probability (1 −w−1)(1 −2T −2) where m∗= maxk mk, 2|Lτ| ≤c ≤
+1
+4
+
+ln(m∗)
+ln(1/p) + 2
+
+(Corollary 1), ˆL =
+
+ln(m∗)
+ln(1/p) + 2
+ m∗2
+p ln(1/p) + n ¯m
+
+(Corollary 2), the zooming dimension dz = 1
+2n ¯m,
+and the zooming constant Cz = |X ∗|−1( 1
+4r2
+ησ−∞)−n ¯m (Corollary 30).
+The convergence rate for BLiN (Feng et al., 2022) depends on bounds on the exploitability in terms
+of the loss (Lemma 13), bounds on estimates of the loss (Corollary 1), Lipschitz bounds on the
+8
+
+Published as a conference paper at ICLR 2024
+Figure 4: Bandit-based (BLiN) Nash solver applied to an artificial 7-player, symmetric, 2-action
+game. We search for a symmetric equilibrium, which is represented succinctly as the probability of
+selecting action 1. The plot shows the true exploitability ϵ of all symmetric strategies in black and
+indicates there exist potentially 5 NEs (the dips in the curve). Upper bounds on our unregularized
+loss L capture 4 of these equilibria, missing only the pure NE on the right. By considering our
+regularized loss, Lτ, we are able to capture this pure NE (see zoomed inset). The bandit algorithm
+selects strategies to evaluate, using 10 Monte-Carlo samples for each evaluation (arm pull) of Lτ.
+These samples are displayed as vertical bars above with the height of the vertical bar representing
+additional arm pulls. The best arms throughout search are denoted by green circles (darker indicates
+later in the search). The boxed numbers near equilibria display the welfare of the strategy profile.
+infinity norm of the gradient (Corollary 2), and the number of distinct strategies (n ¯m = P
+k mk).
+This result further depends on the near-optimality or zooming-dimension dz and zooming constant
+Cz which quantify the number of near optimal states. In particular, we assume L(s(z)) is locally
+(σ−∞)-strongly convex with respect to || · ||∞about each global optimum within a ball of radius
+rη. Here, s : [0, 1]n( ¯m−1) →Q
+i ∆mi−1 is any function that maps from the unit hypercube to a
+product of simplices; we analyze two such maps in Appendix B.1. Next, we present an additional
+convergence rate result using an alternative X-bandit approach, StoSOO (Valko et al., 2013).
+Theorem 5 (StoSOO Rate). Corollary 1 of Valko et al. (2013) implies that with probability (1 −
+w−1)(1 −δ) for any w > 0, a uniformly randomly drawn arm (i.e., t ∼U([T])) achieves
+ϵt ≤w
+h
+1
+ln(1/p) log
+  Y
+k
+mk
+
++
+p
+nˆL
+v
+u
+u
+tξ1
+s
+logb(Tk/δ)
+2 logb(e)k + ξ2b−
+1
+dC
+√
+T/ki
+(13)
+where d = n( ¯m−1), ξ1 = (2+22/d), ξ2 = 1
+4db2(1+2/d), k = T logb(T)−3, b is the branching factor
+for partitioning cells, and the near-optimality constant C = |X ∗|−1√
+2πd
+
+b2d2
+5r2ησ−2
+d/2
+(Lemma 36).
+Here we assume L(s(z)) is locally (σ−2)-strongly convex with respect to || · ||2 about each global
+optimum within a ball of radius rη. Theorem 5 implies a ˜O(T −1/4) global convergence rate
+(Proposition 2), however this is achieved only after an exponential number of burn-in iterations.
+7
+CONCLUSION
+In this work, we proposed a stochastic loss for approximate Nash equilibria in normal-form games.
+An unbiased loss estimator of Nash equilibria is the “key” to the stochastic optimization “door”
+which holds a wealth of research innovations uncovered over several decades. Thus, it allows the
+development of new algorithmic techniques for computing equilibria. We consider bandit and vanilla
+SGD methods in this work, but these are only two of the many options now at our disposal (e.g,
+adaptive methods (Antonakopoulos et al., 2022), Gaussian processes (Calandriello et al., 2022),
+evolutionary algorithms (Hansen et al., 2003), etc.). Such approaches as well as generalizations of
+these techniques to extensive-form, imperfect-information games are promising directions for future
+work. Similarly to how deep learning research first balked at and then marched on to train neural
+networks via NP-hard non-convex optimization, we hope computational game theory can march
+ahead to make useful equilibrium predictions of large multiplayer systems.
+9
+
+Published as a conference paper at ICLR 2024
+REFERENCES
+K. Antonakopoulos, P. Mertikopoulos, G. Piliouras, and X. Wang. AdaGrad avoids saddle points. In
+International Conference on Machine Learning, pages 731–771. PMLR, 2022.
+A. Arad and A. Rubinstein. Multi-dimensional iterative reasoning in action: The case of the Colonel
+Blotto game. Journal of Economic Behavior & Organization, 84(2):571–585, 2012.
+P. Austrin, M. Braverman, and E. Chlamtáˇc. Inapproximability of NP-complete variants of Nash
+equilibrium. In Approximation, Randomization, and Combinatorial Optimization. Algorithms
+and Techniques: 14th International Workshop, APPROX 2011, and 15th International Workshop,
+RANDOM 2011, Princeton, NJ, USA, August 17-19, 2011. Proceedings, pages 13–25. Springer,
+2011.
+Y. Babichenko. Query complexity of approximate Nash equilibria. Journal of the ACM (JACM), 63
+(4):36:1–36:24, 2016.
+D. Barrett and B. Dherin. Implicit gradient regularization. In International Conference on Learning
+Representations, 2020.
+P. L. Bartlett, V. Gabillon, and M. Valko.
+A simple parameter-free and adaptive approach to
+optimization under a minimal local smoothness assumption. In Algorithmic Learning Theory,
+pages 184–206. PMLR, 2019.
+A. Beck and M. Teboulle. Mirror descent and nonlinear projected subgradient methods for convex
+optimization. Operations Research Letters, 31(3):167–175, 2003.
+K. Berg and T. Sandholm. Exclusion method for finding Nash equilibrium in multiplayer games. In
+Proceedings of the AAAI Conference on Artificial Intelligence, volume 31, 2017.
+S. P. Boyd and L. Vandenberghe. Convex optimization. Cambridge university press, 2004.
+T. Brown, B. Mann, N. Ryder, M. Subbiah, J. D. Kaplan, P. Dhariwal, A. Neelakantan, P. Shyam,
+G. Sastry, A. Askell, et al. Language models are few-shot learners. Advances in neural information
+processing systems, 33:1877–1901, 2020.
+S. Bubeck, R. Munos, G. Stoltz, and C. Szepesvári. X-armed bandits. Journal of Machine Learning
+Research, 12(5), 2011.
+D. Calandriello, L. Carratino, A. Lazaric, M. Valko, and L. Rosasco. Scaling Gaussian process
+optimization by evaluating a few unique candidates multiple times. In International Conference on
+Machine Learning, pages 2523–2541. PMLR, 2022.
+A. Cutkosky, H. Mehta, and F. Orabona. Optimal, stochastic, non-smooth, non-convex optimization
+through online-to-non-convex conversion. In Proceedings of the 40th International Conference on
+Machine Learning, ICML’23. JMLR.org, 2023.
+C. Daskalakis, P. W. Goldberg, and C. H. Papadimitriou. The complexity of computing a Nash
+equilibrium. Communications of the ACM, 52(2):89–97, 2009.
+Y. N. Dauphin, R. Pascanu, C. Gulcehre, K. Cho, S. Ganguli, and Y. Bengio. Identifying and
+attacking the saddle point problem in high-dimensional non-convex optimization. Advances in
+Neural Information Processing Systems, 27, 2014.
+A. Deligkas, J. Fearnley, A. Hollender, and T. Melissourgos. Pure-circuit: Strong inapproximability
+for PPAD. In 2022 IEEE 63rd Annual Symposium on Foundations of Computer Science (FOCS),
+pages 159–170. IEEE, 2022.
+Y. Feng, Z. Huang, and T. Wang. Lipschitz bandits with batched feedback. Advances in Neural
+Information Processing Systems, 35:19836–19848, 2022.
+B. Gao and L. Pavel. On the properties of the softmax function with application in game theory and
+reinforcement learning. arXiv preprint arXiv:1704.00805, 2017.
+10
+
+Published as a conference paper at ICLR 2024
+I. Gemp, R. Savani, M. Lanctot, Y. Bachrach, T. Anthony, R. Everett, A. Tacchetti, T. Eccles, and
+J. Kramár. Sample-based approximation of Nash in large many-player games via gradient descent.
+In Proceedings of the 21st International Conference on Autonomous Agents and Multiagent
+Systems, pages 507–515, 2022.
+B. Ghojogh, A. Ghodsi, F. Karray, and M. Crowley. KKT conditions, first-order and second-order
+optimization, and distributed optimization: tutorial and survey. arXiv preprint arXiv:2110.01858,
+2021.
+I. Goodfellow, J. Pouget-Abadie, M. Mirza, B. Xu, D. Warde-Farley, S. Ozair, A. Courville, and
+Y. Bengio. Generative adversarial nets. Advances in Neural Information Processing Systems, 27,
+2014.
+N. Hansen, S. D. Müller, and P. Koumoutsakos. Reducing the time complexity of the derandomized
+evolution strategy with covariance matrix adaptation (CMA-ES). Evolutionary computation, 11(1):
+1–18, 2003.
+J. C. Harsanyi, R. Selten, et al. A general theory of equilibrium selection in games. MIT Press Books,
+1, 1988.
+S. Hart and A. Mas-Colell. A simple adaptive procedure leading to correlated equilibrium. Econo-
+metrica, 68(5):1127–1150, 2000.
+E. Hazan, K. Singh, and C. Zhang. Efficient regret minimization in non-convex games. In Interna-
+tional Conference on Machine Learning, pages 1433–1441. PMLR, 2017.
+E. Janovskaja. Equilibrium points in polymatrix games. Lithuanian Mathematical Journal, 8(2):
+381–384, 1968.
+M. Lanctot, V. Zambaldi, A. Gruslys, A. Lazaridou, K. Tuyls, J. Pérolat, D. Silver, and T. Graepel.
+A unified game-theoretic approach to multiagent reinforcement learning. In Advances in Neural
+Information Processing Systems, pages 4190–4203, 2017.
+M. Lanctot, E. Lockhart, J.-B. Lespiau, V. Zambaldi, S. Upadhyay, J. Pérolat, S. Srinivasan, F. Tim-
+bers, K. Tuyls, S. Omidshafiei, D. Hennes, D. Morrill, P. Muller, T. Ewalds, R. Faulkner, J. Kramár,
+B. D. Vylder, B. Saeta, J. Bradbury, D. Ding, S. Borgeaud, M. Lai, J. Schrittwieser, T. Anthony,
+E. Hughes, I. Danihelka, and J. Ryan-Davis. OpenSpiel: A framework for reinforcement learning
+in games. CoRR, abs/1908.09453, 2019. URL http://arxiv.org/abs/1908.09453.
+S. Leonardos, G. Piliouras, and K. Spendlove. Exploration-exploitation in multi-agent competition:
+convergence with bounded rationality. Advances in Neural Information Processing Systems, 34:
+26318–26331, 2021.
+W. Li, H. Li, J. Honorio, and Q. Song. Pyxab – a python library for X-armed bandit and online
+blackbox optimization algorithms, 2023. URL https://arxiv.org/abs/2303.04030.
+C. K. Ling, F. Fang, and J. Z. Kolter. What game are we playing? end-to-end learning in normal
+and extensive form games. In Proceedings of the 27th International Joint Conference on Artificial
+Intelligence, pages 396–402, 2018.
+J. Mairal. Optimization with first-order surrogate functions. In International Conference on Machine
+Learning, pages 783–791. PMLR, 2013.
+S. Mandt, M. D. Hoffman, and D. M. Blei. Stochastic gradient descent as approximate Bayesian
+inference. Journal of Machine Learning Research, 18:1–35, 2017.
+L. Marris, I. Gemp, and G. Piliouras. Equilibrium-invariant embedding, metric space, and fundamental
+set of 2x2 normal-form games. arXiv preprint arXiv:2304.09978, 2023.
+R. D. McKelvey and T. R. Palfrey. Quantal response equilibria for normal form games. Games and
+Economic Behavior, 10(1):6–38, 1995.
+R. D. McKelvey, A. M. McLennan, and T. L. Turocy. Gambit: Software tools for game theory,
+version 16.0.1, 2016.
+11
+
+Published as a conference paper at ICLR 2024
+D. Milec, J. ˇCern`y, V. Lis`y, and B. An. Complexity and algorithms for exploiting quantal opponents
+in large two-player games. Proceedings of the AAAI Conference on Artificial Intelligence, 35(6):
+5575–5583, 2021.
+P. R. Milgrom and R. J. Weber. A theory of auctions and competitive bidding. Econometrica: Journal
+of the Econometric Society, pages 1089–1122, 1982.
+K. G. Murty and S. N. Kabadi. Some NP-complete problems in quadratic and nonlinear programming.
+Technical report, 1985.
+H. Nikaidô and K. Isoda. Note on non-cooperative convex games. Pacific Journal of Mathematics, 5
+(1):807815, 1955.
+E. Nudelman, J. Wortman, Y. Shoham, and K. Leyton-Brown. Run the GAMUT: A comprehensive
+approach to evaluating game-theoretic algorithms. In AAMAS, volume 4, pages 880–887, 2004.
+G. Ostrovski and S. van Strien. Payoff performance of fictitious play. Journal of Dynamics and
+Games, 1(4):621–638, 2014.
+J. Pérolat, S. Perrin, R. Elie, M. Laurière, G. Piliouras, M. Geist, K. Tuyls, and O. Pietquin. Scaling
+mean field games by online mirror descent. In Proceedings of the 21st International Conference
+on Autonomous Agents and Multiagent Systems, 2022.
+T. Popoviciu. Sur les équations algébriques ayant toutes leurs racines réelles. Mathematica, 9
+(129-145):20, 1935.
+A. Raghunathan, A. Cherian, and D. Jha. Game theoretic optimization via gradient-based Nikaido-
+Isoda function. In International Conference on Machine Learning, pages 5291–5300. PMLR,
+2019.
+S. Shalev-Shwartz and Y. Singer. Convex repeated games and Fenchel duality. Advances in Neural
+Information Processing Systems, 19, 2006.
+S. Shalev-Shwartz et al. Online learning and online convex optimization. Foundations and Trends®
+in Machine Learning, 4(2):107–194, 2012.
+Y. Shoham and K. Leyton-Brown. Multiagent systems: Algorithmic, game-theoretic, and logical
+foundations. Cambridge University Press, 2008.
+M. Valko, A. Carpentier, and R. Munos. Stochastic simultaneous optimistic optimization. In
+International Conference on Machine Learning, pages 19–27. PMLR, 2013.
+B. Wiedenbeck and E. Brinkman. Data structures for deviation payoffs. In Proceedings of the 22nd
+International Conference on Autonomous Agents and Multiagent Systems, 2023.
+Y. Zhou, J. Li, and J. Zhu. Identify the Nash equilibrium in static games with random payoffs. In
+International Conference on Machine Learning, pages 4160–4169. PMLR, 2017.
+12
+
+Published as a conference paper at ICLR 2024
+APPENDIX: APPROXIMATING NASH EQUILIBRIA IN NORMAL-FORM GAMES
+VIA STOCHASTIC OPTIMIZATION
+A Loss with its Properties and Derivatives
+14
+A.1
+Loss: Connection to Exploitability, Unbiased Estimation, and Upper Bounds . . . .
+14
+A.2
+QREs Approximate NEs at Low Temperature . . . . . . . . . . . . . . . . . . . .
+19
+A.3
+Gradient of Loss
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+21
+A.4
+Bound on Gradient / Lipschitz Property
+. . . . . . . . . . . . . . . . . . . . . . .
+22
+A.5
+Hessian of Loss . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+23
+B
+Global Convergence Guarantees
+26
+B.1
+Maps from Hypercube to Simplex Product . . . . . . . . . . . . . . . . . . . . . .
+26
+B.2
+Near Optimality & Zooming Dimension . . . . . . . . . . . . . . . . . . . . . . .
+29
+B.3
+D-BLiN . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+32
+B.4
+Bounded Diameters and Well-shaped Cells . . . . . . . . . . . . . . . . . . . . . .
+37
+B.5
+Stochastic Simultaneous Optimistic Optimization . . . . . . . . . . . . . . . . . .
+39
+B.6
+Regret to PAC Bounds
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+41
+B.7
+Complexity of Polymatrix Games
+. . . . . . . . . . . . . . . . . . . . . . . . . .
+43
+C Experimental Setup and Details
+45
+C.1
+GAMBIT . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+45
+C.2
+Loss Visualization and Rank Test . . . . . . . . . . . . . . . . . . . . . . . . . . .
+45
+C.3
+Saddle Point Analysis . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+47
+C.4
+SGD on Classical Games . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+47
+C.5
+BLiN on Artificial Game . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+47
+13
+
+Published as a conference paper at ICLR 2024
+A
+LOSS WITH ITS PROPERTIES AND DERIVATIVES
+In this section, we construct our loss function and derive many of its properties and derivatives (e.g.,
+gradient and hessian) useful for analyzing and executing optimization algorithms.
+A.1
+LOSS: CONNECTION TO EXPLOITABILITY, UNBIASED ESTIMATION, AND UPPER BOUNDS
+A.1.1
+KKT CONDITIONS IMPLY FIXED POINT SUFFICIENCY
+Consider the following constrained optimization problem:
+max
+x∈Rd f(x)
+(14a)
+s.t. gi(x) ≤0 ∀i
+(14b)
+hj(x) = 0 ∀j
+(14c)
+where f is concave and gi and hj represent inequality and equality constraints respectively. If gi
+and hi are affine functions, then any maximizer x∗of f must satisfy the following necessary and
+sufficient KKT conditions (Ghojogh et al., 2021; Boyd and Vandenberghe, 2004):
+• Stationarity: 0 ∈∂f(x∗) −P
+j λj∂hj(x∗) −P
+i µi∂gi(x∗)
+• Primal feasibility: hj(x∗) = 0 for all j and gi(x∗) ≤0 for all i
+• Dual feasibility: µi ≥0 for all i
+• Complementary slackness: µigi(x∗) = 0 for all i.
+Lemma 1. Assuming player k’s utility, uk(xk, x−k), is concave in its own strategy xk, a strategy in
+the interior of the simplex is a best response BRk if and only if it has zero projected-gradient2 norm:
+BRk ∈
+ int∆∩arg max
+z
+uk(z, x−k) −uk(xk, x−k
+
+⇐⇒(BRk ∈int∆) ∧(||ΠT ∆[∇k
+BRk]|| = 0).
+Proof. Consider the problem of formally computing ϵk(x) = maxz∈int∆uk(z, x−k)−uk(xk, x−k):
+max
+z∈Rd uk(z, x−k) −uk(xk, x−k)
+(15a)
+s.t. −zk ≤0 ∀k
+(15b)
+1 −
+X
+k
+zk = 0.
+(15c)
+Note that the objective is linear (concave) in z and the constraints are affine, therefore the KKT
+conditions are necessary and sufficient for optimality. Recall that we assume that the solution z∗
+lies in the interior of the simplex, i.e., z∗
+k > 0 for each k. Also, let ek be a onehot vector, i.e., a
+zeros vector except with a 1 at index k. Mapping the KKT conditions onto this problem yields the
+following:
+• Stationarity: 0 ∈∂uk(z∗, x−k) + λ1 + P
+k µkek
+• Primal feasibility: P
+k z∗
+k = 1 for all k
+• Dual feasibility: µi ≥0 for all k
+• Complementary slackness: −µkz∗
+k = 0 for all k.
+For any point z∗∈int∆, primal feasibility will be satisfied. Given our assumption that z∗
+k > 0,
+by complementary slackness and dual feasibility, each µk must be identically zero. This implies
+2Not to be confused with the nonlinear (i.e., introduces bias) projected gradient operator introduced in (Hazan
+et al., 2017).
+14
+
+Published as a conference paper at ICLR 2024
+the stationarity condition can be simplified to 0 ∈∂uk(z∗, x−k) + λ1. Rearranging terms (and
+repurposing λ) we find that for any z∗, there exists a λ such that
+λ1 ∈∂uk(z∗, x−k).
+(16)
+Equivalently, ∂uk(z∗, x−k) ∝1 at z∗∈int∆. Any vector proportional to the ones vector has zero
+projected-gradient norm, completing the claim: [I −
+1
+mk 11⊤](λ1) = λ(1 −mk
+mk 1) = 0.
+A.1.2
+NORM OF PROJECTED-GRADIENT AND EQUIVALENCE TO NFG EXPLOITABILITY WITH
+APPROXIMATE BEST RESPONSES
+Proposition 1. The loss L is equivalent to NashConv, but where player k’s best response is approx-
+imated by a single step of projected-gradient ascent with step size ηk: aBRk = xk + ηkΠT ∆(∇k
+xk).
+Proof. Define an approximate best response as the result of a player adjusting their strategy via a
+projected-gradient ascent step, i.e., aBRk = xk + ηkΠT ∆(∇k
+xk) for player k.
+In a normal form game, player k’s utility at this new strategy is
+uk(aBRk, x−k) = (∇k
+xk)⊤(xk + ηkΠT ∆(∇k
+xk)) = uk(x) + ηk(∇k
+xk)⊤ΠT ∆(∇k
+xk).
+(17)
+Therefore, the amount player k gains by playing aBR is
+ˆϵk(x) = uk(aBRk, x−k) −uk(x)
+(18a)
+= ηk(∇k
+xk)⊤ΠT ∆(∇k
+xk)
+(18b)
+= ηk
+ ∇k
+xk −1
+mk
+(1⊤∇k
+xk)1
+⊤ΠT ∆(∇k
+xk)
+(18c)
+= ηk||ΠT ∆(∇k
+xk)||2
+(18d)
+where the third equality follows from the fact that the projected-gradient, ΠT ∆(∇k
+xk), is orthogonal
+to the ones vector.
+A.1.3
+CONNECTION TO TRUE EXPLOITABILITY
+Lemma 2. The amount a player can gain by deviating is upper bounded by a quantity proportional
+to the norm of the projected-gradient:
+ϵk(x) ≤
+√
+2||ΠT ∆(∇k
+xk)||.
+(19)
+Proof. Let z be any point on the simplex. Then by concavity of uk with respect to z,
+uk(z, x−k) −uk(x) ≤(∇k
+xk)⊤(z −xk)
+(20a)
+= (∇k
+xk)⊤(z −xk) −1
+mk
+(1⊤∇k
+xk)
+1−1=0
+z
+}|
+{
+1⊤(z −xk)
+(20b)
+= (ΠT ∆(∇k
+xk))⊤(z −xk)
+|
+{z
+}
+Diam(∆)≤
+√
+2
+(20c)
+≤
+√
+2||ΠT ∆(∇k
+xk)||.
+(Cauchy-Schwarz)
+(20d)
+Continuing, we can prove a bound on ϵ in terms of the projected-gradient loss:
+Lemma 3. The exploitability, ϵ, of a joint strategy x, is upper bounded as a function of our proposed
+loss:
+ϵ ≤
+r
+2n
+mink ηk
+p
+L(x).
+(21)
+15
+
+Published as a conference paper at ICLR 2024
+Proof.
+ϵ = max
+k
+max
+z
+uk(z, x−k) −uk(x)
+(22a)
+≤
+X
+k
+max
+z
+uk(z, x−k) −uk(x)
+(22b)
+≤
+X
+k
+√
+2||ΠT ∆(∇k
+xk)||2
+(Lemma 2)
+(22c)
+=
+√
+2
+
+||ΠT ∆(∇1
+x1)||2, . . . , ||ΠT ∆(∇n
+xn)||2
+
+
+1
+(22d)
+≤
+√
+2n
+
+||ΠT ∆(∇1
+x1)||2, . . . , ||ΠT ∆(∇n
+xn)||2
+
+
+2
+(22e)
+=
+√
+2n
+sX
+k
+||ΠT ∆(∇kxk)||2
+2
+(22f)
+=
+√
+2n
+sX
+k
+ 1
+ηk
+
+ηk||ΠT ∆(∇kxk)||2
+2
+(22g)
+≤
+r
+2n
+mink ηk
+sX
+k
+ηk||ΠT ∆(∇kxk)||2
+2
+(22h)
+=
+r
+2n
+mink ηk
+p
+L(x).
+(22i)
+Lemma 4. The entropy regularized exploitability, ϵQRE, of a joint strategy x, is upper bounded as a
+function of our proposed loss:
+ϵQRE ≤
+r
+2n
+mink ηk
+p
+Lτ(x).
+(23)
+Proof. Recall that uτ
+k(xk, x−k) is also concave with respect to xk. Then
+ϵQRE = max
+k
+max
+z
+uτ
+k(z, x−k) −uτ
+k(x)
+(24a)
+≤
+X
+k
+max
+z
+uτ
+k(z, x−k) −uτ
+k(x)
+(24b)
+≤
+X
+k
+√
+2||ΠT ∆(∇kτ
+xk)||2
+(Lemma 2)
+(24c)
+=
+√
+2
+
+||ΠT ∆(∇1τ
+x1)||2, . . . , ||ΠT ∆(∇nτ
+xn)||2
+
+
+1
+(24d)
+≤
+√
+2n
+
+||ΠT ∆(∇1τ
+x1)||2, . . . , ||ΠT ∆(∇nτ
+xn)||2
+
+
+2
+(24e)
+=
+√
+2n
+sX
+k
+||ΠT ∆(∇kτ
+xk)||2
+2
+(24f)
+≤
+√
+2n
+sX
+k
+ 1
+ηk
+
+ηk||ΠT ∆(∇kτ
+xk)||2
+2
+(24g)
+≤
+r
+2n
+mink ηk
+sX
+k
+ηk||ΠT ∆(∇kτ
+xk)||2
+2
+(24h)
+=
+r
+2n
+mink ηk
+p
+Lτ(x).
+(24i)
+16
+
+Published as a conference paper at ICLR 2024
+A.1.4
+UNBIASED ESTIMATION
+Lemma 5. An unbiased estimate of L(x) can be obtained by drawing two samples (pure strategies)
+from each players’ mixed strategy and observing payoffs.
+Proof. Define ˆ∇k(1)
+xk
+as a random, unbiased gradient estimate (see Table 2). Let ˆ∇k(2)
+xk
+be independent
+and distributed identically to ˆ∇k(1)
+xk . Then,
+Ea(1)∼x,a(2)∼x[
+X
+k
+ηk( ˆ∇k(1)
+xk
+−1
+mk
+(1⊤ˆ∇k(1)
+xk )1
+|
+{z
+}
+projected-gradient 1
+)⊤( ˆ∇k(2)
+xk
+−1
+mk
+(1⊤ˆ∇k(2)
+xk )1
+|
+{z
+}
+projected-gradient 2
+)]
+(25a)
+=
+X
+k
+ηkEa(1)∼x,a(2)∼x[( ˆ∇k(1)
+xk
+−1
+mk
+(1⊤ˆ∇k(1)
+xk )1)⊤( ˆ∇k(2)
+xk
+−1
+mk
+(1⊤ˆ∇k(2)
+xk )1)]
+(25b)
+=
+X
+k
+ηkEa(1)∼x[( ˆ∇k(1)
+xk
+−1
+mk
+(1⊤ˆ∇k(1)
+xk )1)]⊤Ea(2)∼x[( ˆ∇k(2)
+xk
+−1
+mk
+(1⊤ˆ∇k(2)
+xk )1)]
+(25c)
+=
+X
+k
+ηk(∇k
+xk −1
+mk
+(1⊤∇k
+xk)1)⊤(∇k
+xk −1
+mk
+(1⊤∇k
+xk)1)
+(25d)
+=
+X
+k
+ηk||ΠT ∆(∇k
+xk)||2
+(25e)
+= L(x)
+(25f)
+where the first equality follows from linearity of expectation, the second from independence of
+random variables, and the third from Ea(p)∼x[ ˆ∇k(p)
+xk ] = ∇k
+xk, i.e., ˆ∇k(p)
+xk
+is an unbiased estimator of
+player k’s gradient. Therefore, equation (25a) comprises an unbiased estimate of L(x) proving the
+claim.
+Lemma 6. The loss formed as the sum of the squared norms of the projected-gradients, Lτ, can be
+decomposed into three terms as follows:
+Lτ(x) =
+X
+k
+ηkx⊤
+q B⊤
+kqBkqxq
+|
+{z
+}
+(A)
++ 2
+X
+k
+ηkE⊤
+k Bkqxq
+|
+{z
+}
+(B)
++
+X
+k
+ηkE⊤
+k Ek
+|
+{z
+}
+(C)
+(26)
+where q is any player other than k.
+Proof. Let Sτ = −τ P
+l xkl ln(xkl) so that ∂Sτ
+∂xk = −τ(ln(xk) + 1). Note that ΠT ∆[ ∂Sτ
+∂xk ] =
+−τΠT ∆[ln(xk)].
+Lτ(x) =
+X
+k
+ηk(ΠT ∆(∇kτ
+xk))⊤ΠT ∆(∇kτ
+xk)
+(27a)
+=
+X
+k
+ηk[Hk
+kqxq + ∂Sτ
+∂xk
+]⊤[I −1
+mk
+11⊤][I −1
+mk
+11⊤][Hk
+kqxq + ∂Sτ
+∂xk
+]
+(27b)
+=
+X
+k
+ηk
+
+x⊤
+q [Hk
+kq]⊤[I −1
+mk
+11⊤]2[Hk
+kq]xq + 2[∂Sτ
+∂xk
+]⊤[I −1
+mk
+11⊤]2[Hk
+kqxq]
+(27c)
++ [∂Sτ
+∂xk
+]⊤[I −1
+mk
+11⊤]2[∂Sτ
+∂xk
+]
+
+(27d)
+=
+X
+k
+ηkx⊤
+q B⊤
+kqBkqxq
+|
+{z
+}
+(A)
++ 2
+X
+k
+ηkE⊤
+k Bkqxq
+|
+{z
+}
+(B)
++
+X
+k
+ηkE⊤
+k Ek
+|
+{z
+}
+(C)
+(27e)
+where Bkq = [I −
+1
+mk 11⊤]Hk
+kq and Ek = [I −
+1
+mk 11⊤][ ∂Sτ
+∂xk ] = −τ[I −
+1
+mk 11⊤] ln(xk).
+17
+
+Published as a conference paper at ICLR 2024
+A.1.5
+BOUND ON LOSS
+By Proposition 1, Equation (18d), we can also rewrite this loss as a weighted sum of 2-norms,
+L(x) = P
+k ηk||∇k
+xk −µk||2
+2 where µk =
+1
+mk (1⊤∇k
+xk) ∈[0, 1] for brevity. This will allow us to
+more easily analyze our loss.
+Lemma 7. Assume payoffs are bounded in [0, 1], then setting ηk ≤
+4
+nmk or ηk ≤
+4
+n ¯m or P
+k ηk ≤4
+¯m
+ensures 0 ≤L(x) ≤1 for all x ∈X.
+Proof.
+0 ≤L(x) =
+X
+k
+ηk||∇k
+xk −µk||2
+2
+(28a)
+=
+X
+k
+ηkmk
+h 1
+mk
+X
+l
+(∇k
+xkl −µk)2i
+(28b)
+=
+X
+k
+ηkmkV ar[∇k
+xk]
+(28c)
+≤1
+4
+X
+k
+ηkmk
+(28d)
+≤1
+4(max
+k
+ηk)
+  X
+k
+mk
+
+(28e)
+= 1
+4(max
+k
+ηk)n ¯m ≤1
+(28f)
+=⇒(max
+k
+ηk) ≤
+4
+n ¯m
+(28g)
+where the first inequality follows from Popoviciu’s inequality (Popoviciu, 1935): the variance of a
+bounded random variable X is upper bounded by V ar[X] ≤1
+4(maxX −minX)2.
+Next, we establish the following useful lemmas.
+Lemma 8. The matrix I −
+1
+mk 11⊤is a projection matrix and therefore idempotent. It is also
+symmetric, which implies it is its own square root.
+Proof.
+[I −1
+mk
+11⊤]⊤[I −1
+mk
+11⊤] = I −2
+mk
+11⊤+ 1
+m2
+k
+1(1⊤1)1⊤
+(29a)
+= I −2
+mk
+11⊤+ 1
+mk
+11⊤
+(29b)
+= [I −1
+mk
+11⊤].
+(29c)
+Lemma 9. The product A[Im −1
+m1m1⊤
+m]pB for any integer p > 0 has entries whose absolute
+value is bounded by m
+4 (Amax −Amin)(Bmax −Bmin) where Amin, Amax, Bmin, Bmax represent the
+minima and maxima of the matrices respectively.
+Proof. The matrix [I −1
+m11⊤] is idempotent (Lemma 8) so we can rewrite the product for any p as
+A[I −1
+m11⊤][I −1
+m11⊤]B.
+(30)
+The matrix [I −1
+m11⊤] has the property that it removes the mean from every row of a matrix when
+right multiplied against it, i.e., A[I −1
+m11⊤] removes the means from the rows of A. Similarly, left
+multiplying it removes the means from the columns. Let ˜A and ˜B represent these mean-centered
+18
+
+Published as a conference paper at ICLR 2024
+results respectively. The absolute value of the ijth entry in the resulting product can then be
+recognized as
+
+X
+k
+˜Aik ˜Bkj
+ =
+
+X
+k
+
+Aik −1
+m
+X
+k′
+Aik′
+
+Bkj −1
+m
+X
+k′
+Bk′j
+
+(31a)
+= |m · Corr(Ai,·, B·,j) · σAi,·σB·,j|
+(31b)
+≤mσAi,·σB·,j.
+(31c)
+By Popoviciu’s inequality (Popoviciu, 1935), we know the variance of a bounded random variable
+X is upper bounded by V ar[X] ≤1
+4(maxX −minX)2. Hence its standard deviation is bounded by
+Std[X] ≤1
+2(maxX −minX). Plugging these bounds for A and B into equation (31c) completes
+the claim.
+Lemma 10. Assume payoffs are bounded in [0, 1], then
+|Lτ(x)| ≤1
+4
+ max
+k
+ηk
+
+n ¯m
+ τ ln
+
+1
+xmin
+
++ 1
+2
+(32)
+for any x such that xkl ≥xmin ∀k, l.
+Proof. First note that for payoffs in [0, 1], the entries in
+ΠT ∆(∇kτ
+xk) = ΠT ∆
+ ∇k
+xk −τ(ln(xk) + 1)
+
+= ΠT ∆(∇k
+xk −τ ln(xk))
+(33)
+are bounded within [0, τ ln(
+1
+xmin )+1] with a range of τ ln(
+1
+xmin )+1. Then starting from the definition
+of Lτ and applying Lemma 9, we find
+|Lτ(x)| =
+
+X
+k
+ηk||ΠT ∆(∇kτ
+xk)||2
+(34a)
+≤1
+4
+X
+k
+ηkmk
+ τ ln
+
+1
+xmin
+
++ 1
+2
+(34b)
+≤1
+4
+ τ ln
+
+1
+xmin
+
++ 1
+2 max
+k
+ηk
+ X
+k
+mk
+(34c)
+= 1
+4
+ max
+k
+ηk
+
+n ¯m
+ τ ln
+
+1
+xmin
+
++ 1
+2.
+(34d)
+A.2
+QRES APPROXIMATE NES AT LOW TEMPERATURE
+Lemma 11. Setting τ = ln(1/p)−1 with p ∈(0, 1) and payoffs in [0, 1] ensures that any QRE
+contains probabilities greater than
+p
+maxk mk .
+Proof. Let m∗= maxk mk and ∇k
+xk be player k’s gradient. Recall that a QRE(τ), specifically a logit
+equilibrium, satisfies the fixed point equation xk = softmax(
+∇k
+xk
+τ ) for all k. Then the probability
+for any action in a QRE strategy profile, x, is lower bounded as
+xkl ≥min
+k min
+l
+{xkl} ≥
+min
+x′|x′ is QRE min
+k min
+l
+{x′
+kl}
+(35a)
+= min
+∇kxk
+min
+k min
+l
+
+softmax
+∇k
+xk
+τ
+
+l
+(35b)
+=
+e0
+(m∗−1)e
+1
+τ + e0
+(35c)
+def
+= xmin
+(35d)
+where equation (35c) follows from minimizing the numerator and maximizing the denominator of the
+softmax formula subject to the payoff constraints.
+19
+
+Published as a conference paper at ICLR 2024
+Rearranging terms, we find
+e
+1
+τ =
+1
+m∗−1
+ 1
+xmin
+−1
+
+=⇒τ =
+1
+ln
+
+1
+m∗−1
+ 1
+xmin −1
+.
+(36)
+Let p ∈(0, 1) such that xmin =
+p
+maxk mk =
+p
+m∗, then
+τ =
+1
+ln
+
+1
+m∗−1
+ 1
+xmin −1
+
+(37a)
+=
+1
+ln
+
+1
+m∗−1
+  m∗
+p −1
+
+(37b)
+=
+1
+ln
+
+m∗−p
+m∗−1
+1
+p
+
+(37c)
+≤
+1
+ln( 1
+p).
+(37d)
+This implies if we set τ = ln(1/p)−1, then we are guaranteed that all QREs contain probabilities
+greater than xmin =
+p
+maxk mk .
+Corollary 1. Assume payoffs are bounded in [0, 1] and τ = ln(1/p)−1, then
+|Lτ(x)| ≤1
+4(max
+k
+ηk)n ¯m
+ ln(m∗)
+ln(1/p) + 2
+2
+.
+(38)
+Proof. Starting with Lemma 10 and applying Lemma 11 , we find
+|Lτ(x)| ≤1
+4(max
+k
+ηk)n ¯m
+ τ ln
+
+1
+xmin
+
++ 1
+2
+(39a)
+= 1
+4(max
+k
+ηk)n ¯m
+
+1
+ln(1/p) ln
+m∗
+p
+
++ 1
+2
+(39b)
+= 1
+4(max
+k
+ηk)n ¯m
+
+1
+ln(1/p)
+ ln(m∗) + ln(1/p)
+
++ 1
+2
+(39c)
+= 1
+4(max
+k
+ηk)n ¯m
+ ln(m∗)
+ln(1/p) + 2
+2
+.
+(39d)
+Lemma 12 (Low Temperature Approximate QREs are Approximate Nash Equilibria). Let ∇kτ
+xk be
+player k’s entropy regularized gradient and x be an approximate QRE. Then it holds that
+uk(BRk, x−k) −uk(x) ≤τ log(mk) +
+√
+2||ΠT ∆(∇kτ
+xk)||.
+(40)
+Proof. Beginning with the definition of exploitability, we find
+uk(BRk, x−k) −uk(x) =
+ uk(BRk, x−k) + τS(BRk) −τS(BRk)
+
+(41a)
+−
+ uk(x) + τS(xk) −τS(xk)
+
+= uτ
+k(BRk, x−k) −uτ
+k(x) + τ
+ S(xk) −S(BRk)
+
+(41b)
+≤
+max
+z∈∆mk−1 uτ
+k(z, x−k) −uτ
+k(x) + τ
+max
+z′∈∆mk−1 S(z′)
+(41c)
+≤
+√
+2||ΠT ∆(∇kτ
+xk)|| + τ
+max
+z′∈∆mk−1 S(z′)
+(41d)
+≤
+√
+2||ΠT ∆(∇kτ
+xk)|| + τ log(mk)
+(41e)
+where the second equality follows from the definition of player k’s entropy regularized utility uτ
+k, the
+first inequality from nonnegativity of entropy S, the second inequality from concavity of uτ
+k with
+respect to its first argument (Lemma 2), and the last from the maximum possible value of Shannon
+entropy over distributions on mk actions.
+20
+
+Published as a conference paper at ICLR 2024
+Lemma 13 (Lτ Scores Nash Equilibria). Let Lτ(x) be our proposed entropy regularized loss
+function and x be an approximate QRE. Then it holds that
+ϵ ≤τ log
+ Y
+k
+mk
+
++
+r
+2n
+mink ηk
+p
+Lτ(x).
+(42)
+Proof. Beginning with the definition of exploitability and applying Lemma 12, we find
+ϵ = max
+k
+uk(BRk, x−k) −uk(x)
+(recall each ϵk ≥0)
+(43a)
+≤
+X
+k
+uk(BRk, x−k) −uk(x)
+(43b)
+≤
+X
+k
+h
+τ log(mk) +
+√
+2||ΠT ∆(∇kτ
+xk)||
+i
+(43c)
+= τ
+X
+k
+log(mk) +
+X
+k
+√
+2||ΠT ∆(∇kτ
+xk)||
+(43d)
+≤τ log
+ Y
+k
+mk
+
++
+r
+2n
+mink ηk
+p
+Lτ(x).
+(43e)
+where the last inequality follows from the same steps (24c)-(24i) outlined in Lemma 4, which
+established the relationship between L(x) and ϵ.
+A.3
+GRADIENT OF LOSS
+Lemma 14. The gradient of Lτ(x) with respect to player l’s strategy xl is
+∇xlL(x) = 2
+X
+k
+ηkB⊤
+klΠT ∆(∇kτ
+xk)
+(44)
+where Bll = −τ[I −
+1
+ml 11⊤]diag
+  1
+xl
+
+and Bkl = [I −
+1
+mk 11⊤]Hk
+kl for k ̸= l.
+Proof. Recall from Lemma 6 that the loss can be decomposed as Lτ(x) = (A) + (B) + (C).
+Then
+Dxl[(A)] = Dxl[
+X
+k
+ηkx⊤
+q B⊤
+kqBkqxq] = 2
+X
+k̸=l
+ηkB⊤
+klBklxl
+(45)
+where q ̸= k and Bkq = [I −
+1
+mk 11⊤][Hk
+kq] does not depend on xk.
+Also, letting Bll = −τ[I −
+1
+ml 11⊤]diag
+  1
+xl
+
+,
+Dxl[(B)] = Dxl[−2τ
+X
+k
+ηk ln(xk)⊤Bkqxq]
+(46a)
+= −2τ
+
+ηlDxl[ln(xl)⊤Blqxq] +
+X
+k̸=l
+ηkDxl[ln(xk)⊤Bklxl]
+
+(46b)
+= −2τ
+
+ηldiag
+  1
+xl
+
+Blqxq +
+X
+k̸=l
+ηkB⊤
+kl ln(xk)
+
+(46c)
+= −2τ
+
+ηl
+
+[I −1
+ml
+11⊤]diag
+  1
+xl
+⊤
+ΠT ∆(∇l) +
+X
+k̸=l
+ηkB⊤
+kl ln(xk)
+
+(46d)
+= 2
+
+ηlB⊤
+ll ΠT ∆(∇l) −τ
+X
+k̸=l
+ηkB⊤
+kl ln(xk)
+
+.
+(46e)
+21
+
+Published as a conference paper at ICLR 2024
+And
+Dxl[(C)] = Dxl[
+X
+k
+ηkτ 2 ln(xk)⊤[I −1
+mk
+11⊤] ln(xk)]
+(47a)
+= 2τ 2h
+ηldiag
+  1
+xl
+
+[I −1
+ml
+11⊤] ln(xl)
+i
+(47b)
+= −2τηl
+
+[I −1
+ml
+11⊤]diag
+  1
+xl
+⊤
+ΠT ∆(−τ ln(xl))
+(47c)
+= 2ηlB⊤
+ll ΠT ∆(−τ ln(xl)).
+(47d)
+Putting these together, we find
+∇xlL(x) = 2
+X
+k̸=l
+ηkB⊤
+kl(Bklxl −τ ln(xk)) + 2ηlB⊤
+ll
+
+ΠT ∆(∇l) + ΠT ∆(−τ ln(xl))
+i
+(48a)
+= 2ηlB⊤
+ll ΠT ∆(∇kτ
+xk) + 2
+X
+k̸=l
+ηkB⊤
+klΠT ∆(∇kτ
+xk)
+(48b)
+= 2
+X
+k
+ηkB⊤
+klΠT ∆(∇kτ
+xk).
+(48c)
+A.3.1
+UNBIASED ESTIMATION
+In order to construct an unbiased estimate for each Bkl, we will need to form an independent unbiased
+estimate of Hk
+kl. Recall that Hk
+kl is simply the expected bimatrix game between players k and l when
+all other players sample their actions according to their current strategies.
+A.4
+BOUND ON GRADIENT / LIPSCHITZ PROPERTY
+Lemma 15. Assume payoffs are upper bounded by 1, then the infinity norm of the gradient is bounded
+as
+||∇xLτ(x)||∞≤1
+2(max
+k
+ηk)
+ τ ln
+
+1
+xmin
+
++ 1
+h
+τm∗
+1
+xmin
+−1
+
++ n ¯m
+i
+.
+(49)
+Proof. Recall from Lemma 14 that the gradient of L(x) with respect to player l’s strategy xl is
+∇xlL(x) = 2
+X
+k
+ηkB⊤
+klΠT ∆(∇kτ
+xk)
+(50)
+where Bll = −τ[I −
+1
+ml 11⊤]diag
+  1
+xl
+
+and Bkl = [I −
+1
+mk 11⊤]Hk
+kl for k ̸= l.
+As noted before in the derivation of Lemma 10, for payoffs in [0, 1], the entries in ∇kτ
+xk = ∇k
+xk −
+τ ln(xk) are bounded within [0, τ ln(
+1
+xmin ) + 1] with a range τ ln(
+1
+xmin ) + 1. Similarly, the entries in
+−τdiag
+  1
+xl
+
+are bounded within [−τ
+1
+xmin , −τ] with a range of τ(
+1
+xmin −1).
+22
+
+Published as a conference paper at ICLR 2024
+The infinity norm of the gradient can then be bounded as
+||∇xLτ(x)||∞= max
+l
+||∇xlL(x)||∞
+(51a)
+= max
+l
+||2
+X
+k
+ηkB⊤
+klΠT ∆(∇kτ
+xk)||∞
+(51b)
+≤2
+X
+k
+ηk max
+l
+||B⊤
+klΠT ∆(∇kτ
+xk)||∞
+(51c)
+≤1
+2
+X
+k̸=l∗
+ηkmk
+ τ ln
+
+1
+xmin
+
++ 1
+
++ 1
+2ηl∗ml∗τ
+
+1
+xmin
+−1
+ τ ln
+
+1
+xmin
+
++ 1
+
+(51d)
+= 1
+2
+ τ ln
+
+1
+xmin
+
++ 1
+h
+ηl∗ml∗τ
+
+1
+xmin
+−1
+
++
+X
+k̸=l∗
+ηkmk
+i
+(51e)
+≤1
+2(max
+k
+ηk)
+ τ ln
+
+1
+xmin
+
++ 1
+h
+τml∗
+
+1
+xmin
+−1
+
++
+X
+k̸=l∗
+mk
+i
+(51f)
+≤1
+2(max
+k
+ηk)
+ τ ln
+
+1
+xmin
+
++ 1
+h
+τm∗
+1
+xmin
+−1
+
++ n ¯m
+i
+(51g)
+where the second inequality follows from Lemma 9.
+Corollary 2. If τ is set according to Lemma 11 as τ = ln(1/p)−1 and payoffs are in [0, 1], then the
+infinity norm of the gradient is bounded as
+||∇xLτ(x)||∞≤1
+2(max
+k
+ηk)
+h ln(m∗)
+ln(1/p) + 2
+ih
+m∗2
+p ln(1/p) + n ¯m
+i
+= 1
+2(max
+k
+ηk)ˆL
+(52)
+where m∗= maxk mk and ˆL is defined implicitly for convenience in other derivations.
+Proof. Starting with Lemma 15 and applying Lemma 11 (i.e., τ = ln(1/p)−1 and xmin =
+p
+m∗with
+payoffs in [0, 1] and where m∗= maxk mk), we find
+||∇xLτ(x)||∞≤1
+2(max
+k
+ηk)
+ τ ln
+
+1
+xmin
+
++ 1
+h
+τm∗ 1
+xmin
+−1
+
++ n ¯m
+i
+(53a)
+= 1
+2(max
+k
+ηk)
+hln(m∗/p)
+ln(1/p) + 1
+ih
+m∗
+ln(1/p)
+ m∗
+p −1
+
++ n ¯m
+i
+(53b)
+≤1
+2(max
+k
+ηk)
+h ln(m∗)
+ln(1/p) + 2
+ih
+m∗2
+p ln(1/p) + n ¯m
+i
+.
+(53c)
+As p →0+, the norm of the gradient blows up because the gradient of Shannon entropy blows up
+for small probabilities. As p →1, the norm of the gradient blows up because we require infinite
+temperature τ to guarantee all QREs are nearly uniform; recall τ is the regularization coefficient on
+the entropy bonus terms which means our modified utilities blow up for large τ.
+A.5
+HESSIAN OF LOSS
+We will now derive the Hessian of our loss. This will be useful in establishing properties about global
+minima that enable the application of tailored minimization algorithms. Let Dz[f(z)] denote the
+differential operator applied to (possibly multivalued) function f with respect to z. For example,
+Dxq[Hk
+lk] = Dxq[xqT k
+qlk] = T k
+qlk where T k
+qlk is player k’s payoff tensor according to the three-way
+approximation between players k, l, and q to the game at x.
+Lemma 16. The Hessian of Lτ(x) can be written
+Hess(Lτ) = 2 ˜B⊤˜B + TΠT ∆( ˜∇τ)
+(54)
+where ˜Bkl = √ηkBkl, ΠT ∆( ˜∇τ) = [η1ΠT ∆(∇1τ
+x1), . . . , ηnΠT ∆(∇nτ
+xn)], and we augment T (the
+3-player tensor approximation to the game, T k
+lqk) so that T l
+lll = τdiag3
+  1
+x2
+l
+
+and otherwise 0.
+23
+
+Published as a conference paper at ICLR 2024
+Proof. Recall the gradient of our proposed loss:
+∇xlL(x) = 2
+X
+k
+ηkB⊤
+klΠT ∆(∇kτ
+xk)
+(55)
+where Bll = −τ[I −
+1
+ml 11⊤]diag
+  1
+xl
+
+and Bkl = [I −
+1
+mk 11⊤]Hk
+kl for k ̸= l.
+Consider the following Jacobians, which will play an auxiliary role in our derivation of the Hessian:
+Dl[Bll] = τ[I −1
+ml
+11⊤]diag3
+  1
+x2
+l
+
+(56a)
+Dq[Bll] = 0
+(56b)
+Dl[Bkl] = 0
+(56c)
+Dq[Bkl] = [I −1
+mk
+11⊤]T k
+klq
+(56d)
+Dk[ΠT ∆(∇kτ
+xk)] = [I −1
+mk
+11⊤]Dk[∇kτ
+xk]
+(56e)
+= [I −1
+mk
+11⊤]Dk[∇k
+xk −τ ln(xk)]
+(56f)
+= [I −1
+mk
+11⊤][−τdiag
+  1
+xk
+
+]
+(56g)
+= Bkk
+(56h)
+Dl[ΠT ∆(∇kτ
+xk)] = [I −1
+mk
+11⊤]Dl[∇kτ
+xk]
+(56i)
+= [I −1
+mk
+11⊤]Dl[∇k
+xk −τ ln(xk)]
+(56j)
+= [I −1
+mk
+11⊤][Hk
+kl]
+(56k)
+= Bkl.
+(56l)
+We can derive the diagonal blocks of the Hessian as
+Dll[L(x)] = Dl[∇xlL(x)]
+(57a)
+= 2Dl[
+X
+k
+ηkB⊤
+klΠT ∆(∇kτ
+xk)]
+(57b)
+= 2
+h
+ηlDl
+
+B⊤
+ll ΠT ∆(∇lτ
+xl)
+
++
+X
+k̸=l
+ηkDl
+
+B⊤
+klΠT ∆(∇kτ
+xk)
+i
+(57c)
+= 2
+h
+ηl
+
+Dl[Bll]⊤ΠT ∆(∇lτ
+xl) + B⊤
+ll Dl[ΠT ∆(∇lτ
+xl)]
+
+(57d)
++
+X
+k̸=l
+ηk
+
+
+Dl[Bkl]⊤ΠT ∆(∇kτ
+xk) + B⊤
+klDl[ΠT ∆(∇kτ
+xk)]
+i
+(57e)
+= 2
+h
+ηl
+
+τdiag3
+  1
+x2
+l
+
+[I −1
+ml
+11⊤]ΠT ∆(∇lτ
+xl) + B⊤
+ll Bll
+
++
+X
+k̸=l
+ηkB⊤
+klBkl
+i
+(57f)
+= 2
+h
+τηldiag
+ [ 1
+x2
+l
+] ⊙ΠT ∆(∇lτ
+xl)
+
++
+X
+k
+ηkB⊤
+klBkl
+i
+(57g)
+24
+
+Published as a conference paper at ICLR 2024
+and the off-diagonal blocks as
+Dlq[L(x)] = Dq[∇xlL(x)]
+(58a)
+= 2Dq[
+X
+k
+ηkB⊤
+klΠT ∆(∇kτ
+xk)]
+(58b)
+= 2
+h
+ηlDq
+
+B⊤
+ll ΠT ∆(∇lτ
+xl)
+
++
+X
+k̸=l
+ηkDq
+
+B⊤
+klΠT ∆(∇kτ
+xk)
+i
+(58c)
+= 2
+h
+ηl
+
+
+Dq[Bll]⊤ΠT ∆(∇lτ
+xl) + B⊤
+ll Dq[ΠT ∆(∇lτ
+xl)]
+
+(58d)
++
+X
+k̸=l
+ηk
+
+Dq[Bkl]⊤ΠT ∆(∇kτ
+xk) + B⊤
+klDq[ΠT ∆(∇kτ
+xk)]
+i
+(58e)
+= 2
+h
+ηlB⊤
+ll Blq +
+X
+k̸=l
+ηk
+
+T k
+lqk[I −1
+mk
+11⊤]ΠT ∆(∇kτ
+xk) + B⊤
+klBkq
+i
+(58f)
+= 2
+h X
+k
+ηkB⊤
+klBkq +
+X
+k̸=l
+ηkT k
+lqkΠT ∆(∇kτ
+xk)
+i
+.
+(58g)
+Therefore, the Hessian can be written concisely as
+2
+ ˜B⊤˜B + TΠT ∆( ˜∇τ)
+
+(59)
+where ˜Bkl = √ηkBkl, ΠT ∆( ˜∇τ) = [η1ΠT ∆(∇1τ
+x1), . . . , ηnΠT ∆(∇nτ
+xn)], and we augment T (the
+3-player tensor approximation to the game, T k
+lqk) so that T l
+lll = τdiag3
+  1
+x2
+l
+
+and otherwise 0.
+25
+
+Published as a conference paper at ICLR 2024
+B
+GLOBAL CONVERGENCE GUARANTEES
+In this section, we analyze the application of optimization techniques such as bandit algorithms and
+gradient descent to our loss function.
+B.1
+MAPS FROM HYPERCUBE TO SIMPLEX PRODUCT
+In this subsection, we derive properties of a map s from the unit-hypercube to the simplex product.
+This map is necessary to to adapt our proposed loss Lτ to the commonly assumed setting in the
+X-armed bandit literature (Bubeck et al., 2011) where the feasible set is a hypercube. We derive
+relevant properties of two such maps: the softmax and a mapping that interprets dimensions of the
+hypercube as angles on a unit-sphere that are then ℓ1-normalized.
+Lemma 17. Let f(x) = −L(s(x)). Then ||∇f(x)||∞≤||J(s(x))⊤||∞||∇L(s(x))||∞.
+Proof.
+||∇f(x)||∞= ||J(s(x))⊤∇L(s(x))||∞≤||J(s(x))⊤||∞||∇L(s(x))||∞.
+(60)
+Lemma 18. The ∞-norm of the Jacobian-transpose of a transformation s(x) applied elementwise
+to a product space is bounded by the ∞-norm of the Jacobian-transpose of a single transformation
+from that product space, i.e., ||J(s(x))⊤||∞≤maxxi∈Xi ||J(s(xi))⊤||∞for any i.
+Proof. Let x ∈X = Qn
+i=1 Xi, Z = Qn
+i=1 Zi and S : X →Z = [s(x1); · · · ; s(xn)]⊤where ;
+denotes column-wise stacking, xi ∈Xi. Also, Xi = Xj and Zi = Zjfor all i and j. Then the
+Jacobian of S(x) is
+J(S(x))⊤=
+
+
+J(s(x1))⊤
+0 . . .
+0
+0
+J(s(x2))⊤. . .
+0
+0
+0 ...
+0
+0
+0 . . .
+J(s(xn))⊤
+
+.
+(61)
+The ∞-norm of this matrix is the max 1-norm of any row. This matrix is diagonal, therefore, the
+∞-norm of each elementwise Jacobian-transpose represents the max 1-norm of the rows spanned
+by its block. Given that the domains, ranges, and transformations s for all blocks are the same,
+their ∞-norms are also the same. The max ∞over the blocks is then equal to the ∞-norm of any
+individual J(s(xi))⊤.
+B.1.1
+HESSIAN OF BANDIT REWARD FUNCTION
+Lemma 19. Let s(x) be a function that maps the unit hypercube to the simplex product (mixed
+strategy space). Then the objective function f(x) = −L(s(x)). The Hessian of −f(x) at an optimum
+x∗in direction ∆is ∆x⊤[Ds(x)⊤HL(x)Ds(x)]
+
+x∗∆x where HL is the Hessian of L and Ds(x) is
+the Jacobian of s(x).
+Proof.
+(D2(L ◦s)(x∗))(∆x, ∆x) = ∆x⊤h X
+i
+=0 at x=x∗
+z
+}|
+{
+∂iL(s(x)) D2hi(x)
+i
+x∗∆x
+(62a)
++ ∆x⊤[Ds(x)⊤HL(x)Ds(x)]
+
+x∗∆x
+= ∆x⊤[Ds(x)⊤HL(x)Ds(x)]
+
+x∗∆x.
+(62b)
+26
+
+Published as a conference paper at ICLR 2024
+Lemma 20. Let s(x) : X →Q
+k ∆mk−1 be an injective function, i.e., x ̸= y =⇒s(x) ̸= s(y).
+Also let J = J(s(x)) be the Jacobian of s with respect to x and ∆x be a nonzero vector in the
+tangent space of X. Then
+J∆x ̸= 0.
+(63)
+Proof. Recall that the ijth entry of the Jacobian represents ∂si
+∂xj so that the ith entry of J∆x is
+[J∆x]i =
+X
+j
+∂si
+∂xj
+∆xj = dsi.
+(64)
+Assume J∆x = 0. This would imply a change in x ∈X results in no change in s (ds = 0),
+contradicting the fact that s is injective. Therefore, we must conclude the claim that J∆x ̸= 0.
+Lemma 21. Let J = J(s(x)) be the Jacobian of any composition of transformations s = st ◦. . . s1
+where st(z) = [zi/ P
+j zj]i. Then J∆x lies in the tangent space of the simplex.
+Proof. We aim to show 1⊤J∆x = 0 for any ∆x and x. By chain rule, the Jacobian of s is
+J = J(s) = Qt′=1
+t′=t J(s′
+t). Therefore, 1⊤J∆x = 1⊤(Qt′=1
+t′=t J(s′
+t))∆x. Consider the first product:
+1⊤J(st) = 0
+(65)
+by Lemma 24. Therefore 1⊤J∆x = 1⊤J(st)(Qt′=1
+t′=t−1 J(s′
+t))∆x = 0⊤(Qt′=1
+t′=t−1 J(s′
+t))∆x = 0.
+This implies J∆x is orthogonal to 1 for any x ∈X and ∆x, therefore J∆x lies in the tangent space
+of the simplex for any x ∈X and ∆x.
+B.1.2
+SOFTMAX MAP
+Let s : [0, 1]d−1 →∆d−1 ∈Rd be the softmax function. See (Gao and Pavel, 2017) for an
+analysis of many of its properties and in the context of game theory. Note that s maps a (d −1)
+dimensional variable to a d dimensional distribution. This can be practically handled by always
+appending a 0 to the (d−1)-dimensional input prior to applying the standard softmax. We perform
+our analysis below in terms of the standard softmax, but note the norms we derive apply to our
+modified (invertible) softmax.
+Standard:
+s(x) =
+1
+Pd
+j=1 exj
+h
+ex1, . . . exd
+i
+.
+(66)
+Modified:
+s(x) =
+1
+1 + Pd−1
+j=1 exj
+h
+ex1, . . . exd−1, 1
+i
+.
+(67)
+Lemma 22. Let J be the Jacobian of the softmax operator. Then ||J||∞≤2 and ||J⊤||∞≤2.
+Proof. Let Si represent the ith entry of S = softmax(z) for any z ∈Rm. Then the 1-norm of row
+i is upper bounded as
+DjSi = Si(δij −Sj)
+(68a)
+=⇒
+X
+j
+|DjSi| =
+X
+j
+|Si(δij −Sj)|
+(68b)
+≤
+X
+j
+|δijSi| + |SiSj|
+(68c)
+= Si +
+X
+j
+SiSj
+(68d)
+= Si + Si
+X
+j
+Sj
+(68e)
+= 2Si
+(68f)
+≤2 ∀i.
+(68g)
+27
+
+Published as a conference paper at ICLR 2024
+Also, the 1-norm of column j is upper bounded similarly as
+(69a)
+X
+i
+|DjSi| =
+X
+i
+|Si(δij −Sj)|
+(69b)
+≤
+X
+i
+|δijSi| + |SiSj|
+(69c)
+= Sj +
+X
+i
+SiSj
+(69d)
+= Si + Sj
+X
+i
+Si
+(69e)
+= 2Sj
+(69f)
+≤2 ∀j.
+(69g)
+The ∞-norm of a matrix is the maximum 1-norm of any row. Therefore, ||J||∞and ||J⊤||∞are both
+upper bounded by 2.
+Corollary 3. Let J be the Jacobian of the softmax operator. Then ||J||2 ≤2 and ||J⊤||2 ≤2.
+Proof. The Gershgorin circle theorem states that every eigenvalue of J lies within one of the discs
+centered at the diagonal of J with radius equal to the 1-norm of the row (excluding the diagonal
+term). The Jacobian of the softmax operator contains only nonnegative diagonal terms, therefore,
+the 1-norm of any entire row also represents the maximum magnitude of any eigenvalue allowed by
+any Gershgorin disc. In addition, J is symmetric and therefore, the magnitude of its eigenvalues are
+equivalent to its singular values. Therefore by Lemma 22, ||J||2 ≤2.
+B.1.3
+SPHERICAL MAP
+For spherical coordinates, let s(x) = n(l(c(x))) where c(x) = π/2x, l(ψ) maps angles to the unit
+sphere, and n(z) = [zi/ P
+j zj]i.
+Definition 2. Define l(ψ) as the transformation to the unit-sphere using spherical coordinates:
+l1(ψ) = cos(ψ1)
+(70a)
+l2(ψ) = sin(ψ1) cos(ψ2)
+(70b)
+l3(ψ) = sin(ψ1) sin(ψ2) cos(ψ3)
+(70c)
+... = ...
+(70d)
+lm−1(ψ) = sin(ψ1) sin(ψ2) . . . cos(ψm−1)
+(70e)
+lm(ψ) = sin(ψ1) sin(ψ2) . . . sin(ψm−1).
+(70f)
+Lemma 23. Let J be the Jacobian of the transformation to the unit-sphere using spherical coordinates,
+i.e. z = l(ψ) where ||l||2 = 1 and ψi ∈[0, π
+2 ] represents an angle for each i. Then ||J||F ≤√m.
+Proof. The Jacobian of the transformation is
+J(l) =
+
+
+−sin(ψ1)
+0
+· · ·
+0
+cos(ψ1) cos(ψ2)
+−sin(ψ1) sin(ψ2)
+· · ·
+0
+...
+...
+...
+...
+cos(ψ1) sin(ψ2) . . . cos(ψm−1)
+· · ·
+· · ·
+−sin(ψ1) . . . sin(ψm−2) sin(ψm−1)
+cos(ψ1) sin(ψ2) . . . sin(ψm−1)
+· · ·
+· · ·
+sin(ψ1) . . . sin(ψm−2) cos(ψm−1)
+
+
+(71)
+28
+
+Published as a conference paper at ICLR 2024
+and it square is
+J(l) =
+
+
+t1
+0
+· · ·
+0
+cos(ψ1)2 cos(ψ2)2
+sin(ψ1)2t2
+· · ·
+0
+...
+...
+...
+...
+cos(ψ1)2 sin(ψ2)2 . . . cos(ψm−1)2
+· · ·
+· · ·
+sin(ψ1)2 . . . sin(ψm−2)2tm−1
+cos(ψ1)2 sin(ψ2)2 . . . sin(ψm−1)2
+· · ·
+· · ·
+sin(ψ1)2 . . . sin(ψm−2)2tm
+
+
+(72)
+where
+δim = 1 if i = m, 0 else
+(73a)
+ti = δim cos2(ψi−1) + (1 −δim) sin2(ψi) ≤1.
+(73b)
+To compute the Frobenius norm, we will need the sum of the squares of all entries. We will consider
+the sum of each row individually using the following auxiliary variable Ri,k≤i where P
+j J2
+ij = Ri,1
+and apply a recursive inequality.
+(74a)
+Ri,k≤i =
+i−1
+X
+k′=k
+cos2(ψk′)
+h
+i−1
+Y
+l=k,l̸=k′
+sin2(ψl)
+i
+cos2(ψi) + ti
+i−1
+Y
+l=k
+sin2(ψl)
+(74b)
+= cos2(ψk)
+h
+i−1
+Y
+l=k+1
+sin2(ψl)
+i
+cos2(ψi)
+|
+{z
+}
+≤1
+(74c)
++ sin2(ψk)
+i−1
+X
+k′=k+1
+cos2(ψk′)
+h
+i−1
+Y
+l=k+1,l̸=k′
+sin2(ψl)
+i
+cos2(ψi)
+(74d)
++ sin2(ψk)ti
+i−1
+Y
+l=k+1
+sin2(ψl)
+(74e)
+≤cos2(ψk)
+(74f)
++ sin2(ψk)
+
+i−1
+X
+k′=k+1
+cos2(ψk′)
+h
+i−1
+Y
+l=k+1,l̸=k′
+sin2(ψl)
+i
+cos2(ψi) + ti
+i−1
+Y
+l=k+1
+sin2(ψl)
+
+(74g)
+= cos2(ψk) + sin2(ψk)Ri,k+1.
+(74h)
+Note then that Ri,k+1 ≤1 =⇒Ri,k ≤1. We know Ri,i = ti ≤1, therefore, Ri,1 ≤1 by applying
+the inequality recursively. Finally, P
+j J2
+ij = Ri,1 ≤1 implies the claim ||J||2
+F = P
+i Ri,1 ≤m.
+Lemma 24. Let J be the Jacobian of n(z) = z/Z where Z = P
+k zk. Then 1⊤J = 0⊤.
+Proof. The ijth entry of the Jacobian of n(z) is
+J(n)ij = 1
+Z2 (−zi + δijZ).
+(75)
+Therefore [1⊤J]j = P
+i J(n)ij =
+1
+Z2 (−Z + Z) = 0 where z is a point on the unit-sphere in the
+positive orthant.
+B.2
+NEAR OPTIMALITY & ZOOMING DIMENSION
+In this subsection, we derive bounds on the near-optimality dimension and zooming dimension of
+the associated bandit optimization problems we use to derive global convergence guarantees to Nash
+equilibria. This is written in terms of maximizing a function f rather than minimizing a loss to better
+match the bandit literature (Bubeck et al., 2011; Valko et al., 2013; Feng et al., 2022).
+29
+
+Published as a conference paper at ICLR 2024
+Assumption 1. Locally around each interior x∗∈X ∗, −f(x) is lower bounded by −f(x∗) +
+σ−||x −x∗||αhi. In other words, for all f(x) ≥f(x∗) −η:
+f(x∗) −f(x) ≥σ−||x −x∗||αhi
+(76)
+where we have left the precise norm unspecified for generality. Let ℓ(x, x∗) = σ+||x −x∗||αlo.
+Definition 3. Xϵ
+def
+= {x ∈X | ∃x∗∈X ∗s.t. f(x) ≥f(x∗) −ϵ}
+Definition 4. X lower
+ϵ
+def
+= {x ∈X | ∃x∗∈X ∗s.t. f(x∗) −σ−||x −x∗||αhi ≥f(x∗) −ϵ}
+Corollary 4. Xϵ ⊆X lower
+ϵ
+.
+Proof. By Assumption 1, f(x∗) −σ−||x −x∗||αhi ≥f(x). Therefore, any x ∈X that satisfies the
+requirement for an element of Xϵ, f(x) ≥f(x∗) −ϵ, will also satisfy the requirement for an element
+of X lower
+ϵ
+.
+Definition 5 (ψ-near Optimality Dimension). The ψ-near optimality dimension is the smallest d′ > 0
+such that there exists C > 0 such that for any ϵ > 0, the maximum number of disjoint ℓ-balls of
+radius ψϵ and center in Xϵ is less than Cϵ−d′.
+Definition 6 (Zooming Dimension). The zooming dimension is the smallest dz > 0 such that there
+exists Cz > 0 such that for any r > 0, the maximum number of disjoint ℓ-balls of radius r
+2 and center
+in X16r is less than Czr−dz.
+Corollary 5 (Zooming Dimension from ψ-near Optimality Dimension). The zooming dimension
+of f : x ∈[0, 1]d →[−1, 1] under ℓ(x, y) = σ+||x −y||αlo is dz = d( αhi−αlo
+αloαhi ) with constant
+Cz = 16−d′C with ψ =
+1
+32 (ψ is needed to compute C).
+Proof. Mapping the definition of ψ-near optimality onto zooming dimension, we find ψϵ = r/2 and
+ϵ = 16r. Then we can infer ψ = 1/32; this is used to compute C (see Theorem 1). Rewriting the
+bound from ψ-near optimality in terms of r, we find
+Nϵ = N16r ≤C(16r)−d′ = C16−d′r−d′ = Czr−dz
+(77)
+where N16r denotes the number of ℓ-balls of radius r/2 with center in X16r, dz = d′, Cz =
+C16−d′ = C16−dz. Therefore, this translation only effects the constant Cz, not the zooming
+dimension.
+Lemma 25 (Nϵ≤η ≤Cϵ≤ηϵ−d′). The maximum number of disjoint ℓ-balls with radius ψϵ and
+center in Xϵ≤η, Nϵ≤η, is upper bounded by Cϵ≤ηϵ−d′ where Cϵ≤η = |X ∗|
+
+σ+
+ψσ
+αlo/αhi
+−
+d/αlo and
+d′ = d( αhi−αlo
+αloαhi ).
+Proof. The number of disjoint ℓ-balls of radius ψϵ and center in Xϵ≤η can be upper bounded as
+follows.
+Rewrite X lower
+ϵ
+by rearranging terms as
+X lower
+ϵ
+= {x ∈X|∃x∗∈X ∗s.t. ||x −x∗|| ≤
+ ϵ
+σ−
+1/αhi def
+= rϵ}
+(78)
+and recall that from Corollary 4 that Xϵ ⊆X lower
+ϵ
+. Furthermore, an ℓ-ball of radius ψϵ implies
+ℓ(x, y) = σ+||x −y||αlo ≤ψϵ =⇒||x −y|| ≤
+ ψϵ
+σ+
+1/αlo def
+= rℓ.
+(79)
+30
+
+Published as a conference paper at ICLR 2024
+The number of disjoint ℓ-balls that can pack into a set Xϵ, Nϵ≤η, is upper bounded by the ratio of the
+volumes of the two sets:
+Nϵ≤η ≤V ol(Xϵ)
+V ol(Bℓ)
+(80a)
+≤V ol(X lower
+ϵ
+)
+V ol(Bℓ)
+(80b)
+= |X ∗|Sdrd
+ϵ
+Sdrd
+ℓ
+(80c)
+≤
+|X ∗|
+
+ϵ
+σ−
+d/αhi
+
+ψϵ
+σ+
+d/αlo
+(80d)
+= |X ∗|
+σ1/αlo
++
+ψ−1/αlo
+σ1/αhi
+−
+d
+ϵd(1/αhi−1/αlo)
+(80e)
+= |X ∗|
+
+σ+
+ψσαlo/αhi
+−
+d/αloϵ−d(
+αhi−αlo
+αloαhi )
+(80f)
+= Cϵ≤ηϵ−d′
+(80g)
+where Cϵ≤η = |X ∗|
+
+σ+
+ψσ
+αlo/αhi
+−
+d/αlo, d′ = d( αhi−αlo
+αloαhi ), |X ∗| is the number of distinct global
+optima, and Sd is the volume constant for a d-sphere under the given norm || · ||.
+Recall, these results apply when f(x) ≥f(x∗)−η, i.e., when ϵ ≤η. Otherwise, we can upper bound
+the number of ℓ-balls by considering the entire set X which has volume 1. First, we will bound the
+constant associated with the volume of a d-sphere.
+Lemma 26 (Nϵ≥η ≤Cϵ≥η). The maximum number of disjoint ℓ-balls with radius ψϵ and center
+in Xϵ≥η, Nϵ≥η, is upper bounded by Cϵ≥η where Cϵ≥η = S−1
+d
+
+σ+
+ψη
+d/αlo and Sd is the volume
+constant for a d-sphere under a given norm.
+Proof. We can upper bound the number of ℓ-balls needed to pack the entire space by considering the
+smallest possible radius ψη:
+Nϵ≥η ≤V ol(X)
+V ol(Bℓ)
+(81a)
+=
+1
+Sdrd
+ℓ
+(81b)
+≤
+1
+Sd
+
+ψη
+σ+
+d/αlo
+(81c)
+= S−1
+d
+σ+
+ψη
+d/αlo
+(81d)
+= Cϵ≥η
+(81e)
+where rl was defined in equation (79).
+Theorem 1. The ψ-near optimality dimension of f : x ∈[0, 1]d →[−1, 1] under ℓis d′ =
+d( αhi−αlo
+αloαhi ) with constant
+C = max
+n
+1, S−1
+d
+
+r
+αhi
+αlo
+η
+σ
+ αhi−αlo
+αloαhi
+
+−
+−do
+σ+
+ψσαlo/αhi
+−
+d/αlo
+(82)
+where Sd is the volume constant for a d-sphere under the same norm as ℓ.
+31
+
+Published as a conference paper at ICLR 2024
+Proof. First, let us define rη =
+
+η
+σ−
+1/αhi as in equation (78) which implies η = σ−rαhi
+η
+. Then
+apply Lemmas 25 (Nϵ≤η ≤Cϵ≤ηϵ−d′) and 26 (Nϵ≥η ≤Cϵ≥η) which bound the number of ℓ-balls
+required to pack Xϵ when ϵ is less than and greater than η respectively:
+Cϵ≤η = |X ∗|
+
+σ+
+ψσαlo/αhi
+−
+d/αlo
+(83)
+d′ = d(αhi −αlo
+αloαhi
+)
+(84)
+and
+Cϵ≥η = S−1
+d
+σ+
+ψη
+d/αlo
+(85a)
+= |X ∗|−1S−1
+d η−d/αloσd/αhi
+−
+|X ∗|
+
+σ+
+ψσαlo/αhi
+−
+d/αlo
+(85b)
+= |X ∗|−1S−1
+d η−d/αloσd/αhi
+−
+Cϵ≤η
+(85c)
+= |X ∗|−1S−1
+d r−dαhi/αlo
+η
+σ−d/αlo
+−
+σd/αhi
+−
+Cϵ≤η
+(85d)
+= |X ∗|−1S−1
+d r
+−d
+αhi
+αlo
+η
+σ
+−d
+ αhi−αlo
+αloαhi
+
+−
+Cϵ≤η
+(85e)
+= |X ∗|−1S−1
+d
+
+r
+αhi
+αlo
+η
+σ
+ αhi−αlo
+αloαhi
+
+−
+−d
+Cϵ≤η
+(85f)
+where Sd is the volume constant for a d-sphere under the given norm. S−1
+d
+has been upper bounded
+for the 2-norm in Lemma 35. For the ∞-norm, S−1
+d
+= 2−d. We have written Cϵ≥η in terms of Cϵ≤η
+to clarify which is larger.
+Therefore,
+C = max
+n
+1, |X ∗|−1S−1
+d
+
+r
+αhi
+αlo
+η
+σ
+ αhi−αlo
+αloαhi
+
+−
+−do
+Cϵ≤η
+(86a)
+= max
+n
+1, |X ∗|−1S−1
+d
+
+r
+αhi
+αlo
+η
+σ
+ αhi−αlo
+αloαhi
+
+−
+−do
+σ+
+ψσαlo/αhi
+−
+d/αlo.
+(86b)
+Intuitively, if the radius for which the polynomial bounds hold (rη) is large and the minimum
+curvature constant σ−is also large, then the bound Cϵ≤η holds for large deviations from optimality η.
+The number of η-radius ℓ-balls required to cover the remaining space, Cϵ≥η, will be comparatively
+small.
+B.3
+D-BLIN
+The regret bound for Doubling BLiN (Feng et al., 2022) was originally proved assuming a standard
+normal distribution, however, the authors state their proof can be easily adapted to any sub-Gaussian
+distribution, which includes bounded random variables. This matches our setting with bounded
+payoffs, so we repeat their analysis here for that setting.
+In what follows, in an effort to match notation in (Feng et al., 2022), let µ(x) = −Lτ(s(x))
+denote the expected reward for evaluating x ∈[0, 1]d; ˆµ(x) is an unbiased estimate of µ(x). Here,
+s : [0, 1]n( ¯m−1) →Q
+i ∆mi−1 is any function that maps from the unit hypercube to a product
+of simplices; we analyze two such maps in Appendix B.1. Also let Am denote the collection of
+hypercubes to be investigated during the mth batch of arm pulls, C ∈Am denote a hypercube
+partition in X, nm indicates the number of times each cube in Am is played in batch m, and Bstop
+denote the last batch.
+Definition 7 (Global Arm Accuracy). E
+def
+=
+n
+|µ(x) −ˆµm(C)| ≤rm +
+q
+c1 ln T
+nm , ∀1 ≤m ≤
+Bstop −1, ∀C ∈Am, ∀x ∈C
+o
+.
+32
+
+Published as a conference paper at ICLR 2024
+Define: nm = c2 ln T
+r2m
+=⇒rm =
+q
+c2 ln T
+nm .
+Definition 8 (Elimination Rule). Eliminate C ∈Am if ˆµmax
+m
+−ˆµm(C) ≥2(1 +
+p
+c1/c2)rm =
+2(√c2 + √c1)
+q
+ln T
+nm where ˆµmax
+m
+def
+= maxC∈Am ˆµm(C).
+Lemma 27. Pr[E] ≥1 −2T −2(c1/c2−1).
+Proof. Let ˆµm(C) =
+1
+nm
+Pnm
+i=1 yC,i be the unbiased estimate of µ(x ∈C) using nm samples.
+Assume each yC,i ∈[a, b] with c = b −a and ˆµ(C) =
+1
+nm
+Pnm
+i=1 yC,i. Applying a Hoeffding
+inequality gives
+Pr
+h
+|ˆµ(C) −E[ˆµ(C)]| ≥
+r
+c1
+ln T
+nm
+i
+≤2e−2c1 ln T/c2
+(87a)
+= 2(eln T )−2c1/c2
+(87b)
+= 2T −2c1/c2 ∀C.
+(87c)
+By Lipschitzness of µ we also have
+|E[ˆµ(C)] −µ(x)| ≤rm, ∀x ∈C.
+(88)
+Then consider
+sup
+x∈C
+|µ(x) −ˆµ(C)| = sup
+x∈C
+|µ(x) −E[ˆµ(C)] + E[ˆµ(C)] −ˆµ(C)|
+(89a)
+≤sup
+x∈C
+
+|µ(x) −E[ˆµ(C)]| + |E[ˆµ(C)] −ˆµ(C)|
+
+(89b)
+= sup
+x∈C
+|µ(x) −E[ˆµ(C)]| + |E[ˆµ(C)] −ˆµ(C)|
+(89c)
+≤
+r
+c1
+ln T
+nm
++ rm
+(89d)
+with probability 1 −2T −2c1/c2. The first inequality follows by triangle inequality and the second
+follows from equation (88) and considering the complement of equation (87c).
+The complement of this result occurs with probability
+Pr
+h
+sup
+x∈C
+|µ(x) −ˆµ(C)| ≥rm +
+r
+c1
+ln T
+nm
+i
+≤2T −2c1/c2.
+(90)
+At least 1 arm is played in each cube C ∈Am for 1 ≤m ≤Bstop −1, therefore, |Am| ≤T must be
+true given the exit condition of the algorithm. In addition, assume Bstop ≤T (Bstop will be defined
+such that this is true). Then a union bound over all T 2 events gives
+Pr
+h
+∃m ∈[1, Bstop −1], C ∈Am s.t. sup
+x∈C
+|µ(x) −ˆµ(C)| ≥rm +
+r
+c1
+ln T
+nm
+i
+(91a)
+≤
+Bstop−1
+X
+m=1
+X
+C∈Am
+Pr
+h
+sup
+x∈C
+|µ(x) −ˆµ(C)| ≥rm +
+r
+c1
+ln T
+nm
+i
+(91b)
+≤
+Bstop−1
+X
+m=1
+X
+C∈Am
+2T −2c1/c2
+(91c)
+≤2T −2c1/c2T 2.
+(91d)
+Taking the complement of this event and noting that supx∈C |µ(x) −ˆµ(C)| ≤rm +
+q
+c1 ln T
+nm
+=⇒
+|µ(x) −ˆµ(C)| ≤rm +
+q
+c1 ln T
+nm ∀x ∈C gives the desired result.
+33
+
+Published as a conference paper at ICLR 2024
+Lemma 28 (Optimal Arm Survives). Under event E, the optimal arm x∗= arg max µ(x) is not
+eliminated after the first Bstop −1 batches.
+Proof. Let C∗
+m denote the cube containing x∗in Am. Under event E, for any cube C ∈Am and
+x ∈C, the following relation shows that C∗
+m avoids the elimination rule in round m:
+ˆµ(C) −ˆµ(C∗
+m) ≤
+
+µ(x) + rm +
+r
+c1
+ln T
+nm
+
++
+
+−µ(x∗) + rm +
+r
+c1
+ln T
+nm
+
+(92a)
+= (µ(x) −µ(x∗))
+|
+{z
+}
+≤0
++2rm + 2
+r
+c1
+ln T
+nm
+(92b)
+≤2
+r
+c2
+ln T
+nm
++ 2
+r
+c1
+ln T
+nm
+(92c)
+= 2(√c1 + √c2)
+r
+ln T
+nm
+(92d)
+where the first inequality follows from applying Lemma 27 to upper bound ˆµ(C) and ˆµ(C∗
+m) indi-
+vidually. The remaining steps use the optimality of x∗, the definition of rm, and the elimination
+rule.
+Lemma 29. Under event E, for any 1 ≤m ≤Bstop, any C ∈Am and any x ∈C, ∆x satisfies
+∆x ≤4(1 +
+p
+c1/c2)rm−1
+(93)
+Proof. For m = 1, recall that rm is the side length of a cube C ∈Am, therefore, ∆x ≤rm−1 ≤
+4(1 +
+p
+c1/c2)rm−1 holds directly from the Lipschitzness of µ.
+For m > 1, let C∗
+m−1 ∈Am−1 be the cube containing x∗. From Lemma 28, this cube has not been
+eliminated under event E. For any cube C ∈Am and x ∈C, it is clear that x is also in the parent of
+C, denoted Cpar (x ∈C ⊂Cpar). Then for any x ∈C, it holds that
+∆x = µ(x∗) −µ(x) ≤
+
+ˆµm−1(C∗
+m−1) + rm−1 +
+s
+c1
+ln T
+nm−1
+
+(94a)
++
+
+−ˆµm−1(Cpar) + rm−1 +
+s
+c1
+ln T
+nm−1
+
+= (ˆµm−1(C∗
+m−1) −ˆµm−1(Cpar)) + 2(√c1 + √c2)
+s
+ln T
+nm−1
+(94b)
+≤(ˆµmax
+m−1 −ˆµm−1(Cpar)) + 2(√c1 + √c2)
+s
+ln T
+nm−1
+(94c)
+≤2(√c1 + √c2)
+s
+ln T
+nm−1
++ 2(√c1 + √c2)
+s
+ln T
+nm−1
+(94d)
+= 4(√c1 + √c2)
+s
+ln T
+nm−1
+(94e)
+= 4(1 +
+p
+c1/c2)rm−1
+(94f)
+where we have applied Lemma 27 similarly as in Lemma 28 and also used the definition of rm−1.
+The last two inequalities use the fact that ˆµm−1(C∗
+m−1) ≤ˆµmax
+m−1 and Cpar was not eliminated.
+Theorem 2 (BLiN Regret Rate). With probability exceeding 1 −2T −2(c1/c2−1) , the T-step total
+regret R(T) of BLiN with Doubling Edge-length Sequence (D-BLiN) Feng et al. (2022) satisfies
+R(T) ≤8(1 +
+p
+c1/c2)(2c2 + 1) ln(T)
+1
+dz+2 T
+dz+1
+dz+2
+(95)
+where dz is the zooming dimension of the problem instance. In addition, D-BLiN only needs no more
+than B∗= log 2(T )−log 2(ln(T ))
+dz+2
++ 2 rounds of communications to achieve this regret rate.
+34
+
+Published as a conference paper at ICLR 2024
+Proof. Since rm = rm−1
+2
+=⇒rm−1 = 2rm for the Doubling Edge-length Sequence, Lemma 29
+implies that every cube C ∈Am is a subset of S(8(1 +
+p
+c1/c2)rm). Thus from the definition of
+zooming dimension (Corollary 5 with appropriate condition), we have
+|Am| ≤Nrm ≤Czr−dz
+m
+.
+(96)
+Fix any positive number B. Also by Lemma 29, we know that any arm played after batch B incurs
+a regret bounded by 8(1 +
+p
+c1/c2)rB, since the cubes played after batch B have edge length no
+larger than rB. Then the total regret that occurs after batch B is bounded by 8(1 +
+p
+c1/c2)rBT
+(where T is an upper bound on the number of arms).
+Thus the regret can be bounded as
+R(T) ≤
+B
+X
+m=1
+X
+C∈Am
+nm
+X
+i=1
+∆xC,i + 8(1 +
+p
+c1/c2)rBT
+(97)
+where the first term bounds the regret in the first B batches of D-BLiN, and the second term bounds
+the regret after the first B batches. If the algorithm stops at batch ˜B < B , we define Am = for any
+˜B < m ≤B and inequality equation (97) still holds.
+By Lemma 29, we have ∆xC,i ≤8(1+
+p
+c1/c2)rm for all C ∈Am. We can thus bound equation (97)
+by
+R(T) ≤
+B
+X
+m=1
+|Am| · nm · 8(1 +
+p
+c1/c2)rm + 8(1 +
+p
+c1/c2)rBT
+(98a)
+≤
+B
+X
+m=1
+Nrm · nm · 8(1 +
+p
+c1/c2)rm + 8(1 +
+p
+c1/c2)rBT
+(98b)
+=
+B
+X
+m=1
+Nrm · c2
+ln T
+r2m
+· 8(1 +
+p
+c1/c2)rm + 8(1 +
+p
+c1/c2)rBT
+(98c)
+=
+B
+X
+m=1
+Nrm · ln T
+rm
+· 8c2(1 +
+p
+c1/c2) + 8(1 +
+p
+c1/c2)rBT
+(98d)
+where equation (98b) uses equation (96), and equation (98c) uses equality nm = c2 ln T
+r2m . Since
+rm = 2−m+1 and Nrm ≤Czr−dz
+m
+≤Cz2(m−1)dz, we have
+R(T) ≤
+B
+X
+m=1
+Cz2(m−1)dz ·
+ln T
+2−m+1 · 8c2(1 +
+p
+c1/c2) + 8(1 +
+p
+c1/c2)2−B+1T
+(99a)
+= 8(1 +
+p
+c1/c2)
+h
+c2Cz ln T
+B
+X
+m=1
+2(m−1)(dz+1) + 2−B+1T
+i
+.
+(99b)
+35
+
+Published as a conference paper at ICLR 2024
+Continuing we find
+R(T) ≤8(1 +
+p
+c1/c2)
+h
+c2Cz ln T
+B
+X
+m=1
+2(m−1)(dz+1) + 2−B+1T
+i
+(100a)
+= 8(1 +
+p
+c1/c2)
+h
+c2Cz ln T
+B
+X
+m=1
+ 2dz+1m−1 + 2−B+1T
+i
+(100b)
+= 8(1 +
+p
+c1/c2)
+h
+c2Cz ln T
+B−1
+X
+m=0
+ 2dz+1m + 2−B+1T
+i
+(100c)
+= 8(1 +
+p
+c1/c2)
+h
+c2Cz ln T
+2B(dz+1) −1
+2dz+1 −1
+
++ 2−B+1T
+i
+via geometric series
+(100d)
+≤8(1 +
+p
+c1/c2)
+h
+c2Cz ln T
+ 2B(dz+1)
+2dz+1 −1
+
++ 2−B+1T
+i
+(100e)
+≤8(1 +
+p
+c1/c2)
+h
+c2Cz ln T
+
+2 · 2B(dz+1)
+2dz+1
+
++ 2−B+1T
+i
+(100f)
+= 8(1 +
+p
+c1/c2)
+h
+2c2Cz2(B−1)(dz+1) ln T + 2−(B−1)T
+i
+.
+(100g)
+This inequality holds for any positive B. By choosing B∗= 1 + log2(
+T
+ln T )
+dz+2
+, we have
+R(T) ≤8(1 +
+p
+c1/c2)
+h
+2c2Cz
+ T
+ln T
+ (dz+1)
+(dz+2) ln T +
+ln T
+T
+
+1
+(dz+2) T
+i
+(101a)
+= 8(1 +
+p
+c1/c2)
+h
+2c2CzT
+(dz+1)
+(dz+2) ln T 1−(dz+1)
+(dz+2) + T 1−
+1
+(dz+2) ln T
+1
+(dz+2)
+i
+(101b)
+= 8(1 +
+p
+c1/c2)
+h
+2c2CzT
+(dz+1)
+(dz+2) ln T
+1
+(dz+2) + T
+(dz+1)
+(dz+2) ln T
+1
+(dz+2)
+i
+(101c)
+= 8(1 +
+p
+c1/c2)(2c2Cz + 1)T
+(dz+1)
+(dz+2) ln T
+1
+(dz+2) .
+(101d)
+Corollary 6 (BLiN Regret Rate Refined). Setting c1 = 2c2 and c2 = 2
+
+c
+4Cz
+2/3
+simplifies Theo-
+rem 2 such that
+R(T) ≤8(1 + (4c2Cz)1/3)2T
+(dz+1)
+(dz+2) ln T
+1
+(dz+2) .
+(102)
+with probability 1 −2T −2.
+Proof. If we set c1 = 2c2 and c2 = 2
+
+c
+4Cz
+2/3
+, then
+p
+c1/c2 = c
+
+4Cz
+c
+1/3
+=
+
+4c2Cz
+1/3
+=
+2c2Cz.
+Lemma 30. The zooming dimension and zooming constant under the ℓ(x, y) = ||x −y||∞norm are
+dz = 1
+2n ¯m
+(103)
+Cz = |X ∗|−1
+4
+r2ησ−∞
+n ¯m
+(104)
+where σ−∞= ||Hess(−f(x))−1||∞is an upper bound on the infinity norm of the inverse Hessian
+matrix of the function at every equilibrium.
+Proof. Recall from Theorem 1 that dz = d( αhi−αlo
+αloαhi ) with constant Cz = 16−d′C where C is defined
+below. In addition, BLiN assumes ℓ(x, y) = ||x −y||∞. Matching to Assumption 1, we see that
+σ+ = αlo = 1. Under the infinity norm, the volume constant Sd = 2d.
+We will define the other constants with respect to properties of the Hessian of f(x) about each
+equilibrium, specifically the infinity norm of the inverse Hessian so that σ−= σ−∞. This means
+36
+
+Published as a conference paper at ICLR 2024
+we will bound the function locally with a quadratic, i.e., αhi = 2. Lastly, recall from Corollary 5
+that ψ =
+1
+32 and the dimension of our search space (the product space of player mixed strategies) is
+d = n( ¯m −1) ≤n ¯m for simplicity.
+Plugging this information into Theorem 1, we find
+dz = d′ = 1
+2n ¯m
+(105)
+and
+C = max
+n
+1, |X ∗|−1S−1
+d
+
+r
+αhi
+αlo
+η
+σ
+ αhi−αlo
+αloαhi
+
+−
+−do
+σ+
+ψσαlo/αhi
+−
+d/αlo
+(106a)
+= max
+n
+1, |X ∗|−12−d
+r2
+ησ
+1
+2
+−∞
+−do 32
+σ1/2
+−∞
+d
+(106b)
+= max
+n
+1, |X ∗|−1
+2r2
+ησ
+1
+2
+−∞
+−do 32
+σ1/2
+−∞
+d
+(106c)
+hard
+= |X ∗|−1
+2r2
+ησ
+1
+2
+−∞
+−d 32
+σ1/2
+−∞
+d
+(106d)
+hard
+= |X ∗|−1
+16
+r2ησ−∞
+n ¯m
+(106e)
+where hard indicates we are assuming rη and σ−∞are small enough to dominate the other operand
+of the max.
+Finally, converting the near optimality constant to a zooming constant, we find
+Cz = 16−dz|X ∗|−1
+16
+r2ησ−∞
+n ¯m
+(107a)
+= |X ∗|−1
+4
+r2ησ−∞
+n ¯m
+.
+(107b)
+B.4
+BOUNDED DIAMETERS AND WELL-SHAPED CELLS
+We assume the feasible set is a unit-hypercube of dimensionality d where cells are evenly split along
+the longest edge to give b new partitions and xh,i represents the center of each cell.
+There exists a decreasing sequence w(h) > 0, such that for any depth h ≥0 and for any cell Xh,i of
+depth h, we have supx∈Xh,i ℓ(xh,i, x) ≤w(h). Moreover, there exists ν > 0 such that for any depth
+h ≥0, any cell Xh,i contains an ℓ-ball of radius νw(h) centered at xh,i.
+ℓ(x, y)
+c
+γ
+ν
+ℓ(x, y) = ||x −y||α
+2
+dα/2  b
+2
+α
+b−α/d
+d−α/2b−2α
+ℓ(x, y) = ||x −y||α
+∞
+  b
+2
+α
+b−α/d
+b−2α
+Table 3: Bounding Constants: supx∈Xh,i ℓ(xh,i, x) ≤w(h) = cγh.
+B.4.1
+L2-NORM
+Lemma 31 (L2-Norm Bounding Ball). Let ℓ(x, y) = ||x −y||α
+2 . Then supx∈Xh,i ℓ(xh,i, x) ≤
+w2(h) = cγh where c =
+  db2
+4
+α/2 and γ = b−α/d.
+37
+
+Published as a conference paper at ICLR 2024
+Proof.
+w(0) =
+
+d
+X
+i=1
+(1/2)2α/2 =
+ d
+4
+α/2
+(108a)
+w(1) =
+
+(1/b · 1/2)2 +
+d
+X
+i=2
+(1/2)2α/2 = [(1/b2)(1/4) + (d −1)(1/4)]α/2
+(108b)
+=
+ d −1 + 1/b2
+4
+α/2
+(108c)
+w(d) =
+
+d
+X
+i=1
+(1/b · 1/2)2α/2 =
+ d
+4 · b2
+α/2
+(108d)
+w(h) =
+
+r(1/b)2(q+1)(1/2)2 +
+d
+X
+i=r
+(1/b)2q(1/2)2α/2
+(108e)
+=
+
+(1/b)2q(1/2)2 r(1/b)2 + (d −r)
+α/2
+(108f)
+=
+
+(1/b2)q(1/4)
+ d −r(1 −1
+b2 )
+α/2
+(108g)
+≤
+
+(1/b2)q(1/4)d
+α/2
+(108h)
+≤
+
+(1/b2)h/d−1(1/4)d
+α/2
+(108i)
+=
+
+(1/b2)h/d(b2/4)d
+α/2
+(108j)
+=
+ db2
+4
+α/2(1/b)
+α
+d h
+(108k)
+= cγh
+(108l)
+where q, r = divmod(h, d) =⇒q ≥h/d −1, c =
+  db2
+4
+α/2, and γ = (1/b)α/d = b−α/d.
+Lemma 32 (L2-Norm Inner Ball). Let ℓ(x, y) = ||x −y||α
+2 . Any cell Xh,i contains an ℓ-ball of
+radius νw2(h) where ν = (db4)−α/2.
+Proof. Any cell Xh,i contains an ℓ-ball of radius equal to its shortest axis:
+rmin =
+
+(1/4)(1/b2)⌈h/d⌉α/2
+(109a)
+≥
+
+(1/4)(1/b2)h/d+1α/2
+(109b)
+=
+ 1
+b2 · 4
+α/2(1/b)
+α
+d h
+(109c)
+= w(h) ·
+  1
+db4
+α/2.
+(109d)
+B.4.2
+L∞-NORM
+Lemma 33 (L∞-Norm Bounding Ball). Let ℓ(x, y) = ||x −y||α
+∞. Then supx∈Xh,i ℓ(xh,i, x) ≤
+w∞(h) = cγh where c =
+  b
+2
+α and γ = b−α/d.
+Proof. Any cell Xh,i is contained by an ℓ-ball of radius equal to its longest axis:
+rmax =
+
+(1/4)(1/b2)⌊h/d⌋α/2
+(110a)
+≤
+
+(1/4)(1/b2)h/d−1α/2
+(110b)
+=
+ b2
+4
+α/2(1/b)
+α
+d h
+(110c)
+= cγh
+(110d)
+38
+
+Published as a conference paper at ICLR 2024
+where c =
+  b2
+4
+α/2, and γ = (1/b)α/d = b−α/d.
+Lemma 34 (L∞-Norm Inner Ball). Let ℓ(x, y) = ||x −y||α
+∞. Any cell Xh,i contains an ℓ-ball of
+radius νw∞(h) where ν = b−2α.
+Proof. Any cell Xh,i contains an ℓ-ball of radius equal to its shortest axis:
+rmin =
+
+(1/4)(1/b2)⌈h/d⌉α/2
+(111a)
+≥
+
+(1/4)(1/b2)h/d+1α/2
+(111b)
+=
+ 1
+b2 · 4
+α/2(1/b)
+α
+d h
+(111c)
+= w(h) ·
+  1
+b4
+α/2.
+(111d)
+B.5
+STOCHASTIC SIMULTANEOUS OPTIMISTIC OPTIMIZATION
+StoSOO is flexible in its choice of metric and partitioning structure. In StoSOO, we may choose
+ℓ(x, y) = ||x −y||2
+2.
+Lemma 35. The volume of a d-sphere with radius r and d even is given by Sdrd where S−1
+d
+≤
+√
+2πd
+
+d
+2πe
+d/2
+.
+Proof. First, we recall Stirling’s bounds on the factorial:
+√
+2πn( n
+e )ne
+1
+12n+1 < n! <
+√
+2πn( n
+e )ne
+1
+12n .
+This will be useful for bounding the Gamma function: Γ(d) = (d −1)! for even d.
+Given d is even, we start with the exact formula for Sd:
+S−1
+d
+= Γ(d/2 + 1)
+πd/2
+(112a)
+= (d/2)!
+πd/2
+(112b)
+<
+p
+2π(d/2)( d/2
+e )d/2e
+1
+12(d/2)
+πd/2
+(112c)
+= π1/2d1/2( d
+2e)d/2e
+1
+6d
+πd/2
+(112d)
+= π1/2d(d+1)/2e
+1
+6d
+(2πe)d/2
+(112e)
+≤
+√
+2πd
+ d
+2πe
+d/2
+.
+(112f)
+Lemma 36. The near optimality dimension and constant under the ℓ(x, y) = ||x −y||2
+2 norm are
+d′ = 0
+(113)
+C = |X ∗|−1√
+2πn ¯m
+
+n ¯m
+5νr2ησ−2
+n ¯m/2
+(114)
+where σ−2 is a lower bound on the singular value of the Hessian matrix of the function at every
+equilibrium and ν is defined in Table 3 for the corresponding ℓ(x, y)-ball.
+Proof. Recall from Theorem 1 that d′ = d( αhi−αlo
+αloαhi ) with constant C defined below. In addition,
+we will analyze StoSOO with the choice ℓ(x, y) = ||x −y||2
+2. Matching to Assumption 1, we see
+39
+
+Published as a conference paper at ICLR 2024
+that σ+ = 1 and αlo = 2. Under the 2-norm, the volume constant S−1
+d
+≤
+√
+2πd
+
+d
+2πe
+d/2
+(see
+Lemma 35).
+We will bound the function locally with a quadratic, i.e., αhi = 2. Lastly, from (Valko et al., 2013,
+Corollary 1), ψ = ν
+3 with ν =
+1
+db2 defined in Table 3 and the dimension of our search space (the
+product space of player mixed strategies) is d = n( ¯m −1) ≤n ¯m for simplicity.
+Plugging this information into Theorem 1, we find d′ = 0 and
+C = max
+n
+1, |X ∗|−1S−1
+d
+
+r
+αhi
+αlo
+η
+σ
+ αhi−αlo
+αloαhi
+
+−
+−do
+σ+
+ψσαlo/αhi
+−
+d/αlo
+(115a)
+= max
+n
+1, |X ∗|−1S−1
+d r−d
+η
+o
+1
+ψσ−2
+d/2
+(115b)
+hard
+= |X ∗|−1S−1
+d r−d
+η
+
+3
+νσ−2
+d/2
+(115c)
+hard
+≤|X ∗|−1√
+2πd
+ d
+2πe
+d/2
+3
+νr2ησ−2
+d/2
+(115d)
+hard
+≤|X ∗|−1√
+2πd
+ b2d2
+5r2ησ−2
+d/2
+(115e)
+hard
+= |X ∗|−1√
+2πn ¯m
+b2n2 ¯m2
+5r2ησ−2
+n ¯m/2
+(115f)
+where hard indicates we are assuming rη, the radius of the ball under which the local polynomial
+bounds are accurate, is small enough to dominate the other operand of the max.
+Theorem 3 (StoSOO Regret Rate). Corollary 1 of Valko et al. (2013) implies that with probability
+1 −δ, the regret, Rt, of StoSOO after t pulls is upper bounded as
+(2 + b2/d)
+s
+logb(tk/δ)
+2 logb(e)k + 1
+4db2(1+2/d)b−
+1
+dC
+√
+t/k
+(116)
+where d = n( ¯m−1), b is the branching factor for partitioning cells, C is the near-optimality constant,
+and k is the maximum number of evaluations per node.
+Proof. Plugging the constants c, γ, and ν defined in Table 3 for the 2-norm into Corollary 1 of Valko
+et al. (2013), we find with probability 1 −δ:
+Rt ≤(2 + 1/γ)ϵ + cγ
+1
+2C
+√
+t/k−2
+(117a)
+= (2 + 1/γ)
+r
+log(tk/δ)
+2k
++ cγ
+1
+2C
+√
+t/k−2
+(117b)
+= (2 + b2/d)
+r
+log(tk/δ)
+2k
++ 1
+4db2(b−2/d)
+1
+2C
+√
+t/k−2
+(117c)
+= (2 + b2/d)
+s
+logb(tk/δ)
+2 logb(e)k + 1
+4db2(1+2/d)(b−2/d)
+1
+2C
+√
+t/k
+(117d)
+= (2 + b2/d)
+s
+logb(tk/δ)
+2 logb(e)k + 1
+4db2(1+2/d)b−
+1
+dC
+√
+t/k.
+(117e)
+Proposition 2. Assume the same conditions as Theorem 3 and let k = t logb(t)−ρ where ρ ≥3.
+Then the StoSOO (Algorithm 1 of Valko et al. (2013)) bound requires t = b( dC
+2 )
+2
+ρ−2 pulls before
+exhibiting a ˜O(T −1/2) decay in regret.
+40
+
+Published as a conference paper at ICLR 2024
+Proof. We know from the given definition of k that
+p
+t/k = logb(t)ρ/2. We will analyze the second
+term in the regret formula of Corollary 3. Note that the second term, b−
+1
+dC
+√
+t/k = (b
+√
+t/k)−
+1
+dC =
+(blogb(t)ρ/2)−
+1
+dC
+= (blogb(t)·logb(t)(ρ−2)/2)−
+1
+dC
+=
+
+tlogb(t)(ρ−2)/2−
+1
+dC
+= t−
+logb(t)(ρ−2)/2
+dC
+.
+To
+achieve a t−1/2 convergence rate (or better), we need t ≥b( dC
+2 )
+2
+ρ−2 . For convenience, we report the
+entire simplification of the bound below:
+Rt ≤(2 + b2/d)
+s
+logb(tk/δ)
+2 logb(e)k + 1
+4db2(1+2/d)b−
+1
+dC
+√
+t/k
+(118a)
+= (2 + b2/d)
+s
+logb(t2/(δ logb(t)ρ)) logb(t)ρ
+2 logb(e)t
++ 1
+4db2(1+2/d)t−
+logb(t)(ρ−2)/2
+dC
+(118b)
+≤(2 + b2/d)
+s
+logb(t2/δ) logb(t/δ)ρ
+2 logb(e)t
++ 1
+4db2(1+2/d)t−
+logb(t)(ρ−2)/2
+dC
+(118c)
+= (2 + b2/d)
+s
+2 logb(t/δ)ρ+1
+2 logb(e)t
++ 1
+4db2(1+2/d)t−
+logb(t)(ρ−2)/2
+dC
+(118d)
+= (2 + b2/d)
+p
+logb(e)
+logb(t/δ)(ρ+1)/2
+√
+t
++ 1
+4db2(1+2/d)t−
+logb(t)(ρ−2)/2
+dC
+(118e)
+= (2 + b2/d)
+p
+logb(e)
+[logb(t) −logb(δ)](ρ+1)/2
+√
+t
++ 1
+4db2(1+2/d)t−
+logb(t)(ρ−2)/2
+dC
+.
+(118f)
+B.6
+REGRET TO PAC BOUNDS
+Lemma 37. [Loss Regret to Exploitability Regret] Assume exploitability of a joint strategy x is upper
+bounded by f(Lτ(x)) where f is a concave function and Lτ is a loss function. Let xt be a joint
+strategy randomly drawn from the set of predictions made by an online learning algorithm A over T
+steps. Then the expected exploitability of xt is bounded by the average regret of A:
+Et[ϵt] ≤f( 1
+T R(T)).
+(119)
+Proof.
+Et[ϵt] = Et[f(L(xt))] ≤f(Et[L(xt)]) = f( 1
+T
+X
+t
+L(xt)) = f( 1
+T R(T))
+(120)
+where the inequality follows from Jensen’s inequality.
+Theorem 4 (BLiN PAC Rate). Assume ηk = η = 2/ˆL as defined in Lemma 2, τ =
+1
+ln(1/p) so that all
+equilibria place at least
+p
+m∗mass on each strategy, and a previously pulled arm is returned uniformly
+at random (i.e., t ∼U(T)). Then for any w > 0,
+ϵt ≤w
+h
+τ log
+ Y
+k
+mk
+
++ 2(1 + (4c2Cz)1/3)
+p
+2nˆL
+ln T
+T
+
+1
+2(dz+2) i
+(121)
+with probability (1 −w−1)(1 −2T −2) where m∗= maxk mk, and c ≤n ¯m
+ˆL
+
+ln(m∗)
+ln(1/p) + 2
+2
+is an
+upper bound on the range of ˆLτ (Corollary 1), ˆL =
+
+ln(m∗)
+ln(1/p) +2
+
+m∗2
+p ln(1/p) +n ¯m
+
+(Corollary 2), the
+zooming dimension dz = 1
+2n ¯m, and the zooming constant Cz = |X ∗|−1
+4
+r2ησ−∞
+n ¯m
+(Corollary 30).
+41
+
+Published as a conference paper at ICLR 2024
+Proof. Assume ηk = η = 2
+ˆL as defined in Lemma 2 so that Lτ is 1-Lipschitz with respect to || · ||∞.
+Also assume a previously pulled arm is returned uniformly at random. Starting with Lemma 13 and
+applying Corollary 6, we find
+E[ϵt] ≤τ log
+ Y
+k
+mk
+
++
+r
+2n
+mink ηk
+s
+1
+T
+X
+t
+Lτ(xt)
+(122a)
+≤
+1
+ln(1/p) log
+ Y
+k
+mk
+
++
+p
+nˆL
+q
+8(1 + (4c2)1/3)2T
+−1
+(dz+2) ln T
+1
+(dz+2)
+(122b)
+=
+1
+ln(1/p) log
+ Y
+k
+mk
+
++ 2(1 + (4c2Cz)1/3)
+p
+2nˆL
+ln T
+T
+
+1
+2(dz+2)
+(122c)
+with probability 1 −2T −2 where m∗= maxk mk, and c ≤n ¯m
+ˆL
+
+ln(m∗)
+ln(1/p) + 2
+2
+is an upper bound on
+the range of sampled values from ˆLτ (see Corollary 1).
+Markov’s inequality then allows us to bound the pointwise exploitability of any arm returned by the
+algorithm as
+ϵt ≤w
+h
+1
+ln(1/p) log
+ Y
+k
+mk
+
++ 2(1 + (4c2Cz)1/3)
+p
+2nˆL
+ln T
+T
+
+1
+2(dz+2) i
+(123)
+with probability (1 −w−1)(1 −2T −2) for any w > 0.
+Theorem 5 (StoSOO PAC Rate). Corollary 1 of Valko et al. (2013) implies that with probability
+(1 −w−1)(1 −δ) for any w > 0, a uniformly randomly drawn arm (i.e., t ∼U([T])) achieves
+ϵt ≤w
+h
+1
+ln(1/p) log
+ Y
+k
+mk
+
++
+p
+nˆL
+v
+u
+u
+tξ1
+s
+logb(Tk/δ)
+2 logb(e)k + ξ2b−
+1
+dC
+√
+T/ki
+(124)
+where d = n( ¯m−1), ξ1 = (2+22/d), ξ2 = 1
+4db2(1+2/d), k = T logb(T)−3, b is the branching factor
+for partitioning cells, and the near-optimality constant C = |X ∗|−1√
+2πd
+
+b2d2
+5r2ησ−2
+d/2
+(Lemma 36).
+Proof. Assume ηk = η = 2
+ˆL as defined in Lemma 2. Also assume a previously pulled arm is returned
+uniformly at random. Starting with Lemma 13 and applying Theorem 3 and Lemma 37, we find
+E[ϵt] ≤τ log
+ Y
+k
+mk
+
++
+r
+2n
+mink ηk
+s
+1
+T
+X
+t
+Lτ(xt)
+(125a)
+≤
+1
+ln(1/p) log
+ Y
+k
+mk
+
++
+p
+nˆL
+v
+u
+u
+tξ1
+s
+logb(Tk/δ)
+2 logb(e)k + ξ2b−
+1
+dC
+√
+T/k
+(125b)
+with probability 1 −δ where m∗= maxk mk, d = n( ¯m −1), ξ1 = (2 + 22/d), ξ2 = 1
+4db2(1+2/d),
+k = T logb(T)−3, b is the branching factor for partitioning cells, and the near-optimality constant
+C = |X ∗|−1√
+2πd
+
+b2d2
+5r2ησ−2
+d/2
+(Lemma 36).
+Markov’s inequality then allows us to bound the pointwise exploitability of any arm returned by the
+algorithm as
+ϵt ≤w
+h
+1
+ln(1/p) log
+ Y
+k
+mk
+
++
+p
+nˆL
+v
+u
+u
+tξ1
+s
+logb(Tk/δ)
+2 logb(e)k + ξ2b−
+1
+dC
+√
+T/ki
+(126)
+with probability (1 −w−1)(1 −δ) for any w > 0.
+42
+
+Published as a conference paper at ICLR 2024
+B.7
+COMPLEXITY OF POLYMATRIX GAMES
+Lemma 38. For a polymatrix game defined by the set of bimatrix games with payoff matrix P k
+kl for
+every player k and l ̸= k, the rank of the matrix M(x) defined in equation (11) can be equivalently
+studied by replacing all instances of Hk
+kl with P k
+kl.
+Proof. Consider the polymatrix game given by the set of matrices P k
+kl for every k and l ̸= k. The
+polymatrix game can be equivalently written in normal form, albeit, less concisely. Note that the
+polymatrix approximation, Hk
+kl, as we have defined it (see Section 2 Preliminaries) of this normal-
+form representation between players k and l with all other players’ strategies marginalized out is
+related to the true underlying bimatrix game between them as follows:
+Hk
+kl[ak, al] = Ex−kl[uk(ak, al, x−kl)] ∀ak, al
+(127a)
+= a⊤
+k
+
+P k
+klal +
+X
+j̸∈{k,l}
+P k
+kjxj
+
+∀ak, al
+(127b)
+= a⊤
+k P k
+klal + a⊤
+k
+ X
+j̸∈{k,l}
+P k
+kjxj
+
+|
+{z
+}
+pk
+∀ak, al
+(127c)
+where P k
+kl is player k’s payoff matrix for the bimatrix game between players k and l in a polymatrix
+game and pk does not depend on player l’s strategy.
+This implies that Hk
+kl is equal to P k
+kl up to a constant offset of the rows, i.e.,
+Hk
+kl = P k
+kl + Ck
+(128)
+where Ck is a matrix with constant rows.
+Consider the matrix M(x) which contains Hk
+kl blocks. Recall that the bottom rows of M(x) contain
+rows of 1’s matching each column of Hk
+kl blocks. Consider multiplying the lth row of 1’s (which
+contains 0’s on all columns not in the lth block) by √ηk[I −
+1
+mk 1k1⊤
+k ]Ck and subtracting it from the
+block containing √ηk[I −
+1
+mk 1k1⊤
+k ]Hk
+kl,
+√ηk[I −1
+mk
+1k1⊤
+k ][Hk
+kl −Ck] = √ηk[I −1
+mk
+1k1⊤
+k ]P k
+kl.
+(129)
+Note that √ηk[I −
+1
+mk 1k1⊤
+k ]Ck still remains a matrix with constant rows (the preconditioner effec-
+tively subtracts a constant matrix from Ck). This multiplying and subtracting a row from another
+is an elementary operation on the matrix, meaning it does not change its row rank. Therefore, for
+a polymatrix game, we can reason about the positive definiteness of the Hessian at equilibria by
+examining the matrix M(x) with all Hk
+kl’s swapped for P k
+kl’s.
+Interestingly, at zero temperature (where QRE = Nash), M is constant for a polymatrix game, so
+the rank of this matrix can be computed just once to extract information about all possible interior
+equilibria in the game. Furthermore, the Hessian is positive semi-definite over the entire joint strategy
+space, implying the loss function is convex (see Figure 5 (left) for empirical support). This indicates,
+by convex optimization theory, 1) all mixed Nash equilibria in polymatrix games form a convex set
+(i.e., they are connected) and 2) assuming mixed equilibria exist, they can be computed simply by
+stochastic gradient descent on L. If M is rank-n ¯m, then this interior equilibrium is unique.
+Complexity
+Approximation of Nash equilibria in polymatrix games is known to be PPAD-
+hard (Deligkas et al., 2022). In contrast, if we restrict our class of polymatrix games to those
+with at least one interior Nash equilibrium, our analysis proves we can find an approximate Nash
+equilibrium in deterministic, polynomial time (Corollary 7). This follows directly from the fact that L
+is convex, our decision set X = Q
+k Xk is convex, and convex optimization theory admits polynomial
+time approximation algorithms (e.g., gradient descent). We consider the assumption of the existence
+of an interior Nash equilibrium to be relatively mild3, so this positive complexity result is surprising.
+3Marris et al. (2023) shows 2-player, 2-action polymatrix games with interior Nash equilibria make up a
+non-trivial 1/4 of the space of possible 2 × 2 games.
+43
+
+Published as a conference paper at ICLR 2024
+Also, note that the Hessian of the loss at Nash equilibria is encoded entirely by the polymatrix
+approximation at the equilibrium. Therefore, approximating the Hessian of L about the equilibrium
+(which amounts to observing near-equilibrium behavior (Ling et al., 2018)) allows one to recover
+this polymatrix approximation (up to constant offsets of the columns which equilibria are invariant
+to (Marris et al., 2023)).
+Corollary 7 (Approximating Nash Equilibria of Polymatrix Games with Interior Equilibria). Con-
+sider the class of polymatrix games with interior Nash equilibria. This class of games admits a fully
+polynomial time deterministic approximation scheme (FPTAS).
+Proof. Lemma 3 relates the approximation of Nash equilibria to the minimization of the loss function
+L(x). By Lemma 1, this loss function attains its minimum value of zero if and only if x is a
+Nash equilibrium. For polymatrix games, the Hessian of this loss function is everywhere finite
+and positive definite (Lemma 16), therefore, this loss function is convex. The decision set for this
+minimization problem is the product space of simplices, therefore it is also convex. Given that we
+only consider polymatrix games with interior Nash equilibria, we know that our loss function attains
+a global minimum within this set. By convex optimization theory, this function can be approximately
+minimized in a polynomial number of steps by, for example, (projected) gradient descent (Boyd and
+Vandenberghe, 2004). Gradient descent requires computing the gradient of the loss function at each
+step. From Lemma 14, we see that computing the gradient (at zero temperature) simply requires
+reading the polymatrix description of the game (i.e., each bi-matrix game Hk
+kl between players),
+which is clearly polynomial in the size of the input (the polymatrix description). The remaining
+computational steps of gradient descent (e.g., projection onto simplices) are polynomial as well.
+In conclusion, gradient descent approximates a Nash equilibrium in polynomial number of steps
+(logarithmic if strongly-convex (Mairal, 2013)), each of which costs polynomial time, therefore the
+entire scheme is polynomial.
+44
+
+Published as a conference paper at ICLR 2024
+C
+EXPERIMENTAL SETUP AND DETAILS
+Here we provide further details on the experiments.
+C.1
+GAMBIT
+The seven methods from the gambit (McKelvey et al., 2016) library that we tested on the 3-
+player and 4-player Blotto games are listed below (with runtimes). Only gambit-enumpoly and
+gambit-enumpure are able to return any NE for 3-player Blotto within a 1 hour time limit (and
+only pure equilibria). And only gambit-enumpure returns any NE for the 4-player game.
+• gambit-enumpoly [73 sec 3-player, timeout 4-player]
+• gambit-enumpure [72 sec 3-player, 45 sec 4-player]
+• gambit-gnm
+• gambit-ipa
+• gambit-liap
+• gambit-logit
+• gambit-simpdiv
+C.2
+LOSS VISUALIZATION AND RANK TEST
+Figure 5 and claims made in Section 5 analyze several classical matrix games. We report the payoff
+matrices in standard row-player / column-player payoff form below. All games are then shifted and
+scaled so payoffs lie in [0, 1] (i.e., first by subtracting the minimum and then scaling by the max).
+RPS:
+
+
+0/0
+−1/1
+1/ −1
+1/ −1
+0/0
+−1/1
+−1/1
+1/ −1
+0/0
+
+.
+(130)
+Chicken:
+"
+0/0
+−1/1
+1/ −1
+−3/ −3
+#
+.
+(131)
+Matching Pennies:
+"
+1/ −1
+−1/1
+−1/1
+1/ −1
+#
+.
+(132)
+Modified-Shapleys:
+
+
+1/ −0.5
+0/1
+0.5/0
+0.5/0
+1/ −0.5
+0/1
+0/1
+0.5/0
+1/ −0.5
+
+.
+(133)
+Prisoner’s Dilemma:
+"
+−1/ −1
+−3/0
+0/ −3
+−2/ −2
+#
+.
+(134)
+45
+
+Published as a conference paper at ICLR 2024
+C.2.1
+LOSS ON FAMILIAR GAMES
+We visualize our proposed loss Lτ on two classic 2-player, general-sum games: Chicken, payoff
+matrix (131), and the Prisoner’s Dilemma, payoff matrix (134). Each plot in Figure 5 visualizes
+the loss at various strategy profiles in probability-space; each strategy profile is represented by each
+player’s probability of playing action 1 of 2 (top row / first column of payoff matrix). Temperature τ
+is varied across the plots. Figure 5 repeats this same visualization but in logit-space to better show
+the equilibria closest to the boundaries.
+Figure 5: Upper Bound (ϵ ≤fτ(Lτ)) Heatmap Visualization. The first row examines the loss
+landscape for the classic anti-coordination game of Chicken (Nash equilibria: (0, 1), (1, 0), (2/3, 1/3))
+while the second row examines the Prisoner’s dilemma (Unique Nash equilibrium: (0, 0)). For
+improved visibility, we subtract the offset τ log(m2) from fτ(Lτ) per Lemma 13, which relates the
+exploitability at positive temperature to that at zero temperature. Temperature increases for each
+plot moving to the right. For high temperatures, interior (fully-mixed) strategies are incentivized
+while for lower temperatures, nearly pure strategies can achieve minimum exploitability. For zero
+temperature, pure strategy equilibria (e.g., defect-defect) are not captured by the loss as illustrated by
+the bottom-left Prisoner’s Dilemma plot with a constant loss surface.
+Figure 6: [Figure 5 Repeated in Logit-Space (ln(
+p
+1−p)) Rather than Probability-Space (p)] Upper
+Bound (ϵ ≤fτ(Lτ)) Heatmap Visualization. The first row examines the loss landscape for the classic
+anti-coordination game of Chicken (Nash equilibria: (0, 1), (1, 0), (2/3, 1/3)) while the second row
+examines the Prisoner’s dilemma (Unique Nash equilibrium: (0, 0)). Temperature increases for each
+plot moving to the right. For improved visibility, we subtract the offset τ log(m2) from fτ(Lτ) per
+Lemma 13, which relates the exploitability at positive temperature to that at zero temperature. For
+high temperatures, interior (fully-mixed) strategies are incentivized while for lower temperatures,
+nearly pure strategies can achieve minimum exploitability. For zero temperature, pure strategy
+equilibria (e.g., defect-defect) are not captured by the loss as illustrated by the bottom-left Prisoner’s
+Dilemma plot with a constant loss surface.
+46
+
+Published as a conference paper at ICLR 2024
+C.3
+SADDLE POINT ANALYSIS
+To generate Figure 2, we follow a procedure similar to the study of MNIST in (Dauphin et al., 2014)
+(Section 3 of Supp.). Their recommended procedure searches for critical points in two ways. The
+first repeats a randomized, iterative optimization process 20 times. They then sample one these 20
+trials at random, select a random point along the descent trajectory, and search for a critical point
+(using Newton’s method) nearby. They repeat this sampling process 100 times. The second approach
+randomly selects a feasible point in the decision set and searches for a critical point nearby (again
+using Newton’s method). They also perform this 100 times.
+Our protocol differs from theirs slightly in a few respects. One, we use SGD, rather than the saddle-
+free Newton algorithm to trace out an initial descent trajectory. Two, we do not add noise to strategies
+along the descent trajectory prior to looking for critical points. Thirdly, we minimize gradient norm
+rather than use Newton’s method to look for critical points. Lastly, we use different experimental
+hyperparameters. We run SGD for 1000 iterations rather than 20 epochs and rerun SGD 100 times
+rather than 20. We sample 1000 points for each of the two approaches for finding critical points.
+C.4
+SGD ON CLASSICAL GAMES
+The games examined in Figure 3 were all taken from (Gemp et al., 2022). Each is available via open
+source implementations in OpenSpiel (Lanctot et al., 2019) or GAMUT (Nudelman et al., 2004).
+We compare against several other baselines, replicating the experiments in (Gemp et al., 2022). RM
+indicates regret-matching and FTRL indicates follow-the-regularized-leader. These are, arguably, the
+two most popular scalable stochastic algorithms for approximating Nash equilibria. yQREauto is a
+stochastic algorithm developed in (Gemp et al., 2022).
+For each of the experiments, we sweep over learning rates in log-space from 10−3 to 102 in increments
+of 1. We also consider whether to run SGD with the projected-gradient and whether to constrain
+iterates to the simplex via Euclidean projection or entropic mirror descent (Beck and Teboulle, 2003).
+We then presented the results of the best performing hyperparameters. This was the same approach
+taken in (Gemp et al., 2022).
+Saddle Points in Blotto
+To confirm the existence of saddle points, we computed the Hessian of
+L(x10k) for SGD (s = ∞), deflated the matrix by removing from its eigenvectors all directions
+orthogonal to the simplex, and then computed its top-(n ¯m −n) eigenvalues. We do this because
+there always exists a n-dimensional nullspace of the Hessian at zero temperature that lies outside the
+tangent space of the simplex, and we only care about curvature within the tangent space. Specificaly,
+at an equilibrium x, if we compute z⊤Hess(L)z where z is formed as a linear combination of the
+vectors {[x1, 0, . . . , 0]⊤, . . . , [0, . . . , xn]⊤, then each block ˜Bkl is identically zero at an equilibrium:
+˜Bklxl = √ηk[I −
+1
+mk 11⊤]Hk
+klxl = √ηkΠT ∆(∇k
+xk) = 0. By Lemma 16, this implies there is zero
+curvature of the loss in the direction z: z⊤Hess(L)z = 0.
+C.5
+BLIN ON ARTIFICIAL GAME
+To construct the 7-player, 2-action, symmetric, artifical game in Figure 4, we used the following
+coefficients (discovered by trial-and-error):
+"
+0.09906873
+0
+0.23116037
+0
+0.62743528
+0
+0.19813746
+0
+0.33022909
+0
+0.03302291
+0
+0.62743528
+0
+#
+.
+(135)
+The first row indicates the payoffs received when player i plays action 0 and the background
+population plays any of the possible joint actions (number of combinations with replacement). For
+example, the first column indicates the payoff when all background players play action 0. The second
+column indicates all background players play action 0 except for one which plays action 1, and so on.
+The last column indicates all background players play action 1. These 2n scalars uniquely define the
+payoffs of a symmetric game.
+47
+
+Published as a conference paper at ICLR 2024
+Given that this game only has two actions, we represent a mixed strategy by a single scalar p ∈[0, 1],
+i.e., the probability of the first action. Furthermore, this game is symmetric and we seek a symmetric
+equilibrium, so we can represent a full Nash equilibrium by this single scalar p. This reduces our
+search space from 7 × 2 = 14 variables to 1 variable (and obviates any need for a map s from the
+unit hypercube to the simplex—see Lemma 22).
+48
+

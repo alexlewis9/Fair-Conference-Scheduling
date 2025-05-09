@@ -1,0 +1,1843 @@
+Published as a conference paper at ICLR 2024
+UNIFIED GENERATIVE MODELING OF 3D MOLECULES
+VIA BAYESIAN FLOW NETWORKS
+Yuxuan Song1∗, Jingjing Gong1∗, Hao Zhou1, Mingyue Zheng2, Jingjing Liu1 & Wei-Ying Ma1
+1 Institute of AI Industry Research (AIR), Tsinghua University
+2 Shanghai Institute of Materia Medica, Chinese Academy of Sciences
+{songyuxuan,gongjingjing,zhouhao,maweiying}@air.tsinghua.edu
+ABSTRACT
+Advanced generative model (e.g., diffusion model) derived from simplified conti-
+nuity assumptions of data distribution, though showing promising progress, has
+been difficult to apply directly to geometry generation applications due to the multi-
+modality and noise-sensitive nature of molecule geometry. This work introduces
+Geometric Bayesian Flow Networks (GeoBFN), which naturally fits molecule
+geometry by modeling diverse modalities in the differentiable parameter space of
+distributions. GeoBFN maintains the SE-(3) invariant density modeling property by
+incorporating equivariant inter-dependency modeling on parameters of distributions
+and unifying the probabilistic modeling of different modalities. Through optimized
+training and sampling techniques, we demonstrate that GeoBFN achieves state-of-
+the-art performance on multiple 3D molecule generation benchmarks in terms of
+generation quality (90.87% molecule stability in QM9 and 85.6% atom stability in
+GEOM-DRUG1). GeoBFN can also conduct sampling with any number of steps
+to reach an optimal trade-off between efficiency and quality (e.g., 20× speedup
+without sacrificing performance).
+1
+INTRODUCTION
+Sender Distribution
+Bayesian
+Update
+EGNN
+Receiver Distribution
+Sender
+Sample
+KL
+Noisy channel
+Sender Distribution
+Bayesian
+Update
+EGNN
+Receiver Distribution
+Sender
+Sample
+Noisy channel
+KL
+Figure 1: The framework of GeoBFN
+Molecular geometries can be represented
+as three-dimensional point clouds, charac-
+terized by their Cartesian coordinates in
+space and enriched with descriptive fea-
+tures. For example, proteins can be repre-
+sented as proximity spatial graphs (Jing
+et al., 2021) and molecules as atomic
+graphs in 3D (Schütt et al., 2017). Thus,
+learning geometric generative models has
+the potential to benefit scientific discover-
+ies such as material and drug design. Re-
+cent progress in deep generative model-
+ing has paved the way for geometric gen-
+erative modeling. For example, Gebauer
+et al. (2019); Luo & Ji (2021) and Satorras
+et al. (2021a) use autoregressive models
+and flow-based models, respectively, for
+generating 3D molecules in-silico. Most
+recently, inspired by the huge success of
+diffusion model (DM) in image genera-
+tion Meng et al. (2022); Ho et al. (2020)
+and beyond Li et al. (2022), DM incorporating geometric symmetries has been widely explored in
+the field of geometry generation Hoogeboom et al. (2022); Xu et al. (2023).
+∗Equal Contribution. Correspondence to Hao Zhou(zhouhao@air.tsinghua.edu).
+1The scores are reported at 1k sampling steps for fair comparison, and our scores could be further improved
+if sampling sufficiently longer steps
+1
+
+Published as a conference paper at ICLR 2024
+However, two major challenges remain in directly applying DM to molecule geometry: multi-modality
+and noise sensitivity. The multi-modality issue refers to the dependency on diverse data forms to
+effectively depict the atomic-level geometry of a molecule. For instance, the continuous variable of
+atom coordinates is essential for describing the spatial arrangement, while either the discretised atom
+charge or categorical atom types are employed to completely determine the molecule’s composition.
+Noise sensitivity refers to the fact that applying noise or perturbing the atom coordinates will not only
+change the value of the variable but also have a significant impact on the relationship among different
+atoms as the Euclidean distances are also changed. Therefore, a small noise on atom coordinates
+could bring a sudden drop of the signal at the molecule level.
+To alleviate these issues, Xu et al. (2023) introduces a latent space for alleviating the inconsistency
+of unified Gaussian diffusion on different modalities. Anand & Achim (2022) propose to use
+decomposed modeling of different modalities. Peng et al. (2023) use different noise schedulers for
+different modalities to accommodate noise sensitivity. However, these methods either depend on the
+sophisticated and artifact-filled design or lack of guarantee or constraint on the designed space.
+In this work, we propose Geometric Bayesian Flow Networks (GeoBFN) to model 3D molecule
+geometry in a principally different way. Bayesian Flow Networks Graves et al. (2023) (BFN) is
+a novel generative model developed quite recently. Taking a unique approach by incorporating
+Bayesian inference to modify the parameters of a collection of independent distributions, brings a
+fresh perspective to geometric generative modeling. Firstly, GeoBFN uses a unified probabilistic
+modeling formulation for different modalities in the molecule geometry. Secondly, regarding the
+variable of 3D atom coordinates, the input variance for BFNs is considerably lower than DMs,
+leading to better compatibility with the inherent noise sensitivity. Further, we bring the geometry
+symmetries into the Bayesian update procedure through an equivariant inter-dependency modeling
+module. We also demonstrate that the density function of implied generative distribution is SE-(3)
+invariant and the generative process of iterative updating is roto-translational equivariant. Thirdly,
+with BFN’s powerful probabilistic modeling capacity, 3D molecule geometry representation can
+be further optimized into a representation with only two similar modalities: discretised charge and
+continuous atom coordinates. The mode-redundancy issue on discretised variable in the original
+BFNs is fixed by an early mode-seeking sampling strategy in GeoBFN.
+With operating on the space with less variance, GeoBFN could sample with any number of steps
+which provides a superior trade-off between efficiency and quality, which leads to a 20× speedup
+with competitive performance. Besides, GeoBFN is a general framework that can be easily extended
+to other molecular tasks. We conduct thorough evaluations of GeoBFN on multiple benchmarks, in-
+cluding both unconditional and property-conditioned molecule generation tasks. Results demonstrate
+that GeoBFN consistently achieves state-of-the-art generation performance on molecule stability and
+other metrics. Empirical studies also show a significant improvement in controllable generation and
+demonstrate that GeoBFN enjoys a significantly higher modeling capacity and inference efficiency.
+2
+PRELIMINARIES
+2.1
+SE-(3) INVARIANT DENSITY MODELING
+To distinguish geometry representation and the atomic property features, we use the tuple g = ⟨x, h⟩
+to represent the 3D molecules. Note here x = (x1, . . . , xN) ∈RN×3 is the atom coordinate matrix,
+and h = (h1, . . . , hN) ∈RN×d is the node feature matrix, e.g., atomic types and charges. Density
+estimation on the 3D molecules should satisfy specific symmetry conditions of the geometry. In this
+work, we focus on the transformations Tg in the Special Euclidean group (SE-(3)), i.e., the group of
+rotation and translation in 3D space, where transformations Tg can be represented by a translation
+t and an orthogonal matrix rotation R. Note for a generative model on molecule geometry with
+underlying density function pθ(⟨x, h⟩), the likelihood should not be influenced by the rotation or
+translation of the entire molecule, which means the likelihood function should be SE-(3) invariant on
+the input coordinates, i.e., pθ(⟨x, h⟩) = pθ(⟨Rx + t, h⟩).
+2.2
+BAYESIAN FLOW NETWORKS
+The Bayesian Flow Networks (BFNs) are based on the following latent variable models: for learning
+the probability distribution pθ over g, a series of noisy versions ⟨y1, · · · , yn⟩of g are introduced as
+2
+
+Published as a conference paper at ICLR 2024
+latent variables. And then the variational lower bound of likelihood is optimized:
+log pθ(g) ≥
+E
+y1,...,yn∼q
+
+log pϕ (g | y1, . . . , yn) pϕ (y1, . . . , yn)
+q(y1, . . . , yn|g)
+
+= −DKL(q∥pϕ (y1, . . . , yn)) +
+E
+y1,...,yn∼q log [pϕ (g | y1, . . . , yn)]
+(1)
+And q is namely the variational distribution. The prior distribution of latent variables is usually
+organized autoregressively, i.e., pϕ(y1, · · · , yn) = pϕ(y1)pϕ(y2 | y1)pϕ(yn | yn−1 · · · y1) which
+also implies the data generation procedure, i.e., y1 →· · · →yn →g (Note: this procedure only
+demonstrates the generation order, yet does NOT imply Markov property for the following derivative).
+One widely adopted intuition for the generation process is that the information of the data samples
+should progressively increase along with the above Markov chain, e.g., noisier images to cleaner
+images. The key motivation of BFNs is that the information along the latent variables should change
+as smoothly as possible for all modalities including discretized and discrete variables. To this end,
+BFNs operate on the distributions in the parameter space, in contrast to the sample space.
+We introduce components of BFNs one by one (Fig.2a). Firstly, the variational distribution q is
+defined by the following form:
+q (y1, . . . , yn | g) =
+n
+Y
+i=1
+pS (yi | g; αi)
+(2)
+pS (yi | g; αi) is termed as the sender distribution, which could be seen as adding noise to the data
+according to a predefined accuracy αi.
+Secondly, for the definition of pϕ, BFNs will first transfer the noisy sample y to the parameter
+space, obtaining θ, then apply Bayesian update in the parameters space and transfer back to the
+noisy sample space at last. To clarify, θ refers to the parameter of distributions in the sample space,
+e.g., the mean/variance for Gaussian distribution or probabilities for categorical distribution. In the
+scope of BFNs, the distributions on the sample space are factorized by default, e.g., p(g | θ) =
+QD
+d=1 p
+ g(d) | θ(d)
+.
+Thirdly, a neural network Φ takes θ as input and aims to model the dependency among different
+dimensions hence to recover the distribution of the original sample g. The output of neural network
+Φ(θ) still lies in the parameter space, and we termed it as the parameter of output distribution pO,
+where pO(y|θ; ϕ) = QD
+d=1 pO(y(d) | Φ(θ)(d)).
+To map the noisy sample y to the input space, Bayesian update is applied to θ:
+θi ←h(θi−1, yi, αi),
+(3)
+h is called Bayesian update function . The distribution over (θ0, . . . , θn−1) is then defined by the
+Bayesian update distribution via marginalizing out y:
+pϕ (θ0, . . . , θn−1) = p(θ0)
+n
+Y
+i=1
+pU (θi | θi−1; αi) ,
+(4)
+where p(θ0) is a simple prior for ease of generation, e.g., standard normal, and pU could be obtained
+from Eq. 3:
+pU (θi | θi−1; αi) =
+E
+pR(yi|θi−1;αi)δ (θi −h(θi−1, yi, αi)) ,
+(5)
+δ being the Dirac delta distribution. pR(yi|θi−1, αi) =
+E
+pO(x′|θi−1;ϕ)pS(yi|x′; αi) and is also called
+the as receiver distribution.
+At last we map Φ(θ) back to the noisy sample space by combining the known form, accuracy of PS
+and marginalizing out y:
+pϕ (y1, . . . , yn) = pϕ(y1)
+n
+Y
+i=2
+pϕ(yi | y{1:i−1} =
+n
+Y
+i=1
+pϕ(yi | θi−1)
+=
+n
+Y
+i=1
+E
+pO(x′
+i|θi−1;ϕ) [pS(yi|x′
+i; αi)] ,
+(6)
+3
+
+Published as a conference paper at ICLR 2024
+a Graphical Model of BFN
+b Graphical Model of Diffusion
+Figure 2: Graphical View of Comparison between BFN and Diffusion
+where we use θ0:n−1 to abbreviate (θ0, . . . , θn−1), and y similar. . Till now, we have defined q,
+pϕ(y1, . . . , yn), and pϕ (g | y1, . . . , yn) is simply pO(g | θn) on each sample, thus Eq.1 can be
+estimated.
+3
+METHODOLOGY
+3.1
+SE-(3) INVARIANT GEOMETRY DENSITY MODELING
+As discussed in Sec. 2.1, for a generative model on the 3D molecule geometry, it is crucial to hold the
+SE-(3) invariant conditions. Recall the mathematics formula of the geometries g = ⟨x, h⟩, we denote
+the latent variable, e.g., noisy samples, of g as yg. We are interested in applying the SE-(3) invariant
+conditions to the probabilistic model pϕ. To this end, we need to first reformulate the likelihood
+function:
+pϕ(g) = pϕ(⟨x, h⟩) =
+Z
+yg
+1,··· ,yg
+n
+pϕ(g | yg
+1, · · · , yg
+n)pϕ(yg
+1, · · · , yg
+n)dyg
+1 . . . dyg
+n.
+(7)
+With θx and yx and all the distributions defined in the same way as above, we focus on the variables
+corresponds to x in the geometry yg. Then we have the following theorem:
+Theorem 3.1. (SE-(3) Invariant Condition)
+• With the θx, yx, x constrained in the zero Center of Mass(CoM) space (Köhler et al., 2020;
+Xu et al., 2022), the likelihood function pϕ is translational invariant.
+• When the following properties are satisfied, the likelihood function pϕ is roto-invariant:
+pO
+ x′ | θx
+i−1; ϕ
+
+= pO
+ R(x′) | R(θx
+i−1); ϕ
+
+; pS (yx | x′; α) = pS (R(yx) | R(x′); α) ;
+h(R(θx
+i−1), R(yx
+i ), αi) = Rh(θx
+i−1, yx
+i , αi); p(x′|θx
+0) = p(R(x′)|θx
+0), ∀orthogonal R
+Proposition 3.2. With the condition in Theorem. 3.1 satisfied, the evidence lower bound objective in
+Eq. 1, i.e.,
+LVLB(x) =
+E
+pϕ(θx
+0 ,...,θx
+n)
+" n
+X
+i=1
+DKL(pS (· | x; αi) ∥pR(· | θx
+i−1; αi)) −log pϕ (x | θx
+n)
+#
+,
+(8)
+with the Bayesian update distribution pϕ
+ θx
+0, . . . , θx
+n−1
+
+= Qn
+i=1 pU (θi | θi−1, x; αi) similar to
+Eq. 4. And pR(· | θx
+i−1; αi) =
+E
+pO(x′
+i|θx
+i−1;ϕ) [pS(yi|x′
+i; αi)], pϕ(x|θx
+n) = pO(x|θx
+n, ϕ). Derivation
+from Eq. 1 to equation 8 is at Appendix C.4. if pU (θi | θi−1, x; αi) = pU (Rθi | Rθi−1, Rx; αi),
+then LVLB(x) is also SE-(3) invariant.
+We leave the formal proof of Theorem. 3.1 and Proposition. 3.2 in Appendix C.
+3.2
+GEOMETRIC BAYESIAN FLOW NETWORKS
+Then we introduce the detailed formulation of geometric Bayesian flow networks (GeoBFN) based on
+the analysis in Sec. 3.1. For describing a 3D molecule geometry g = ⟨x, h⟩, various representations
+can be utilized for the node features. The atom types ht and atomic charges hc are commonly
+employed, with the former being discrete (categorical) and the latter being discretized (integer).
+Together with the continuous variable, e.g., atom coordinates x, the network module in the modeling
+of the output distribution of GeoBFN could be parameterized with an equivariant graph neural
+network (EGNN) (Satorras et al., 2021b) Φ:
+Φ(Rθx + t, [θht, θhc]) = [Rθx′ + t, θh′
+t, θh′
+c],
+∀R, t
+(9)
+4
+
+Published as a conference paper at ICLR 2024
+where Φ(θx, [θht, θhc]) = [θx′, θh′
+t, θh′
+c]. And then we introduce the necessary components to
+derive the objective in Eq. 8
+Atom Coordinates x and Charge hc: For the continuous and discretized variables, the input
+distribution is set as the factorized Gaussian distributions, where θ
+def
+:= {µ, ρ} the parameter of
+N
+ · | µ, ρ−1I
+
+. For simplicity, we take x as an example to illustrate the common parts of the
+two variables. And θx
+0 is set as {0, 1}. The sender distribution pS is also an isotropic Gaussian
+distribution:
+pS(· | x; αI) = N
+ x, α−1I
+
+(10)
+Given the nice property of isotropic Gaussian (proof given by Graves et al. (2023)), the simple form
+of Bayesian update function could be derived as:
+h ({µi−1, ρi−1} , y, α) = {µi, ρi} ,
+Here
+ρi = ρi−1 + α, µi = µi−1ρi−1 + yα
+ρi
+(11)
+As shown in Eq. 11, the randomness only exists in µ, and the corresponding Bayesian update
+distribution in Eq. 8 is as:
+pU (θi | θi−1, x; α) = N
+
+µi | αx + µi−1ρi−1
+ρi
+, α
+ρ2
+i
+I
+
+(12)
+The above discrete-time Bayesian update could be easily extended to continuous-time, with an
+accuracy scheduler defined as β(t) =
+R t
+t′=0 α (t′) dt′, t ∈[0, 1]. Given the accuracy additive
+property of pU (proof given by Graves et al. (2023)),
+E
+pU(θi−1|θi−2,x;αa)pU (θi | θi−1, x; αb) =
+pU (θi | θi−2, x; αa + αb), the Bayesian flow distribution could be obtained as:
+pF (θx | x; t) = pU (θx | θ0, x; β(t))
+(13)
+The key difference of atom coordinates x and charges hc lies in the design of the output distribution.
+For continuous variable x, the network module Φ directly outputs an estimated ˆx = Φ(θg, t). Hence
+for timestep t, the output distribution is
+pO (x′ | θg, t; ϕ) = δ(x −Φ(θg, t))
+(14)
+While for discretized variable hc, the network module will output two variables, µhc and ln σhc with
+dimension equivalent to hc which implies a distribution N(µhc, σ2
+hcI). With a K-bins discretized
+variable, the support is split into K buckets with each bucket k centered as kc = 2k−1
+K
+−1 and left
+boundary as kl = kc −1
+K and right boundary as kr = kc + 1
+K . Then for each k, the probability is
+the mass from kl to kr, i.e.,
+R kr
+kl N(µhc, σ2
+hcI). And the first and last bins are curated by making sure
+the sum of the probability mass is 1. Then the output distribution is:
+pO(hc | θg, t; ϕ) =
+D
+Y
+d=1
+p(d)
+O
+
+k
+
+h(d)
+c
+
+| θg, t; ϕ
+
+,
+(15)
+where the function k(·) maps the variable to the corresponding bucket.
+Atom Types ht: The atom types ht are discrete variables with K categories, where the corresponding
+parameter space lies in probability simplex thus the procedure is slightly different from the others.
+The input distribution for ht is pI(ht | θ) = QD
+d=1 θht(d), where D is number if variables. And
+the input prior θht
+0
+=
+1
+K, where 1
+K is the length KD vector whose entries are all
+1
+K . The sender
+distribution, could be derived with the central limit theorem, lies in the form of
+pS(y | ht; α) = N (y | α (Keht −1) , αKI)
+(16)
+where 1 is a vector of ones, I is the identity matrix, and ej ∈RK is a vector defined as the projection
+from the class index j to a length K one-hot vector (proof given by Graves et al. (2023)). In other
+words, each element of ej is defined as (ej)k = δjk, where δjk is the Kronecker delta function. And
+eht
+def
+=
+
+eh(1)
+t , . . . , eh(D)
+t
+
+∈RKD.
+5
+
+Published as a conference paper at ICLR 2024
+GeoBFN
+EDM
+Figure 3: The Bayesian Flow and Diffusion Process of GeoBFN and EDM.
+The Bayesian update function could be derived as h (θi−1, y, α) =
+eyθi−1
+PK
+k=1 eyk(θi−1)k (proof given by
+Graves et al. (2023)) . And similar to Eq. 13, the Bayesian flow distribution for ht is as:
+pF (θht | ht; t) =
+E
+N(yht|β(t)(Keht−1),β(t)KI)
+δ(θht −softmax(yht))
+(17)
+With the network module Φ, the output distribution could be obtained as
+p(d)
+O (k | θg; t) =
+
+softmax
+
+Φ(d)(θg, t)
+
+k , pO(ht | θ; t) =
+D
+Y
+d=1
+p(d)
+O
+
+h(d)
+t
+| θg; t
+
+(18)
+Training Objective: By combining the different variables together, we could obtain the unified
+continuous-time loss for GeoBFN based on Eq. 25 to Eq. 41 in (Graves et al., 2023) as:
+L∞(g) = L∞(⟨x, hc, ht⟩) =
+E
+t∼U(0,1),pF (θg|g;t)
+αg(t)
+2
+∥g −Φ(θg, t)∥2
+
+=
+E
+t∼U(0,1),
+θg∼pF (·|g;t)
+αx(t)
+2
+∥x −Φx∥2 + αhc(t)
+2
+∥hc −Φhc∥2 + αht(t)
+2
+∥ht −Φht∥2
+
+(19)
+Where Φ· is short for Φ·(θg, t). The joint Bayesian flow distribution is decomposed as:
+pF (θg | g; t) = pF (θx | x; t)pF (θhc | hc; t)pF (θht | ht; t),
+(20)
+with αx, αhc and αht refer to the corresponding accuracy scheduler (details provided by
+Graves et al. (2023)).
+And Φx is defined the same as in Eq. 14;
+while Φhc is de-
+fined by the weighted average of different bucket centers with the output distribution in
+Eq. 15 as
+PK
+k=1 p(1)
+O (k | θ, t)kc, . . . , PK
+k=1 p(D)
+O (k | θ, t)kc
+
+; And for Φht, it is defined as the
+PK
+k=1 p(d)
+O (k | θ; t)ek based on Eq. 18.
+Remark 3.3. The GeoBFN defined in the above formulation satisfied the SE(3)-invariant condition in
+Theorem. 3.1.
+Sampling GeoBFN will generate samples follow the graphical model in the recursive procedure as
+illustrated in Fig. 2a: e.g., g′ ∼pO(·|θi−1) →y ∼pS(·|g′, α) →θi = h(θi−1, y, α).
+3.3
+OVERCOME NOISE SENSITIVITY IN MOLECULE GEOMETRY
+One key obstacle of applying diffusion models to 3D molecule generation is the noise sensitivity
+property of the molecule geometry. The property of noise sensitivity seeks to state the fact: When
+noise is incorporated into the coordinates and displaces them significantly from their original positions,
+the bond distance between certain connected atoms may exceed the bond length range[1]. Under these
+circumstances, the point cloud could potentially lose the critical chemical information inherently
+encoded in the bonded structures; Another perspective stems from the reality that when noise is
+added to the coordinates, the relationships (distance) between different atoms could alter at a more
+rapid pace, e.g. modifying the coordinates of one atom results in altering its distance to all other
+atoms. Thus, the intermediate steps’ structure in the generation procedure of diffusion models the
+intermediate steps’ structure might be uninformative. And the majority of the information being
+acquired in the final few steps of generation (as depicted in Fig. 3).
+6
+
+Published as a conference paper at ICLR 2024
+A fundamental belief underpinning GeoBFN is that a smoother transformation during the generative
+process could result in a more favorable inductive bias according to (Graves et al., 2023). This
+process occurs within the parameter space of GeoBFN, which is regulated through the Bayesian
+update procedure. Specifically, samples exhibiting higher degrees of noise are assigned lesser weight
+during this update (refer to Eq. 11). This approach consequently leads to a significant reduction in
+variance within the parameter space as (Graves et al., 2023), which in turn facilitates the smooth
+transformation of molecular geometries. As illustrated in Fig. 3, this is evidenced by the gradual
+convergence of the structure of the intermediary steps towards the final structure, thus underscoring
+the effectiveness of smoother transformation.
+3.4
+OPTIMIZED DISCRETISED VARIABLE SAMPLING
+Previous research (Hoogeboom et al., 2022; Xu et al., 2023; Wu et al., 2022) utilizes both the atom
+types ht and charges hc to represent the atomic properties. The hc usually serves as an auxiliary loss
+for improving training which is not involved in determining the molecule graph during generation due
+to the insufficient modeling. However, there is redundant information between these two variables,
+since the ht and hc variables have a one-to-one mapping, e.g.the charge value 4 could be uniquely
+determined as the Carbon atom. We found that with advanced probabilistic modeling on discretized
+data, GeoBFN could conduct training and sampling only with x and hc. However, there exists a
+counterexample for the objective in Eq. 19 and the output distribution during sampling as in Eq. 15.
+As shown in Fig 5, the boundary condition for clamping the cumulative probability function in
+the bucket could cause the mismatch, e.g., the true density should be centered in the center bucket
+while the ouput distribution instead put the most density in the first and last buckets which cause the
+mode-redundancy as shown in upper-left in Fig. 5. Though the weighted sum in Eq. 19 is optimized,
+the sampling procedure will rarely sample the center buckets. And such cases could be non-negligible
+in our scenarios, especially when the number of bins is small for low dimensional data. To alleviate
+this issue, we instead update the output distribution in the sampling procedure to:
+ˆkc(θ, t) = NEAREST_CENTER(
+" K
+X
+k=1
+p(1)
+O (k | θ, t)kc, . . . ,
+K
+X
+k=1
+p(D)
+O (k | θ, t)kc
+#
+)
+(21)
+Function NEAREST_CENTER compares inputs to the center bins ⃗kc =
+
+k(1)
+c , . . . , k(D)
+c
+
+, and return
+the nearest center for each input value. The updated distribution is unbiased towards the training
+objective and also reduce the variance during generation which could be found in the trajectory of
+Fig.5.
+4
+EXPERIMENTS
+4.1
+EXPERIMENT SETUP
+Task and Datasets We focus on the 3D molecule generation task following the setting of prior
+works (Gebauer et al., 2019; Luo & Ji, 2021; Satorras et al., 2021a; Hoogeboom et al., 2022; Wu et al.,
+2022). We consider both Unconditional Molecular Generation which assesses the capability to learn
+the underlying molecular data distribution and generate chemically valid and structurally diverse
+molecules and the Conditional Molecule Generation tasks which evaluate the capacity of generating
+molecules with desired properties. For Conditional Molecule Generation, we implement a conditional
+version GeoBFN with the details in the Appendix. The widely adapted QM9 (Ramakrishnan et al.,
+2014) and the GEOM-DRUG (Gebauer et al., 2019; 2021) with large molecules are used for the
+experiments. And the data configurations directly follow previous work(Anderson et al., 2019;
+Hoogeboom et al., 2022; Xu et al., 2023)2.
+Evaluation Metrics The evaluation configuration follows the prior works (Hoogeboom et al., 2022;
+Wu et al., 2022; Xu et al., 2023). For the Unconditional Molecular Generation, the bond types
+are first predicted (single, double, triple, or none) based on pair-wise atomic distance and atom
+types in the 10000 generated molecular geometries (Hoogeboom et al., 2022). With the obtained
+molecular graph, we evaluate the quality by calculating both atom stability and molecule stability
+metrics. Besides, the validity (based on RDKIT) and uniqueness are also reported. Regarding the
+2The official implementation is at https://github.com/AlgoMole/GeoBFN
+7
+
+Published as a conference paper at ICLR 2024
+Table 1: Results of atom stability, molecule stability, validity, validity×uniqueness (V×U), and
+novelty. A higher number indicates a better generation quality. The results marked with an asterisk
+were obtained from our own tests. And GeoBFNk denote the results of sampling the molecules with
+a specific number of steps k
+QM9
+DRUG
+# Metrics
+Atom Sta (%)
+Mol Sta (%)
+Valid (%)
+V×U (%)
+Novelty (%)
+Atom Sta (%)
+Valid (%)
+Data
+99.0
+95.2
+97.7
+97.7
+-
+86.5
+99.9
+ENF
+85.0
+4.9
+40.2
+39.4
+-
+-
+-
+G-Schnet
+95.7
+68.1
+85.5
+80.3
+-
+-
+-
+GDM-AUG
+97.6
+71.6
+90.4
+89.5
+74.6
+77.7
+91.8
+EDM
+98.7
+82.0
+91.9
+90.7
+58.0
+81.3
+92.6
+EDM-Bridge
+98.8
+84.6
+92.0
+90.7
+-
+82.4
+92.8
+GEOLDM
+98.9 ± 0.1
+89.4 ± 0.5
+93.8 ± 0.4
+92.7 ± 0.5
+57.0
+84.4
+99.3
+GEOBFN 50
+98.28 ± 0.1
+85.11 ± 0.5
+92.27 ± 0.4
+90.72 ± 0.3
+72.9
+75.11
+91.66
+GEOBFN 100
+98.64 ± 0.1
+87.21 ± 0.3
+93.03 ± 0.3
+91.53 ± 0.3
+70.3
+78.89
+93.05
+GEOBFN 500
+98.78 ± 0.8
+88.42 ± 0.2
+93.35 ± 0.2
+91.78 ± 0.2
+67.7
+81.39
+93.47
+GEOBFN 1k
+99.08 ± 0.06
+90.87 ± 0.2
+95.31 ± 0.1
+92.96 ± 0.1
+66.4
+85.60
+92.08
+GEOBFN 2k
+99.31 ± 0.03
+93.32 ± 0.1
+96.88 ± 0.1
+92.41 ± 0.1
+65.3
+86.17
+91.66
+Table 2: Mean Absolute Error for molecular prop-
+erty prediction with 500 sampling steps. A lower
+number indicates a better controllable generation
+result.
+Property
+α
+∆ε
+εHOMO
+εLUMO
+µ
+Cv
+Units
+Bohr3
+meV
+meV
+meV
+D
+cal
+molK
+QM9*
+0.10
+64
+39
+36
+0.043
+0.040
+Random*
+9.01
+1470
+645
+1457
+1.616
+6.857
+Natoms
+3.86
+866
+426
+813
+1.053
+1.971
+EDM
+2.76
+655
+356
+584
+1.111
+1.101
+GEOLDM
+2.37
+587
+340
+522
+1.108
+1.025
+GEOBFN
+2.34
+577
+328
+516
+0.998
+0.949
+Table 3:
+Ablation study, GeoBFN models
+molecule charge settings, the sampling step is
+set to 1,000.
+Charge Feature
+Atom Stable (%)
+Mol Stable (%)
+discretised_basis
+99.08
+90.87
+continuous_basis
+98.97
+89.94
+discrete
+98.93
+88.93
+discrete + continuous
+98.96
+89.33
+discrete + discretised
+98.91
+88.65
+Conditional Molecule Generation, we evaluate our conditional version of GeoBFN on QM9 with
+6 properties: polarizability α, orbital energies εHOMO, εLUMO and their gap ∆ε, Dipole moment
+µ, and heat capacity Cv. Following previous work Hoogeboom et al. (2022); Xu et al. (2023), the
+conditional GeoBFN is fed with a range of property s to generate samples and the same pre-trained
+classifier w is utilized to measure the property of generated molecule as ˆs. The Mean Absolute Error
+(MAE) between s and ˆs is calculated to measure whether the generated molecules is related to the
+conditioned property.
+Baselines GeoBFN is compared with several advanced baselines including G-Schnet (Gebauer et al.,
+2019), Equivariant Normalizing Flows (ENF) (Satorras et al., 2021a) and Equivariant Graph Diffusion
+Models (EDM) with its non-equivariant variant (GDM) (Hoogeboom et al., 2022). Also with recent
+advancements, EDM-Bridge (Wu et al., 2022) which improves upon the performance of EDM by
+incorporating well-designed informative prior bridges and also GeoLDM (Xu et al., 2023) where
+a latent space diffusion model is applied are both included. To yield a fair comparison, all the
+method-agnostic configurations are set as the same. The implementation details could be found in
+Appendix. B.
+0
+1000
+2000
+3000
+4000
+Sampling Step
+0.65
+0.70
+0.75
+0.80
+0.85
+0.90
+0.95
+1.00
+Molecule Stability
+GeoBFN
+EDM
+EDM-Bridge
+GEOLDM
+upper bound
+Figure 4: QM9 Molecule Stability wrt. Sampling
+Steps
+Original 
+sampling 
+algorithm
+Improved 
+samping 
+algorithm
+Figure 5: 2D Synthetic case of optimized
+synthetic example. In the left columns,
+generated samples are in orange, and data
+points are in blue.
+8
+
+Published as a conference paper at ICLR 2024
+4.2
+MAIN RESULTS
+The results of Unconditional Molecular Generation can be found in Tab. 1. We could observe that in
+both the QM9 and GEOM-DRUG datasets, GeoBFN achieves a new state-of-the-art performance
+regarding both the quality and diversity of the generated molecules which demonstrates the huge
+potential of GeoBFN on geometry generative modeling. The phenomenon demonstrates that the
+GeoBFN does not hold the tendency to collapse to the subset of training data which could imply
+a probabilistic generalization ability and could be useful for several application scenarios; The
+Conditional Molecule Generation results can be found in Tab. 2. GeoBFN consistently outperforms
+other baseline models by an obvious margin in all conditional generation tasks. This clearly highlights
+the effectiveness and generalization capability of the proposed methods.
+4.3
+ANY-STEP SAMPLING
+One notable property of GeoBFN is that training with the continuous-time loss, e.g., Eq. 19, the
+sampling could be conducted with any steps without incurring additional training overhead. As shown
+in Tab. 1, GeoBFN could get superior performance compared to several advanced models with only 50
+steps during sampling which brings 20× speed-up during sampling due to the benefit of low variance
+parameter space. As we could find in Fig 4, with the sampling steps increasing from 50 to 4600, the
+molecule stability could be further boosted to approach the upper bound, e.g., 94.25% with 4000 steps.
+4.4
+ABLATION STUDIES
+We conduct ablation studies on the effect of input modalities in Tab. 3. We try different compositions
+and losses to represent the atom types, discretised basis refers to the case where the charge feature is
+used with discretised and the Gaussian basis, i.e., ϕj(x) = exp
+
+−
+(x−µj)2)
+2σ2
+
+is used as functional
+embedding for charge; continous basis only differ in that the continous loss is utilized. The discrete
+refers to including the one-hot type representation; discrete+continuous refers to both the one-hot
+type and charge are included while continuous loss is included; Similar is the discrete+continuous.
+With only discretised variable utilized, the performance is superior to including the discrete variable
+which implies powerful probabilistic modeling capacity and the benefits of applying similar modality.
+5
+RELATED WORK
+Previous molecule generation studies have primarily focused on generating molecules as 2D graphs
+(Jin et al., 2018; Liu et al., 2018; Shi et al., 2020), but there has been increasing interest in 3D
+molecule generation. With the increasing interest in 3D molecule generation, G-Schnet and G-
+SphereNet (Gebauer et al., 2019; Luo & Ji, 2021) respectively, employ autoregressive techniques
+to create molecules in a step-by-step manner by progressively connecting atoms or molecular
+fragments. These frameworks have also been extended to structure-based drug design (Li et al.,
+2021; Peng et al., 2022; Powers et al., 2022). There are approaches use atomic density grids
+that generate the entire molecule in a single step by producing a density over the voxelized 3D
+space (Masuda et al., 2020). Most recently, the attention has shifted towards using DMs for 3D
+molecule generation (Hoogeboom et al., 2022; Wu et al., 2022; Peng et al., 2023; Xu et al., 2023),
+with successful applications in target drug generation (Lin et al., 2022), antibody design (Luo et al.,
+2022), and protein design (Anand & Achim, 2022; Trippe et al., 2022). However, our method is
+based on the Bayesian Flow Network (Graves et al., 2023) objective and hence lies in a different
+model family which fundamentally differs from this line of research in both training and generation.
+6
+CONCLUSION
+We introduce GeoBFN, a new generative framework for molecular geometry. GeoBFN operates
+in a differentiable parameter space for variables from different modalities. Also, the less variance
+in parameter space is naturally compatible with the noise sensitivity of molecule geometry. Given
+the appealing property, the GeoBFN achieves state-of-the-art performance on several 3D molecule
+generation benchmarks. Besides, GeoBFN can also conduct sampling with an arbitary number
+of steps to reach an optimal trade-off between efficiency and quality (e.g., 20× speedup without
+sacrificing performance).
+9
+
+Published as a conference paper at ICLR 2024
+ACKNOWLEDGMENTS
+The authors thank Yanru Qu for the helpful discussions and proofreading of the paper, as well as the
+anonymous reviewers for reviewing the draft. This work is supported by the National Science and
+Technology Major Project (2022ZD0117502), Natural Science Foundation of China (62376133) and
+Guoqiang Research Institute General Project, Tsinghua University (No. 2021GQG1012).
+REFERENCES
+Namrata Anand and Tudor Achim. Protein structure and sequence generation with equivariant
+denoising diffusion probabilistic models. arXiv preprint arXiv:2205.15019, 2022.
+Brandon Anderson, Truong Son Hy, and Risi Kondor. Cormorant: Covariant molecular neural
+networks. Advances in neural information processing systems, 32, 2019.
+Niklas Gebauer, Michael Gastegger, and Kristof Schütt. Symmetry-adapted generation of 3d point
+sets for the targeted discovery of molecules. Advances in neural information processing systems,
+32, 2019.
+Niklas WA Gebauer, Michael Gastegger, Stefaan SP Hessmann, Klaus-Robert Müller, and Kristof T
+Schütt. Inverse design of 3d molecular structures with conditional generative neural networks.
+arXiv preprint arXiv:2109.04824, 2021.
+Alex Graves, Rupesh Kumar Srivastava, Timothy Atkinson, and Faustino Gomez. Bayesian flow
+networks. arXiv preprint arXiv:2308.07037, 2023.
+Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. arXiv preprint
+arXiv:2006.11239, 2020.
+Emiel Hoogeboom, Vıctor Garcia Satorras, Clément Vignac, and Max Welling. Equivariant diffusion
+for molecule generation in 3d. In International Conference on Machine Learning, pp. 8867–8887.
+PMLR, 2022.
+Wengong Jin, Regina Barzilay, and Tommi Jaakkola. Junction tree variational autoencoder for
+molecular graph generation. In International conference on machine learning, pp. 2323–2332.
+PMLR, 2018.
+Bowen Jing, Stephan Eismann, Patricia Suriana, Raphael John Lamarre Townshend, and Ron Dror.
+Learning from protein structure with geometric vector perceptrons. In International Conference on
+Learning Representations, 2021.
+Diederik P Kingma and Jimmy Ba. Adam: A method for stochastic optimization. In 3nd International
+Conference on Learning Representations, 2014.
+Jonas Köhler, Leon Klein, and Frank Noe. Equivariant flows: Exact likelihood generative learning for
+symmetric densities. In Proceedings of the 37th International Conference on Machine Learning,
+2020.
+Xiang Lisa Li, John Thickstun, Ishaan Gulrajani, Percy Liang, and Tatsunori Hashimoto. Diffusion-
+LM improves controllable text generation. In Alice H. Oh, Alekh Agarwal, Danielle Belgrave,
+and Kyunghyun Cho (eds.), Advances in Neural Information Processing Systems, 2022. URL
+https://openreview.net/forum?id=3s9IrEsjLyk.
+Yibo Li, Jianfeng Pei, and Luhua Lai. Structure-based de novo drug design using 3d deep generative
+models. Chemical science, 12(41):13664–13675, 2021.
+Haitao Lin, Yufei Huang, Meng Liu, Xuanjing Li, Shuiwang Ji, and Stan Z Li. Diffbp: Generative
+diffusion of 3d molecules for target protein binding. arXiv preprint arXiv:2211.11214, 2022.
+Qi Liu, Miltiadis Allamanis, Marc Brockschmidt, and Alexander Gaunt. Constrained graph variational
+autoencoders for molecule design. In Advances in neural information processing systems, 2018.
+10
+
+Published as a conference paper at ICLR 2024
+Shitong Luo, Yufeng Su, Xingang Peng, Sheng Wang, Jian Peng, and Jianzhu Ma. Antigen-specific
+antibody design and optimization with diffusion-based generative models for protein structures.
+In Alice H. Oh, Alekh Agarwal, Danielle Belgrave, and Kyunghyun Cho (eds.), Advances in
+Neural Information Processing Systems, 2022. URL https://openreview.net/forum?
+id=jSorGn2Tjg.
+Youzhi Luo and Shuiwang Ji. An autoregressive flow model for 3d molecular geometry generation
+from scratch. In International Conference on Learning Representations, 2021.
+Tomohide Masuda, Matthew Ragoza, and David Ryan Koes. Generating 3d molecular structures con-
+ditional on a receptor binding site with deep generative models. arXiv preprint arXiv:2010.14442,
+2020.
+Chenlin Meng, Yutong He, Yang Song, Jiaming Song, Jiajun Wu, Jun-Yan Zhu, and Stefano Ermon.
+SDEdit: Guided image synthesis and editing with stochastic differential equations. In International
+Conference on Learning Representations, 2022. URL https://openreview.net/forum?
+id=aBsCjcPu_tE.
+Adam Paszke, Sam Gross, Soumith Chintala, Gregory Chanan, Edward Yang, Zachary DeVito,
+Zeming Lin, Alban Desmaison, Luca Antiga, and Adam Lerer. Automatic differentiation in
+pytorch. In NIPS-W, 2017.
+Xingang Peng, Shitong Luo, Jiaqi Guan, Qi Xie, Jian Peng, and Jianzhu Ma. Pocket2mol: Efficient
+molecular sampling based on 3d protein pockets. In International Conference on Machine Learning,
+2022.
+Xingang Peng, Jiaqi Guan, Qiang Liu, and Jianzhu Ma.
+Moldiff: Addressing the atom-bond
+inconsistency problem in 3d molecule diffusion generation. arXiv preprint arXiv:2305.07508,
+2023.
+Alexander S. Powers, Helen H. Yu, Patricia Suriana, and Ron O. Dror. Fragment-based ligand
+generation guided by geometric deep learning on protein-ligand structure. bioRxiv, 2022. doi: 10.
+1101/2022.03.17.484653. URL https://www.biorxiv.org/content/early/2022/
+03/21/2022.03.17.484653.
+Raghunathan Ramakrishnan, Pavlo O Dral, Matthias Rupp, and O Anatole Von Lilienfeld. Quantum
+chemistry structures and properties of 134 kilo molecules. Scientific data, 1(1):1–7, 2014.
+Victor Garcia Satorras, Emiel Hoogeboom, Fabian B Fuchs, Ingmar Posner, and Max Welling. E (n)
+equivariant normalizing flows for molecule generation in 3d. arXiv preprint arXiv:2105.09016,
+2021a.
+Vıctor Garcia Satorras, Emiel Hoogeboom, and Max Welling. E(n) equivariant graph neural networks.
+In International conference on machine learning, pp. 9323–9332. PMLR, 2021b.
+Kristof T Schütt, Farhad Arbabzadah, Stefan Chmiela, Klaus R Müller, and Alexandre Tkatchenko.
+Quantum-chemical insights from deep tensor neural networks. Nature communications, 8:13890,
+2017.
+Chence Shi, Minkai Xu, Zhaocheng Zhu, Weinan Zhang, Ming Zhang, and Jian Tang. Graphaf: a
+flow-based autoregressive model for molecular graph generation. arXiv preprint arXiv:2001.09382,
+2020.
+Brian L Trippe, Jason Yim, Doug Tischer, Tamara Broderick, David Baker, Regina Barzilay, and
+Tommi Jaakkola. Diffusion probabilistic modeling of protein backbones in 3d for the motif-
+scaffolding problem. arXiv preprint arXiv:2206.04119, 2022.
+Lemeng Wu, Chengyue Gong, Xingchao Liu, Mao Ye, and qiang liu. Diffusion-based molecule
+generation with informative prior bridges. In Alice H. Oh, Alekh Agarwal, Danielle Belgrave,
+and Kyunghyun Cho (eds.), Advances in Neural Information Processing Systems, 2022. URL
+https://openreview.net/forum?id=TJUNtiZiTKE.
+Minkai Xu, Lantao Yu, Yang Song, Chence Shi, Stefano Ermon, and Jian Tang. Geodiff: A geometric
+diffusion model for molecular conformation generation. arXiv preprint arXiv:2203.02923, 2022.
+11
+
+Published as a conference paper at ICLR 2024
+Minkai Xu, Alexander Powers, Ron Dror, Stefano Ermon, and Jure Leskovec. Geometric latent
+diffusion models for 3d molecule generation. arXiv preprint arXiv:2305.01140, 2023.
+A
+EXPLANATION OF THE DATA EXCHANGE PERSPECTIVE OF BAYESIAN
+FLOW NETWORKS
+In this section, we provide a brief overview of the Bayesian Flow Networks Graves et al. (2023) from
+a data exchange perspective. Bayesian Flow Networks (BFNs) is a new class of generative model
+that operates on the parameters of a set of independent distributions with Bayesian inference. The
+meta elements of BFNs are the input distributions, sender distributions, and output distributions.
+To start with, we denote the D-dimensional variable as m =
+ m(1), . . . , m(D)
+∈MD, and
+θ =
+ θ(1), . . . , θ(D)
+represent the parameters of a D-dimensional factorised distribution, i.e.,
+p(m | θ) = QD
+d=1 p
+ m(d) | θ(d)
+.
+The basic logic of BFN could be better explained by the following communication example between
+the sender, referred to as Alice, and the receiver Bob. Alice aims to transfer some data to Bod in a
+progressive fashion, i.e., at each timestep, Alice corrupts the data according to some channel noise,
+and then the noisy sample is transferred. The sender distribution is then defined to describe the noise-
+adding procedure, which is also a factorized distribution, pS(y | m; α) = QD
+d=1 pS
+ y(d) | m(d); α
+
+.
+α refers to the accuracy parameter, α = 0 refers to the information of the sample being totally
+destroyed by the noise, and with α increase the noisy sample will contain more information of the
+original sample. Intuitively, the sender distribution could be approximately understood as adding
+noise to each dimension of the data independently.
+After receiving the noisy sample y, Bob will first update an initial “guess” of what is the original
+sample behind the noisy sample, i.e. input distribution. Note that except for the noisy sample, Bob
+also knows the accuracy parameter α and noise formulation while not aware of the original sample m,
+i.e., the noise level to create such a sample. The input distribution is initially a simple prior on the data
+space, e.g., a standard Gaussian, lies in the mean-field family, pI(m | θ) = QD
+d=1 pI
+ x(d) | θ(d)
+.
+The parameter of input distribution will be updated through Bayesian inference, noted as θi =
+h (θi−1, y, αi). This update usually lies in a simple form, e.g. additive or weighted average.
+After updating the parameter of input distribution, Bob has an “assistant” which will help to provide
+a better guess on the original data which generates the observed noisy sample. The assistant aims
+to exploit more context information between different dimensions, e.g., the relationship between
+different pixels in an image, in contrast to updating each dimension independently as in the input
+distribution. Empirically, the assistant could be implemented by a neural network Ψ which takes
+all parameters of input distribution for the prediction of parameters of each dimension, i.e, Ψ(θ) =
+ Ψ(1)(θ, t), . . . , Ψ(D)(θ, t)
+
+.
+The output distribution is then implied by the predicted parameter which lies in the formulation of
+pO(m | θ, t) = QD
+d=1 pO
+ m(d) | Ψ(d)(θ, t)
+
+. Then Bob could construct a distribution to approxi-
+mate the sender distribution at accuracy α by combining the output distribution with the known noise
+form, accuracy, i.e., pR (· | θ; t, α) = EpO(x′|θ;t)pS (y | x′; α). Such distribution is called receiver
+distribution. The "assistant" of BFNs Ψ is to minimize the KL divergence with a defined accuracy
+scheduler under different timesteps, i.e., DKL (pS (· | m; αi) ∥pR (· | θi−1; ti−1, αi)), which could
+also be interpreted as transmission cost under the bits-back coding scheme.
+B
+IMPLEMENTATION DETAILS
+The bayesian flow network is implemented with EGNNs Satorras et al. (2021b) by PyTorch (Paszke
+et al., 2017) package. We set the dimension of latent invariant features k to 1 for QM9 and 2 for
+DRUG, which extremely reduces the atomic feature dimension. For the training of vector field
+network vθ: on QM9, we train EGNNs with 9 layers and 256 hidden features with a batch size 64;
+and on DRUG, we train EGNNs with 4 layers and 256 hidden features, with batch size 64. The
+model uses SiLU activations. We train all the modules until convergence. For all the experiments,
+we choose the Adam optimizer (Kingma & Ba, 2014) with a constant learning rate of 10−4 as our
+12
+
+Published as a conference paper at ICLR 2024
+default training configuration. The training on QM9 takes approximately 2000 epochs, and on DRUG
+takes 20 epochs.
+C
+PROOF OF THEOREMS
+In this Section, we provide the formal proof of the Theorem. 3.1 and Proposition. 3.2, as well as the
+detailed derivations for Equations.
+C.1
+DISCUSSION ON THE TRANSLATIONAL INVARIANCE
+Remark C.1. It is important to distinguish it from the rotation invariant. The rotational invariant
+is defined as p(x) = p(Rx), while the translational is not as p(x) = p(x + t) as such distribution
+can not integrate into one and hence does not exist. Fortunately, the freedom of translation could
+be eliminated by only focusing on learning distribution on the linear subspace where the center of
+gravity is always zero. This is, for all configurations on Rn×3 space, the density on the zero CoM
+space is utilized to represent their density; It’s important to note that the distribution is not defined for
+configurations outside the zero CoM space. However, it remains possible to leverage the distribution
+to provide a density-evaluation (not probability density) on the configurations outside the zero CoM
+space. This is achieved by projecting them back into the subspace. The evaluation procedure for
+configurations out of zero CoM space could only get a quantity defined artificially instead of the true
+density of some real distribution, e.g. It is referred to as "CoM-free density" in (Xu et al., 2022).
+Thus, there does not exist correctness issues.
+C.1.1
+ZERO CENTER OF MASS(COM) IN THE GEOBFN
+Here we provide detailed discussions on optimizing the distribution in the zero CoM space. Recall
+the training objective in equation 8,
+LVLB(x) =
+E
+pϕ(θx
+0 ,...,θx
+n)
+" n
+X
+i=1
+DKL(pS (· | x; αi) ∥pR(· | θx
+i−1; αi)) −log pϕ (x | θx
+n)
+#
+,
+(22)
+where pϕ(x|θx
+n) = pO(x|θx
+n, ϕ). For learning a distribution on the zero CoM space of Rn×3, the
+pS (· | x; αi), pR(· | θx
+i−1; αi) and pϕ (x | θx
+n) are all defined and supported on the zero CoM space,
+here Pn
+i=1 xi = 0 and Pn
+i=1 θx = 0. In other words, such distribution has no definition for variable
+v ∈Rn×3 if Pn
+i=1 vi ̸= 0. We then express the likelihood function of an isotropic diagonal Gaussian
+distribution, which is originally defined on the zero CoM space ((n −1) × 3-dimensional), in the
+ambient space (n × 3-dimensional) as (Hoogeboom et al., 2022):
+Nx
+ x | µ, σ2I
+
+= (
+√
+2πσ)−(n−1)×3 exp
+
+−1
+2σ2 ∥x −µ∥2
+
+(23)
+Here σ2 is the variance which is equivalent for each dimension.
+Recall the Eq.
+35 in the
+(Graves et al., 2023), which shows that DKL(pS (· | x; αi) ∥pR(· | θx
+i−1; αi)) takes the form of
+DKL
+ N
+ x, α−1
+i I
+
+∥N(Φx(θg, t), α−1
+i I)
+
+which is the KL divergence between to diagonal Gaus-
+sian, then we derive the KL divergence for isotropic diagonal normal distributions of zero CoM with
+means represent on the ambient space. If pS = N
+  ˆ
+µ1, σ2I
+
+and pR = N
+  ˆ
+µ2, σ2I
+
+on subspace,
+where ˆ
+µ1 and ˆ
+µ2 is (n −1) × 3-dimension. Then the KL between them could be represented as:
+DKL(q∥p) = 1
+2
+"
+∥ˆ
+µ1 −ˆ
+µ2∥2
+σ2
+#
+(24)
+There is an orthogonal transformation Q which transforms the ambient space µi ∈Rn×3 where
+P
+i µi = 0 to the subspace in the way that
+
+ˆµ
+0
+
+= Qµ. With ∥ˆµ∥= ∥
+
+µ
+0
+
+∥= ∥µ∥, there is
+∥ˆµ1 −ˆµ2∥2 = ∥µ1 −µ2∥2. Hence we have:
+DKL
+ N
+ x, α−1
+i I
+
+∥N(Φx(θg, t), α−1
+i I)
+
+= αi
+2 ∥x −Φx (θg, t)∥2
+(25)
+Hence we demonstrate the correctness of our objective in Eq. 19.
+13
+
+Published as a conference paper at ICLR 2024
+C.1.2
+PROOF OF THE TRANSLATIONAL INVARIANT DENSITY EVALUATION PROCEDURE.
+Proof. For an n-atom molecule g = ⟨x, h⟩, the coordinate variable x has the dimension of n × 3.
+Note that with the zero Center of Mass mapping (Xu et al., 2022; Satorras et al., 2021a), where
+we constrain the center of gravity as zero (Pn
+i=1 xi = 0), then variable x essentially lies in the
+(n −1) × 3-dimensional linear subspace. The generative distributions pX mentioned in all of the
+related literature (Satorras et al., 2021a; Hoogeboom et al., 2022; Xu et al., 2022; 2023) is constrained
+in the zero Center of Mass space. This is, for samples in the ambient space, if Pn
+i=1 xi ̸= 0, pX is not
+defined. The translational invariant property of distribution pX mentioned is not referred to the fact
+that pX(x) = pX(x + t) for all translation vector t is satisfied in the ambient space with dimension
+n × 3. Actually, such conditions could not be satisfied in any space (Satorras et al., 2021a). The
+translational invariant condition actually refers to the invariant function f which could evaluate the
+density of all the ambient space based on pX, the evaluated density by f also referred to as "CoM-free
+standard density" in (Xu et al., 2022). The function f is defined as
+f(x) = pX(Qx)
+(26)
+where Q refers to the operation which maps the x to the zero Center of Mass space, e.g. in our work
+Q is defined as
+Q = I3 ⊗
+
+IN −1
+N 1N1T
+N
+
+,
+s.t.
+Qx =
+
+
+x1 −
+Pn
+i=1 xi
+n
+· · ·
+xn −
+Pn
+i=1 xi
+n
+
+
+(27)
+that subtracting mean
+Pn
+i=1 xi
+n
+from each xi, where Ik denotes the k × k identity matrix and 1k
+denotes the k-dimensional vector filled with 1s. Then the density evaluation function f is translational
+invariant in the ambient space:
+f(x + t) = pX( ˆQ(x + t)) = pX(
+
+
+x1 + ti −
+Pn
+i=1(xi+ti)
+n
+· · ·
+xn + tn −
+Pn
+i=1(xi+ti)
+n
+
+)
+(28)
+Note t stands for a translation vector, which implies that t1 = · · · = ti = tn = C ∈R3. Then we
+have:
+f(x + t) = pX(
+
+
+x1 + C −
+Pn
+i=1(xi+C)
+n
+· · ·
+xn + C −
+Pn
+i=1(xi+C)
+n
+
+) = pX(
+
+
+x1 −
+Pn
+i=1 xi
+n
+· · ·
+xn −
+Pn
+i=1 xi
+n
+
+) = pX(Qx) = f(x)
+(29)
+Furthermore, the above proof has no constraint on the distribution pX. This is, for any distribution on
+the zero Center of Mass space, the corresponding evaluation function defined in Eq. 26 is translational
+invariant.
+C.2
+PROOF OF THEOREM. 3.1.
+Given the above discussion on the translational invariance, for simplicity, we could only focus on the
+rotation transformation.
+Proof. Recall the graphical model in Fig. 2, we could reformulate the density function in Eq. 7 as:
+pϕ(x) =
+Z
+pϕ(x | θx
+1, · · · , θx
+n)pϕ(θx
+1, · · · , θx
+n)dθx
+1:n
+(definition of marginal)
+=
+Z
+pϕ(x | θx
+n)p(θ0)
+n
+Y
+i=1
+pU (θi | θi−1; αi) dθx
+1:n.
+(30)
+Note that pϕ(x | θx
+n) = pϕ(Rx | Rθx
+n) = pO (R(x) | R(θx
+n); ϕ) due to the property of EGNN,
+and p(θ0) = p(Rθ0) since θ0 = 0. Then we prove that pU (θi | θi−1; αi) satisfies the equiv-
+ariant condition that pU (θi | θi−1; αi) = pU (Rθi | Rθi−1; αi). Recall that pU (θi | θi−1; αi) =
+14
+
+Published as a conference paper at ICLR 2024
+E
+pO(yi|θi−1;αi)δ (θi −h (θi−1, yi, αi)), then we have:
+pU (Rθi | Rθi−1; αi) =
+E
+pO(yi|Rθi−1;αi)δ (Rθi −h (Rθi−1, yi, αi))
+=
+Z
+pO (yi | Rθi−1; αi) δ (Rθi −h (Rθi−1, yi, αi)) dyi
+(31)
+Then we apply integration-by-substitution and replace the variable yi with a new variable y′
+i, i.e.
+yi = Ry′
+i, into the Eq. 31:
+Z
+pO (yi | Rθi−1; αi) δ (Rθi −h (Rθi−1, yi, αi)) dyi
+=
+Z
+pO (Ry′
+i | Rθi−1; αi) δ (Rθi −h (Rθi−1, Ry′
+i, αi)) dRy′
+i
+=
+Z
+pO (Ry′
+i | Rθi−1; αi) δ (Rθi −h (Rθi−1, Ry′
+i, αi)) |det(R)|dy′
+i
+(32)
+The rotation matrix R is a SO(3) matrix, thus the |det(R)| = 1. And for the continuous coordinate
+variable, the update function h defined in Eq. 11 is also equivariant:
+h (Rθi−1, Ryi, αi) = Rθi−1ρi−1 + Ryiαi
+ρi
+= Rh (θi−1, yi, αi)
+(33)
+Putting these conditions back to the Eq. 32, we have that
+pU (Rθi | Rθi−1; αi) =
+Z
+pO (yi | Rθi−1; αi) δ (Rθi −h (Rθi−1, yi, αi)) dyi
+=
+Z
+pO (Ry′
+i | Rθi−1; αi) δ (Rθi −Rh (θi−1, y′
+i, αi)) |det(R)|dy′
+i
+=
+Z
+pO (y′
+i | θi−1; αi) δ (θi −h (θi−1, y′
+i, αi)) dy′
+i
+= pU (θi | θi−1; αi)
+(34)
+Hence the transitions on the θ space are the Markov and equivariant to rotation as shown in Eq. 30.
+The initial state θ0 is a zero vector 0 which is rotation invariant. To derive the rotation-invariant
+property of pϕ, we will use the following Lemma, which is the direct application of Proposition 1 in
+(Xu et al., 2022). We changed the notation to make it consistent with our literature.
+Lemma C.2. (Xu et al., 2022) Let p (θ0) be an SE(3)-invariant density function, i.e., p (θ0) =
+p (Tg (θ0)).
+If Markov transitions p (θi | θi−1) are SE(3)-equivariant, i.e., p (θi | θi−1) =
+p (Tg (θi) | Tg (θi−1)), then we have that the density p (θn) =
+R
+p (θ0) p (θ1:n | θ0) dθ0:n is also
+SE(3)-invariant. (Tg stands for the SE(3) transformations.)
+For completeness, we also include the derivation of the lemma from (Xu et al., 2022):
+p (Tg(θn)) =
+Z
+p (Tg(θ0)) p (Tg(θ1:n) | Tg(θ0)) dθ0:n
+=
+Z
+p (Tg (θ0)) Πn
+i=1p (Tg (θi) | Tg (θi−1)) dθ0:n
+=
+Z
+p (θ0) Πn
+i=1pθ (Tg (θi) | Tg (θi−1)) dθ0:n
+( invariant prior p (θ0))
+=
+Z
+p (θ0) Πn
+i=1pθ (θi | θi−1) dθ0:n
+(equivariant kernels p (θi | θi−1))
+=
+Z
+p (θ0) p (θ1:n | θ0) dθ0:n
+= p (θn)
+(35)
+Given the invariant property of θ0 and equivariant property of the transition pU (θi | θi−1; αi) and
+the pϕ(x | θx
+n), we could directly get the conclusion in Theorem. 3.1. Now we finish the proof.
+15
+
+Published as a conference paper at ICLR 2024
+C.3
+PROOF OF PROPOSITION. 3.2.
+Proof. Then we derive the invariant property of the variational lower bound in of the variational
+lower bounds in equation 8:
+LV LB(x) =
+E
+pϕ(θx
+0 ,...,θx
+n)
+[
+n
+X
+i=1
+DKL(pS (· | x; αi) ∥pR(· | θx
+i−1; αi)) −log pϕ (x | θx
+n)]
+To start with, we consider the first term:
+E
+pϕ(θx
+0 ,...,θx
+n)
+n
+X
+i=1
+DKL(pS (· | x; αi) ∥pR(· | θx
+i ; αi))
+=
+n−1
+X
+i=0
+E
+pϕ(θx
+i )
+DKL(pS (· | x; αi) ∥pR(· | θx
+i ; αi))
+(36)
+Note a natural conclusion from the Theorem. 3.1 is that the SE(3) invariance property is not only
+satisfied in the marginal distribution of the last time step variable p(θn), but also for the distribution
+of any intermediate p(θi). Such property could be justified based on the condition in Lemma. C.2.
+Actually, the proof of Theorem. 3.1 in the above section does not specify the time steps, hence the
+marginal distribution of any time step could be proved in exactly the same way. Consider the i-th
+term in the KL part of LVLB(Rx):
+E
+pϕ(θx
+i )
+DKL(pS (· | Rx; αi) ∥pR(· | θx
+i ; αi))
+=
+Z
+pϕ (θx
+i ) DKL(pS (· | Rx; αi) ∥pR(· | θx
+i ; αi))dθx
+i
+(37)
+we introduce the variable θ′
+i similar to Eq. 32, i.e. θi = Rθ′
+i, and then we extend i-th term in the
+Eq. 36:
+Z
+pϕ
+
+Rθx′
+i
+
+DKL(pS (· | Rx; αi) ∥pR(· | Rθx′
+i ; αi))|det(R)|dθx′
+i
+(38)
+As proved in the proof of Theorem. 3.1, pϕ is invariant and hence pϕ
+
+Rθx′
+i
+
+= pϕ(θx′
+i ); Also the
+|det(R)| = 1 for SO(3) rotation matrix. And then we discuss the KL divergence term:
+DKL(pS (· | Rx; αi) ∥pR(· | Rθx′
+i ; αi)) =
+Z
+pS (y | Rx; αi) log pS (y | Rx; αi)
+pR(y | Rθx′
+i ; αi)dy
+=
+Z
+pS (Ry′ | Rx; αi) log pS (Ry′ | Rx; αi)
+pR(Ry′ | Rθx′
+i ; αi)det(R)|dy′
+=
+Z
+pS (y′ | x; αi) log pS (y′ | x; αi)
+pR(y′ | θx′
+i ; αi)dy′ = DKL(pS (· | x; αi) ∥pR(· | θx′
+i ; αi))
+(39)
+Note that pS (y′ | x; αi) = pS (Ry′ | Rx; αi) is due to that the sender distribution is isotropic;
+And for receiver distribution, the equivariant property that pR (y′ | x; αi) = pR (Ry′ | Rx; αi) is
+guaranteed by both the parameterization of pO with Equivariant Graph Neural Network and the
+isotropic pS. At last, we put the above conclusion back to Eq. 37, and we get that:
+E
+pϕ(θx
+i )
+DKL(pS (· | Rx; αi) ∥pR(· | θx
+i ; αi))
+=
+Z
+pϕ (θx
+i ) DKL(pS (· | Rx; αi) ∥pR(· | θx
+i ; αi))dθx
+i
+=
+Z
+pϕ (θx
+i ) DKL(pS (· | x; αi) ∥pR(· | θx
+i ; αi))dθx
+i
+=
+E
+pϕ(θx
+i )
+DKL(pS (· | x; αi) ∥pR(· | θx
+i ; αi))
+(40)
+And here we prove the first term in LV LB(Rx) is equivalent to LV LB(x). The second term could be
+derived in exactly the same way, and here we finish the proof.
+16
+
+Published as a conference paper at ICLR 2024
+C.4
+DERIVATION OF EQUATION 8
+Note that the equation 8:
+LVLB(x) =
+E
+pϕ(θx
+0 ,...,θx
+n)
+" n
+X
+i=1
+DKL(pS (· | x; αi) ∥pR(· | θx
+i−1; αi)) −log pϕ (x | θx
+n)
+#
+,
+(41)
+is the extension formulation of Eq. 1. To align the notation of Eq. 1 and equation 8, we use x in
+the following derivation. We first consider the term −DKL(q∥pϕ (y1, . . . , yn)) in Eq. 1, we put the
+Eq. 2
+q = q (y1, . . . , yn | x) =
+n
+Y
+i=1
+pS (yi | x; αi)
+(42)
+And the pϕ (y1, . . . , yn)) in Eq. 6 as
+pϕ (y1, . . . , yn) =
+E
+pϕ(θ0:n−1)
+" n
+Y
+i=1
+E
+pO(x′
+i|θi−1;ϕ) [pS(yi|x′
+i; αi)]
+#
+=
+E
+pϕ(θ0:n)
+n
+Y
+i=1
+pR(yi|θi−1; αi)
+(43)
+Putting them together into the KL divergence term, and then we get the
+DKL(q∥pϕ (y1, . . . , yn)) =
+E
+Qn
+i=1 pS(yi|x;αi) log
+Qn
+i=1 pS (yi | x; αi)
+E
+pϕ(θ0:n−1)
+Qn
+i=1 pR(yi|θi−1; αi)
+=
+E
+pϕ(θ0:n−1)
+E
+Qn
+i=1 pS(yi|x;αi) log
+Qn
+i=1 pS (yi | x; αi)
+Qn
+i=1 pR(yi|θi−1; αi)
+=
+E
+pϕ(θ0:n−1)
+n
+X
+i=1
+DKL(pS (· | g; αi) ∥pR(· | θi−1; αi))
+(44)
+And we have derived the first term in equation 8. And for the second term,
+log pϕ(x|y1, · · · , yn) = log pϕ(x|θ0, · · · , θn)
+(Graphical Model in Fig. 2)
+= log pϕ(x|θn)
+(Markov Property of θ)
+(45)
+And here we finish the derivation.
+D
+DETAILS ON CONDITIONAL GENERATION EXPERIMENTS
+D.1
+PARAMETERIZATION AND SAMPLING
+For the conditional experiments, we directly follow the conditional setting of previous litera-
+ture (Hoogeboom et al., 2022). We discuss the details of the parameterization and sampling in
+the following. For conditional experiments, we add the property c as the extra input for the interde-
+pendency modeling module in Eq. 19. The conditional objective will be as:
+L∞(g, c)
+=
+E
+t∼U(0,1),pF (θg|g;t)
+αx(t)
+2
+∥x −Φx∥2 + αhc(t)
+2
+∥hc −Φhc∥2 + αht(t)
+2
+∥ht −Φht∥2
+
+(46)
+Where Φ·(θg, t, c) is short for Φ·(θg, t, c).
+For the sampling procedure, the property c and node number M will be firstly sampled from a prior
+p(c, M) defined in (Hoogeboom et al., 2022). Here p(c, M) is computed on the training partition as
+a parametrized two-dimensional categorical distribution where the continuous variable c is discretized
+into small uniformly distributed intervals. Then we could conduct generation as in Algorithm 3 based
+on the conditional output distribution pO(·|θ, c, t) base on Φ(θ, c, t).
+17
+
+Published as a conference paper at ICLR 2024
+D.2
+EXPLANATIONS ON THE PROPERTIES IN TAB. 2
+α Polarizability: Tendency of a molecule to acquire an electric dipole moment when subjected to
+anexternal electric field.
+εHOMO: Highest occupied molecular orbital energy.
+εLUMO: Lowest unoccupied molecular orbital energy.
+∆ε Gap: The energy difference between HOMO and LUMO.
+µ : Dipole moment.
+Cv : Heat capacity at 298.15 K
+E
+DETAILED ALGORITHMS FOR TRAINING AND SAMPLING
+For a better understanding of the whole procedure in training and sampling, we involve the detailed
+algorithms and implements of functions in Algorithm 1, Algorithm 2 and Algorithm 3.
+Algorithm 1 Functions for GeoBFN
+function DISCRETISED_CDF(µ ∈R, σ ∈R+, x ∈R)
+F(x) ←1
+2
+h
+1 + erf
+
+x−µ
+σ
+√
+2
+i
+G(x) ←
+
+
+
+0
+if x ≤−1
+1
+if x ≥1
+F(x)
+otherwise
+Return G(x)
+end function
+function OUTPUT_PREDICTION(µx ∈RD×3, µh ∈RD, t ∈[0, 1], γx, γh ∈R+, tmin ∈R+)
+# tmin set to 0.0001 by default
+if t < tmin then
+ˆx(θ, t) ←0
+ˆµh ←0
+ˆσh ←1
+else
+Input (µx, µh, t) to network, receive ˆϵ(θ, t), ˆµϵ
+h, ln ˆσϵ
+h as output
+ˆx(θ, t) ←µx
+γx −
+q
+1−γx
+γx ˆϵ(θ, t)
+ˆµh ←ˆµh
+γh −
+q
+1−γh
+γh
+ˆµϵ
+h
+ˆσh ←
+q
+1−γh
+γh
+ln ˆσϵ
+h
+end if
+for d ∈1, · · · , D, k ∈K do
+p(d)
+O (k | θ; t) ←DISCRETISED_CDF(ˆµ(d)
+h , ˆσ(d)
+h , kr) −DISCRETISED_CDF(ˆµ(d)
+h , ˆσ(d)
+h , kl)
+end for
+Return ˆx(θ, t), pO(· | θ; t)
+end function
+18
+
+Published as a conference paper at ICLR 2024
+Algorithm 2 Training with continuous loss
+Require: σx, σh ∈R, number of bins K ∈N
+Input: coordinates x ∈RD×3, normalized charges h ∈[ 1
+K −1, 1 −1
+K ]D
+t ∼U(0, 1)
+γx ←1 −σ2t
+x , γh ←1 −σ2t
+h
+µx ∼N(γx, γx(1 −γx)I)
+µh ∼N(γh, γh(1 −γh)I)
+ˆx(θ, t), pO(· | θ; t) ←OUTPUT_PREDICTION(µx, µh, t, γx, γh)
+ˆk(θ, t) ←
+P
+k p(1)
+O pO(k | θ; t)kc, . . . , P
+k p(D)
+O (k | θ; t)kc
+
+L∞(x) ←−ln σxσ−2t
+x
+∥x −ˆx(θ, t)∥2
+L∞(h) ←−ln σhσ−2t
+h
+h −ˆk(θ, t)
+
+2
+Return L∞(x) + L∞(h)
+Algorithm 3 Sampling procedure
+# ⃗kc =
+
+k(1)
+c , . . . , k(D)
+c
+
+# Function NEAREST_CENTER compares inputs to the center bins ⃗kc,
+# and return the nearest center for each input value.
+Require: σx, σh ∈R+, number of steps N ∈N
+µx, µh ←0
+ρx, ρh ←1
+for i = 1 to N do
+t ←i−1
+n
+γx ←1 −σ2t
+x , γh ←1 −σ2t
+h
+ˆx(θ, t), pO(· | θ; t) ←OUTPUT_PREDICTION(µx, µh, t, γx, γh)
+αx ←σ−2i/n
+x
+
+1 −σ2/n
+x
+
+αh ←σ−2i/n
+h
+
+1 −σ2/n
+h
+
+ˆkc(θ, t) ←NEAREST_CENTER(
+hP
+k p(1)
+O (k | θ; t)kc, . . . , P
+k p(D)
+O (k | θ; t)kc
+i
+)
+yh ∼N(ˆkc(θ, t), α−1
+h I)
+yx ∼N(ˆx(θ, t), α−1
+x I)
+µx, µh ←ρxµx+αxyx
+ρx+αx
+, ρhµh+αhyh
+ρh+αh
+ρx, ρh ←(ρx + αx), (ρh + αh)
+end for
+ˆx(θ, 1), pO(· | θ; 1) ←OUTPUT_PREDICTION(µx, µh, 1, 1 −σ2
+x, 1 −σ2
+h)
+ˆkc(θ, 1) ←NEAREST_CENTER(
+hP
+k p(1)
+O (k | θ; 1)kc, . . . , P
+k p(D)
+O (k | θ; 1)kc
+i
+)
+Return ˆx(θ, 1), ˆkc(θ, 1)
+19
+

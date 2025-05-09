@@ -1,0 +1,910 @@
+Published as a conference paper at ICLR 2021
+LEARNING INCOMPRESSIBLE FLUID DYNAMICS FROM
+SCRATCH - TOWARDS FAST, DIFFERENTIABLE FLUID
+MODELS THAT GENERALIZE
+Nils Wandel
+Department of Computer Science
+University of Bonn
+wandeln@cs.uni-bonn.de
+Michael Weinmann
+Department of Computer Science
+University of Bonn
+mw@cs.uni-bonn.de
+Reinhard Klein
+Department of Computer Science
+University of Bonn
+rk@cs.uni-bonn.de
+ABSTRACT
+Fast and stable ﬂuid simulations are an essential prerequisite for applications
+ranging from computer-generated imagery to computer-aided design in research
+and
+development.
+However,
+solving
+the
+partial
+differential
+equations
+of incompressible ﬂuids is a challenging task and traditional numerical
+approximation schemes come at high computational costs. Recent deep learning
+based approaches promise vast speed-ups but do not generalize to new ﬂuid
+domains, require ﬂuid simulation data for training, or rely on complex pipelines
+that outsource major parts of the ﬂuid simulation to traditional methods.
+In this work, we propose a novel physics-constrained training approach that
+generalizes to new ﬂuid domains, requires no ﬂuid simulation data, and allows
+convolutional neural networks to map a ﬂuid state from time-point t to a
+subsequent state at time t + dt in a single forward pass.
+This simpliﬁes the
+pipeline to train and evaluate neural ﬂuid models. After training, the framework
+yields models that are capable of fast ﬂuid simulations and can handle various ﬂuid
+phenomena including the Magnus effect and Kármán vortex streets. We present
+an interactive real-time demo to show the speed and generalization capabilities
+of our trained models.
+Moreover, the trained neural networks are efﬁcient
+differentiable ﬂuid solvers as they offer a differentiable update step to advance
+the ﬂuid simulation in time. We exploit this fact in a proof-of-concept optimal
+control experiment. Our models signiﬁcantly outperform a recent differentiable
+ﬂuid solver in terms of computational speed and accuracy.
+1
+INTRODUCTION
+Simulating the behavior of ﬂuids by solving the incompressible Navier-Stokes equations is of great
+importance for a wide range of applications and accurate as well as fast ﬂuid simulations are a
+long-standing research goal. On top of simulating the behavior of ﬂuids, several applications such
+as sensitivity analysis of ﬂuids or gradient-based control algorithms rely on differentiable ﬂuid
+simulators that allow to propagate gradients throughout the simulation (Holl et al. (2020)).
+Recent advances in deep learning aim for fast and accurate ﬂuid simulations but rely on vast datasets
+and / or do not generalize to new ﬂuid domains. Kim et al. (2019) present a framework to learn
+parameterized ﬂuid simulations and allow to interpolate efﬁciently in between such simulations.
+However, their work does not generalize to new domain geometries that lay outside the training
+data.
+Kim & Lee (2020) train a RNN-GAN that produces turbulent ﬂow ﬁelds within a pipe
+domain, but do not show generalization results beyond pipe domains. Xie et al. (2018) introduce a
+tempoGAN to perform temporally consistent superresolution of smoke simulations. This allows to
+1
+
+Published as a conference paper at ICLR 2021
+produce plausible high-resolution smoke-density ﬁelds for arbitrary low-resolution inputs, but our
+ﬂuid model should output a complete ﬂuid state description consisting of a velocity and a pressure
+ﬁeld. Tompson et al. (2017) present how a Helmholtz projection step can be learned to accelerate
+Eulerian ﬂuid simulations. This method generalizes to new domain geometries, but a particle tracer
+is needed to deal with the advection term of the Navier-Stokes equations. Furthermore, as Eulerian
+ﬂuids do not model viscosity, effects like e.g. the Magnus effect or Kármán vortex streets cannot
+be simulated. Geneva & Zabaras (2020) propose a physics-informed framework to learn the entire
+update step for the Burgers equations in 1D and 2D, but no generalization results for new domain
+geometries are demonstrated. All of the aforementioned methods rely on the availability of vast
+amounts of data from ﬂuid-solvers such as FEniCS, OpenFOAM or Mantaﬂow. Most of these
+methods do not generalize well or outsource a major part of the ﬂuid simulation to traditional
+methods such as low-resolution ﬂuid solvers or a particle tracer.
+In this work, we propose a novel unsupervised training framework to learn incompressible ﬂuid
+dynamics from scratch.
+It does not require any simulated ﬂuid-data (neither as ground truth
+data, nor to train an adversarial network, nor to initialize frames for a physics-constrained loss)
+and generalizes to ﬂuid domains unseen during training.
+It allows CNNs to learn the entire
+update-step of mapping a ﬂuid domain from time-point t to t + dt without having to rely on
+low resolution ﬂuid-solvers or a particle-tracer.
+In fact, we will demonstrate that a physics-
+constrained loss function combined with a simple strategy to recycle ﬂuid-data generated by the
+neural network at training time sufﬁces to teach CNNs ﬂuid dynamics on increasingly realistic
+statistics of ﬂuid states.
+This drastically simpliﬁes the training pipeline.
+Fluid simulations
+get efﬁciently unrolled in time by recurrently applying the trained model on a ﬂuid state.
+Furthermore, the ﬂuid models include viscous friction and handle effects such as the Magnus
+effect and Kármán vortex streets. On top of that, we show by a gradient-based optimal control
+example how backpropagation through time can be used to differentiate the ﬂuid simulation.
+Code and pretrained models are publicly available at https://github.com/aschethor/
+Unsupervised_Deep_Learning_of_Incompressible_Fluid_Dynamics/.
+2
+RELATED WORK
+In literature, several different approaches can be found that aim to approximate the dynamics of
+PDEs in general and ﬂuids in particular with efﬁcient, learning-based surrogate models.
+Lagrangian methods such as smoothed particle hydrodynamcs (SPH) Gingold & Monaghan (1977)
+handle ﬂuids from the perspective of many individual particles that move with the velocity ﬁeld.
+Following this approach, learning-based methods using regression forests by Ladický et al. (2015),
+graph neural networks by Mrowca et al. (2018); Li et al. (2019) and continuous convolutions by
+Ummenhofer et al. (2020) have been developed. In addition, Smooth Particle Networks (SP-Nets)
+by Schenck & Fox (2018) allow for differentiable ﬂuid simulations within the Lagrangian frame of
+reference. These Lagrangian methods are particularly suitable when a ﬂuid domain exhibits large,
+dynamic surfaces (e.g. waves or droplets). However, to simulate the dynamics within a ﬂuid domain
+accurately, Eulerian methods, that treat the Navier-Stokes equations in a ﬁxed frame of reference,
+are usually better suited.
+Continuous Eulerian methods allow for mesh-free solutions by mapping domain coordinates (e.g.
+x,y,t) directly onto ﬁeld values (e.g. velocity ⃗v / pressure p) (Sirignano & Spiliopoulos (2018);
+Grohs et al. (2018); Khoo et al. (2019)).
+Recent applications focused on ﬂow through porous
+media (Zhu & Zabaras (2018); Zhu et al. (2019); Tripathy & Bilionis (2018)), ﬂuid modeling
+(Yang et al. (2016); Raissi et al. (2018)), turbulence modeling (Geneva & Zabaras (2019); Ling
+et al. (2016)) and modeling of molecular dynamics (Schöberl et al. (2019)). Training is usually
+based on physics-constrained loss functions that penalize residuals of the underlying PDEs. Similar
+to our approach, Raissi et al. (2019) uses vector potentials to obtain continuous divergence-free
+velocity ﬁelds to approximate the incompressible Navier-Stokes equations. Continuous methods
+return smooth, accurate results and can overcome the curse of dimensionality of discrete techniques
+in high-dimensional PDEs (Grohs et al. (2018)). However, these networks are trained on a speciﬁc
+domain and cannot generalize to new environments or be used in interactive scenarios.
+2
+
+Published as a conference paper at ICLR 2021
+Discrete Eulerian methods, on the other hand, aim to solve the underlying PDEs on a grid and early
+work dates back to Harlow & Welch (1965) and Stam (1999). Accelerating such traditional works
+with deep learning techniques is a major ﬁeld of research and all of the methods mentioned in the
+introduction fall into this category. Further methods include the approach by Thuerey et al. (2019)
+to learn solutions of the Reynolds-averaged Navier-Stokes equations for airfoil ﬂows, but requires
+large amounts of training data and does not generalize beyond airfoil ﬂows. In the work by Um
+et al. (2020), a correction step is learned that brings solutions of a low-resolution differentiable ﬂuid
+solver closer to solutions of a high-resolution ﬂuid simulation. However, generalization results for
+new domain geometries were not presented. The works of Mohan et al. (2020) and Kim et al. (2019)
+show that vector potentials are suitable to enforce the incompressibility constraint in ﬂuids but do
+not generalize to new ﬂuid domains beyond their training data.
+3
+METHOD
+In this section, we brieﬂy review the incompressible Navier-Stokes equations, which are to be solved
+by the neural network. Then, we explain how the Helmholtz decomposition can be exploited to
+ensure incompressibility within the ﬂuid domain. Furthermore, we provide details of our discrete
+spatio-temporal ﬂuid representation and introduce the ﬂuid model. Afterwards, we formulate a
+physics-constrained loss function based on residuals of the Navier-Stokes equations and introduce a
+pressure regularization term for very high Reynolds numbers. Finally, we explain the unsupervised
+training strategy.
+3.1
+INCOMPRESSIBLE NAVIER-STOKES EQUATIONS
+Most ﬂuids can be modeled with the incompressible Navier-Stokes equations - a set of non-linear
+equations that describe the interplay of a velocity ﬁeld ⃗v and a pressure ﬁeld p within a ﬂuid domain
+Ω:
+∇· ⃗v = 0
+incompressibility on Ω
+(1)
+ρ˙⃗v = ρ
+∂⃗v
+∂t + (⃗v · ∇)⃗v
+
+= −∇p + µ∆⃗v + ⃗f
+conservation of momentum on Ω
+(2)
+Here, ρ describes the ﬂuid density and µ the viscosity.
+Equation 1 states that the ﬂuid is
+incompressible and thus ⃗v is divergence-free. Equation 2 states that the change in momentum of
+ﬂuid particles must correspond to the sum of forces that arise from the pressure gradient, viscous
+friction and external forces. Here, external forces on the ﬂuid (such as e.g. gravity) can be neglected,
+so we set ⃗f = 0.
+These incompressible Navier-Stokes equations shall be solved by a CNN given initial conditions
+⃗v0 and p0 at the beginning of the simulation and Dirichlet boundary conditions which constrain the
+velocity ﬁeld at the domain boundary ∂Ω:
+⃗v = ⃗vd
+Dirichlet boundary condition on ∂Ω
+(3)
+3.2
+HELMHOLTZ DECOMPOSITION
+A common method to ensure incompressibility of a ﬂuid (see Equation 1) is to project the ﬂow ﬁeld
+onto the divergence-free part of its Helmholtz decomposition. The Helmholtz theorem states that
+every vector ﬁeld ⃗v can be decomposed into a curl-free part (∇q) and a divergence-free part (∇×⃗a):
+⃗v = ∇q + ∇× ⃗a
+(4)
+Note, that ∇× (∇q) = ⃗0 and ∇· (∇× ⃗a) = 0. The Helmholtz projection consists of solving
+the Poisson problem ∇· ⃗v = ∆q for q, followed by substracting ∇q from the original ﬂow ﬁeld.
+However, solving the Poisson equation on arbitrary domains comes at high computational costs for
+classical methods and one has to rely e.g. on conjugate gradient methods to approximate its solution.
+Here, we propose a different approach and directly try to learn a vector potential ⃗a with ⃗v = ∇×⃗a.
+This ensures that the network outputs a divergence-free velocity ﬁeld within the domain Ωand
+3
+
+Published as a conference paper at ICLR 2021
+automatically solves Equation 1. In this work, we consider 2D ﬂuid simulations, so only the z-
+component of ⃗a, az, is of interest since vz and all derivatives with respect to the z-axis are zero:
+∇× ⃗a =
+ ∂yaz −∂zay
+∂zax −∂xaz
+∂xay −∂yax
+!
+=
+ ∂yaz
+−∂xaz
+0
+!
+=
+ vx
+vy
+0
+!
+= ⃗v
+(5)
+3.3
+DISCRETE SPATIO-TEMPORAL FLUID REPRESENTATION
+Marker-And-Cell (MAC) grid
+To solve the Navier-Stokes equations, we represent the relation
+between az, vx, vy, p on a 2D staggered marker-and-cell (MAC) grid (see Figure 1a). Therefore, we
+discretise time and space as follows:
+⃗a(x, y, t) =
+
+
+0
+0
+(az)t
+i,j
+
+; ⃗v(x, y, t) =
+ 
+(vx)t
+i,j
+(vy)t
+i,j
+!
+; p(x, y, t) = pt
+i,j
+(6)
+Obtaining gradient, divergence, Laplace and curl operations on this grid with ﬁnite differences is
+straight forward and can be efﬁciently implemented with convolutions (see appendix A).
+(a) Layout of Staggered Marker-
+And-Cell (MAC) grid in 2D.
+(b) Diagram of the ﬂuid model. By recurrently applying the
+model on the ﬂuid state (pt and at), we can unroll the ﬂuid
+simulation in time.
+Figure 1: MAC grid and diagram of the ﬂuid model.
+Explicit, Implicit, Implicit-Explicit (IMEX) time integration methods
+The discretization of the
+time domain is needed to deal with the time-derivative of the velocity ﬁeld ∂⃗v
+∂t in Equation 2, which
+becomes:
+ρ
+⃗vt+dt −⃗vt
+dt
++
+
+⃗vt′ · ∇
+
+⃗vt′
+= −∇pt+dt + µ∆⃗vt′ + ⃗f
+(7)
+The goal is to take as large as possible timesteps dt while maintaining stable and accurate solutions.
+Stability and accuracy largely depend on the deﬁnition of vt′. In literature, choosing vt′ = vt is
+often referred to as explicit integration methods and frequently leads to unstable behavior. Choosing
+vt′ = vt+dt is usually associated with implicit integration methods and gives stable solutions at the
+cost of numerical dissipation. Implicit-Explicit (IMEX) methods, which set vt′ = (vt + vt+dt)/2
+are a compromise between both methods and considered to be more accurate but less stable than
+implicit methods.
+4
+
+Published as a conference paper at ICLR 2021
+3.4
+FLUID MODEL
+We represent the ﬂuid dynamics by a recurrent model that maps the ﬂuid state pt,⃗at for timestep t
+and the domain description Ωt+dt,⃗vt+dt
+d
+to the ﬂuid state pt+dt,⃗at+dt of the next timestep. Here,
+pt describes the pressure ﬁeld and ⃗at describes the vector potential of ⃗vt. For t = 0, we consider
+initial states p0 = 0 and ⃗a0 = ⃗0, however, other initial conditions could be considered as well.
+Ωt+dt is a binary mask that contains the domain geometry and is 1 for the ﬂuid domain and 0
+everywhere else. For the boundary of the domain, we simply take the inverse of Ω: ∂Ω= 1 −Ω.
+⃗vt+dt
+d
+represents the Dirichlet boundary conditions and contains a velocity ﬁeld that must be
+matched by ⃗vt+dt at the domain boundaries.
+Figure 1b shows a diagram of the ﬂuid model.
+First,
+ pt,⃗at, Ωt+dt,⃗vt+dt
+d
+
+are taken to derive a slightly more meaningful feature representation
+that comprises
+ pt, at, ∇× at, Ωt+dt, ∂Ωt+dt, Ωt+dt · ∇× at, Ωt+dt · pt, ∂Ωt+dt · ⃗vt+dt
+d
+
+. These
+features can be very efﬁciently computed with convolutions and are then fed into a U-Net
+(Ronneberger et al. (2015)) with a reduced number of channels (the exact network conﬁguration
+can be found in appendix B). The mean of the U-Net output is set to 0 in order to keep p and ⃗a well
+deﬁned and prevent drifting offset values. Finally, the output is added to pt and ⃗at to obtain the
+updated ﬂuid state pt+dt and ⃗at+dt.
+3.5
+PHYSICS-CONSTRAINED LOSS FUNCTION
+Using the residuals of the Navier-Stokes equations (Equations 1 and 2), we can formulate the
+following loss terms on Ωand ∂Ω:
+Ld = ∥∇· ⃗v∥2
+divergence loss on Ω
+(8)
+Lp =
+ρ
+∂⃗v
+∂t + (⃗v · ∇)⃗v
+
++ ∇p −µ∆⃗v −⃗f
+
+2
+momentum loss on Ω
+(9)
+Lb = ∥⃗v −⃗vd∥2
+boundary loss on ∂Ω
+(10)
+Combining the described loss terms, we obtain the following loss function:
+L = αLd + βLp + γLb
+(11)
+where α, β, γ are hyperparameters that weight the contributions of the different loss terms. Note
+that if we use a vector potential ⃗v = ∇×⃗a, Ld = 0 is automatically fulﬁlled and we can set α = 0.
+This loss function can be computed very efﬁciently with convolutions in O(N) (where N = number
+of grid cells), whereas solving the Navier-Stokes equations explicitly would be computationally a
+lot more expensive. For detailed descriptions regarding the fully discretized loss-function, we refer
+to appendix A.
+3.6
+PRESSURE REGULARIZATION
+For very high Reynolds numbers (see Equation 13) and inviscid ﬂows, training becomes unstable as
+viscous friction cannot dissipate enough energy out of the system. This leads to unrealistic gradients
+in ⃗v and p. For such cases, we introduce an additional regularization term for the loss function (11)
+that can be traded off with Lp to stabilize training:
+Lr = ∥∇p∥2
+(12)
+The intuition behind this regularization term is, that we want to penalize unrealistically high energies
+in the pressure ﬁeld.
+5
+
+Published as a conference paper at ICLR 2021
+3.7
+TRAINING STRATEGY
+Training starts with initializing a pool {Ω0
+k, (vd)0
+k, (az)0
+k, p0
+k} of randomized domains Ω0
+k and
+boundary conditions (vd)0
+k as well as initial conditions for the vector potential and pressure ﬁelds
+that we both set to zero ((az)0
+k = 0 and p0
+k = 0). The resolution of our training domains is 100x300
+grid cells and example-domains of the training pool are shown in appendix C. Note that our training
+pool does not rely on any previously simulated ﬂuid-data.
+At each training step, a random mini-batch {Ωt
+k, (vd)t
+k, (az)t
+k, pt
+k}{k∈minibatch} is drawn from the pool
+and fed into the neural network which is designed to predict the velocity (⃗vt+dt
+k
+= ∇× ⃗at+dt
+k
+) and
+pressure (pt+dt
+k
+) ﬁelds of the next time step. Based on a physics-constrained loss-function (Equation
+11), we update the weights of the network using the Adam optimizer (Kingma & Ba (2015)). At the
+end of each training step, the pool is updated by replacing the old vector potential and pressure ﬁelds
+(az)t
+k, pt
+k by the newly predicted ones (az)t+dt
+k
+, pt+dt
+k
+. This recycling strategy ﬁlls the training pool
+with more and more realistic ﬂuid states as the model becomes better at simulating ﬂuid dynamics.
+From time to time, old environments of the training pool are replaced by new randomized
+environments and the vector potential as well as the pressure ﬁelds are reset to 0. This increases
+the variance of the training pool and helps the neural network to learn "cold starts" from ⃗0-velocity
+and 0-pressure ﬁelds.
+Besides the ﬂuid model described above, which we denote as ⃗a-Net in the following, we also trained
+an ablation model, ⃗v-Net, that directly learns to predict the velocity ﬁeld without a vector potential.
+For the implementation of both models, we used the popular machine learning framework Pytorch
+and trained the models on a NVidia GeForce RTX 2080 Ti. Training converged after about 1 day.
+The hyperparameters in the loss-function for the ⃗a-Net were β = 1 and γ = 20. The reason
+for choosing a higher weight for the loss term Lb than for Lp was the observation, that errors in
+Lb can lead to unrealistic ﬂows leaking through boundaries. For the ablation study (⃗v-Net), we
+used α = 100, β = 1, γ = 0.001. Here, we had to choose a very high weight for Ld to ensure
+incompressibility of the ﬂuid, otherwise unrealistic source and sink effects start to appear. For Lb,
+on the other hand, we used a very low weight as the boundary conditions can be trivially learned by
+the ⃗v-Net. We used these parameter settings for all experiments.
+4
+RESULTS
+To evaluate the potential of our method, we assess its ability to reproduce physical effects such
+as Kármán vortex streets and the Magnus effect. In addition, we demonstrate its generalization
+capability and real-time performance. Finally, we test the ﬂuid models quantitatively.
+4.1
+QUALITATIVE EVALUATION
+Qualitative analysis of wake dynamics
+Qualitative effects in ﬂuid dynamics such as the wake
+dynamics behind an obstacle are closely related to the Reynolds number. It is a dimensionless
+quantity deﬁned by:
+Re = ρ ∥⃗v∥D
+µ
+(13)
+Here, ρ is the ﬂuid density, ∥⃗v∥is the ﬂuid speed, D is the diameter of the obstacle, and µ is the
+viscosity. (We use the units of the grid).
+We retrained models for different values of µ and ρ to compare the ﬂuid behavior for a wide range
+of Reynolds numbers. Figure 2 shows, that the trained models are able to predict the wake dynamics
+behind an obstacle in good accordance with qualitative expectations from ﬂuid dynamics. As a rule
+of thumb, for Re ≪1, the ﬂow becomes time-reversible. This can be noticed in Figure 2a by the
+symmetry of the ﬂow before and after the obstacle and the nearly constant pressure gradient within
+the pipe. Starting from Re ≈10, the ﬂow is still laminar but a static wake is forming behind the
+obstacle (see Figure 2b). For Reynolds numbers Re >≈90, Kármán vortex streets start to appear
+(see Figure 2c). A Kármán vortex street consists of clock and counterclockwise spinning vortices
+that are generated at the obstacle and then start moving in a regularly oscillating pattern with the
+6
+
+Published as a conference paper at ICLR 2021
+ﬂow. For very large Reynolds numbers or inviscid ﬂows, the ﬂow ﬁeld becomes turbulent, which
+can be recognized by the irregular patterns behind the obstacle in Fig 2d.
+(a) Re=0.6, µ = 5, ρ = 0.2
+(b) Re=30, µ = 0.5, ρ = 1
+(c) Re=600, µ = 0.1, ρ = 4
+(d) Re→∞, µ = 0, ρ = 1
+(obtained with regularization on ∇p)
+Figure 2: After training, our models are able to show correct wake ﬂow dynamics for a wide range of different
+Reynolds numbers. (D = 30, ∥⃗v∥= 0.5). Streamlines indicate ﬂow direction, linewidth indicates speed and
+colors represent the pressure ﬁeld (blue: low pressure / yellow: high pressure).
+Magnus effect
+The Magnus effect appears when a ﬂow interacts with a rotating body. It is widely
+known e.g. in sports such as soccer or tennis where spin is used to deﬂect the path of a ball. The
+reason for the deﬂection stems from a low pressure ﬁeld where the surface of the object moves along
+ﬂow direction and a high pressure ﬁeld where the object surface moves against the ﬂow. Figure 3a
+shows, that our models are able to reproduce the Magnus effect around a rotating cylinder.
+(a) Magnus effect on a clock-wise turning cylinder.(b) Generalization example: Note that the ﬂuid
+model has never been confronted with wing-
+proﬁles during training.
+Figure 3: Our models feature the Magnus effect and generalize to new ﬂuid domains. Further examples are
+presented in appendix D and the video.
+Analysis of generalization capability
+We tested the networks capability to generalize to objects
+not seen during training. Figure 3b shows the networks capability to meet boundary conditions of an
+airfoil and return a plausible pressure ﬁeld that produces lift (see low pressure on top of wing). Note
+that in contrast to the approach by Thuerey et al. (2019), which learns simpliﬁed, time-averaged
+solutions of the Navier-Stokes equations, our method is able to simulate the full incompressible
+Navier-Stokes equations for an airfoil without relying on any ground truth data or having seen airfoil-
+geometries during training. In fact, the network was only trained on simple randomized domains as
+highlighted in appendix C and Figure 7. Possible reasons for the networks generalization capabilities
+are:
+• During training, the network gets confronted with an inﬁnite number of different ﬂow-
+ﬁelds and randomized domain conﬁgurations because the training pool gets updated at
+every training step. This prevents the network from over-ﬁtting.
+7
+
+Published as a conference paper at ICLR 2021
+• The dynamics of a ﬂuid-particle are mostly determined by its local neighborhood /
+surrounding particles. This means, the update step for a certain cell on the MAC grid is
+mostly determined by close / neighboring MAC-grid cells. Since more complicated shapes
+can be seen locally as a composition of basic shapes (e.g. the front of the wing can be
+locally regarded as a cylinder), it sufﬁces to train on basic shapes that provide the network
+with enough examples to generalize to more complicated shapes.
+Further generalization examples are provided in appendix D.
+Real-time capability
+The ﬂuid simulation can be easily parallelized and takes low computational
+costs as one time-integration step consists just of a single forward pass through a convolutional
+neural network. This enables for example interactive real-time simulations. We implemented a
+demo that allows to interact with a ﬂuid by moving obstacles, rotating spheres and changing the
+ﬂow speed within a pipe (see video in supplementary material and source code). Our method runs
+at 250 timesteps per second on a 100x300 grid. In the respective experiments, we used a NVidia
+GeForce RTX 2080 Ti consuming about 860 MB of GPU memory.
+4.2
+QUANTITATIVE EVALUATION
+We compare our method (⃗a-Net) quantitatively with PhiFlow by Holl et al. (2020). Phiﬂow is a
+recent, open source, differentiable ﬂuid simulator based on a MAC grid data structure. Furthermore,
+we provide an ablation study (⃗v-Net) that does not make use of the Helmholtz decomposition but
+directly works on the velocity ﬁeld ⃗v.
+Quantitative comparison of different ﬂuid solvers is challenging, as their performance is highly
+dependent on factors like the geometry of the domain, ﬂuid parameters such as viscosity or density,
+ﬂow speed or the timestep of the integrator. As benchmarks for ﬂuid simulations on MAC grids are
+not yet available, we built a simple toy domain on a 100 x 100 grid which simulates a ﬂow around
+an obstacle within a pipe (more details are provided in appendix E).
+First, we compared the computational speed on a CPU and GPU by comparing the integration
+time-steps per second (see Table 1). The ⃗v-Net as well as the ⃗a-Net are signiﬁcantly faster than
+PhiFlow (11x on CPU and 40x on GPU) as they do not rely on an iterative conjugate gradient solver
+but instead use a single forward pass through a convolutional neural network that can be easily
+parallelized on a GPU. To provide a fair comparison on Ld, we set the velocity ﬁeld at the boundaries
+equal to ⃗vd. This enables us to compute Ld for the ⃗a-Net architecture on the domain boundaries
+which would otherwise have zero divergence everywhere. This way, Ld can be interpreted as a
+metric on how well the orthogonal components of the Dirichlet boundary conditions are met (i.e.
+no ﬂow leaks through the boundaries). For dt = 4, we outperformed Phiﬂow by several orders of
+magnitude. For both, Ld and Lp, the ⃗a-Net architecture signiﬁcantly outperformed the more naive
+⃗v-Net approach.
+Furthermore, we investigated stability by evaluating the evolution of Lp and Ld for the ⃗a-Net over
+time (see Figure 4). As the ﬂuid state is initialized with az = 0 and p = 0, the ⃗a-Net has to perform
+a cold-start which is the reason for high Lp and Ld during the ﬁrst circa 70 steps. Afterwards, the
+⃗a-Net continues an accurate and stable ﬂuid simulation.
+Method
+CPU [TPS]
+GPU [TPS]
+Ld
+Lp
+PhiFlow
+7
+-
+6.2e-4
+-
+⃗v-Net (ours)
+82
+311
+8.66e-7
+4.87e-5
+⃗a-Net (ours)
+82
+311
+5.44e-7
+1.56e-5
+Table 1: Quantitative comparison of timesteps per second (TPS)
+on CPU / GPU as well as divergence loss and momentum loss for
+differentiable ﬂuid solvers on a 100x100 grid for viscosity µ =
+0.1, density ρ = 4 and timesteps of size dt = 4.
+Figure 4: Long term stability of ﬂuid
+simulations performed by the ⃗a-Net
+8
+
+Published as a conference paper at ICLR 2021
+4.3
+OPTIMAL CONTROL OF VORTEX SHEDDING FREQUENCY
+In this section, we present a proof-of-concept experiment that aims at controlling the shedding
+frequency of a Kármán vortex street behind an obstacle by changing the ﬂow speed (see Figure
+5a). To this end, we exploit our previously trained differentiable ﬂuid models.
+(a) control setup (domain size:
+200x100 grid cells)
+(b) frequency distribution before reaching
+convergence
+(c) optimization curve
+Figure 5: The frequency of vortex streets can be controlled using our differentiable ﬂuid models.
+First, we measure the y-component of the velocity ﬁeld vy(t) behind an obstacle (see white box in
+Figure 5a) over 200 time steps. Then, we compute the frequency spectrum Vy(f) of vy(t) using
+the fast Fourier transform (see Figure 5b). Now, we want to adjust the inﬂow / outﬂow boundary
+conditions in ⃗vd such that E[|Vy(f)|2] = ˆf. Here, ˆf is the target frequency. To optimize ⃗vd, we
+deﬁne a loss function L = (E[|Vy(f)|2]−ˆf)2 and compute the gradients ∂L
+∂⃗vd with backpropagation
+through time. This is possible since all parts of the loss function including the ﬂuid simulation that is
+performed by our trained neural ﬂuid model as well as the fast Fourier transform are differentiable.
+Computing the gradients with a standard automatic differentiation library (Pytorch) took 3.5 seconds
+for all 200 time steps on our 200x100 domain setup. This is considerably faster than the current
+state-of-the-art differentiable ﬂuid solver by Takahashi et al. (2021) which takes 5.42 seconds for
+only 30 time steps on a smaller 128x128 grid. The update steps of ⃗vd are done using the ADAM-
+optimizer and converge after approximately 70 iterations (see Figure 5c). We want to emphasize
+that differentiable ﬂuid simulations are limited to scenarios with low Reynolds numbers as in the
+presence of turbulences, chaotic behavior will lead to exploding gradients.
+5
+DISCUSSION AND OUTLOOK
+In this work, we present an unsupervised learning scheme for the incompressible Navier-Stokes
+equations and introduce a ﬂuid model that uses a vector potential to output divergence-free velocity
+ﬁelds. Qualitative results of our trained ﬂuid models are in good accordance with expectations from
+ﬂuid dynamics for a wide range of Reynolds numbers and generalize to unknown ﬂuid domains.
+Quantitative assessment showed superior performance in terms of accuracy and speed compared to
+Phiﬂow and an ablation study that directly predicts the velocity ﬁeld. We present a real-time demo
+and demonstrate how differentiability can be used in a proof-of-concept ﬂuid control scenario. We
+believe that our ﬂuid models can signiﬁcantly speed up more sophisticated ﬂuid control pipelines
+such as described by Holl et al. (2020).
+First experiments of extending this approach to 3D deliver encouraging results and are topic of future
+research. Furthermore, on top of Dirichlet boundary conditions, Neumann boundary conditions and
+multi-phase domains could be incorporated in future ﬂuid models as well.
+9
+
+Published as a conference paper at ICLR 2021
+REFERENCES
+Nicholas Geneva and Nicholas Zabaras. Quantifying model form uncertainty in reynolds-averaged
+turbulence models with bayesian deep neural networks. Journal of Computational Physics, 383:
+125 – 147, 2019. ISSN 0021-9991. doi: https://doi.org/10.1016/j.jcp.2019.01.021. URL http:
+//www.sciencedirect.com/science/article/pii/S0021999119300464.
+Nicholas Geneva and Nicholas Zabaras.
+Modeling the dynamics of pde systems with physics-
+constrained deep auto-regressive networks. Journal of Computational Physics, 403:109056, 2020.
+Robert A. Gingold and Joseph J. Monaghan.
+Smoothed particle hydrodynamics: theory and
+application to non-spherical stars. Monthly notices of the royal astronomical society, 181(3):
+375–389, 1977.
+Philipp Grohs, Fabian Hornung, Arnulf Jentzen, and Philippe Von Wurstemberger. A proof that
+artiﬁcial neural networks overcome the curse of dimensionality in the numerical approximation
+of black-scholes partial differential equations. arXiv preprint arXiv:1809.02362, 2018.
+Francis H. Harlow and J. Eddie Welch.
+Numerical calculation of time-dependent viscous
+incompressible ﬂow of ﬂuid with free surface. The physics of ﬂuids, 8(12):2182–2189, 1965.
+Philipp Holl, Vladlen Koltun, and Nils Thuerey. Learning to control pdes with differentiable physics.
+ICLR, 2020.
+Yuehaw Khoo, Jianfeng Lu, and Lexing Ying. Solving for high-dimensional committor functions
+using artiﬁcial neural networks. Research in the Mathematical Sciences, 6(1):1, 2019.
+Byungsoo Kim, Vinicius C. Azevedo, Nils Thuerey, Theodore Kim, Markus Gross, and Barbara
+Solenthaler. Deep ﬂuids: A generative network for parameterized ﬂuid simulations. In Computer
+Graphics Forum, volume 38, pp. 59–70. Wiley Online Library, 2019.
+Junhyuk Kim and Changhoon Lee. Deep unsupervised learning of turbulence for inﬂow generation
+at various reynolds numbers. Journal of Computational Physics, 406:109216, 2020. ISSN 0021-
+9991. doi: https://doi.org/10.1016/j.jcp.2019.109216. URL http://www.sciencedirect.
+com/science/article/pii/S0021999119309210.
+Diederik P. Kingma and Jimmy Ba.
+Adam: A method for stochastic optimization.
+In 3rd
+International Conference on Learning Representations, ICLR 2015, San Diego, CA, USA, May
+7-9, 2015, Conference Track Proceedings, 2015.
+L’ubor Ladický, SoHyeon Jeong, Barbara Solenthaler, Marc Pollefeys, and Markus Gross. Data-
+driven ﬂuid simulations using regression forests.
+ACM Trans. Graph., 34(6), October 2015.
+ISSN 0730-0301.
+doi: 10.1145/2816795.2818129.
+URL https://doi.org/10.1145/
+2816795.2818129.
+Yunzhu Li, Jiajun Wu, Russ Tedrake, Joshua B Tenenbaum, and Antonio Torralba. Learning particle
+dynamics for manipulating rigid bodies, deformable objects, and ﬂuids. In ICLR, 2019.
+Julia Ling, Andrew Kurzawski, and Jeremy Templeton. Reynolds averaged turbulence modelling
+using deep neural networks with embedded invariance. Journal of Fluid Mechanics, 807:155–
+166, 2016.
+Arvind T. Mohan, Nicholas Lubbers, Daniel Livescu, and Michael Chertkov.
+Embedding hard
+physical constraints in neural network coarse-graining of 3d turbulence, 2020.
+Damian Mrowca, Chengxu Zhuang, Elias Wang, Nick Haber, Li Fei-Fei, Joshua B. Tenenbaum,
+and Daniel L. K. Yamins. Flexible neural representation for physics prediction. In Proceedings
+of the 32nd International Conference on Neural Information Processing Systems, NIPS’18, pp.
+8813–8824, Red Hook, NY, USA, 2018. Curran Associates Inc.
+Maziar Raissi, Alireza Yazdani, and George Em Karniadakis. Hidden ﬂuid mechanics: A navier-
+stokes informed deep learning framework for assimilating ﬂow visualization data. arXiv preprint
+arXiv:1808.04327, 2018.
+10
+
+Published as a conference paper at ICLR 2021
+Maziar Raissi, P. Perdikaris, and George Em Karniadakis. Physics-informed neural networks: A
+deep learning framework for solving forward and inverse problems involving nonlinear partial
+differential equations. Journal of Computational Physics, 378:686 – 707, 2019. ISSN 0021-
+9991. doi: https://doi.org/10.1016/j.jcp.2018.10.045. URL http://www.sciencedirect.
+com/science/article/pii/S0021999118307125.
+Olaf Ronneberger, Philipp Fischer, and Thomas Brox.
+U-net:
+Convolutional networks for
+biomedical image segmentation. In International Conference on Medical image computing and
+computer-assisted intervention, pp. 234–241. Springer, 2015.
+Connor Schenck and Dieter Fox. Spnets: Differentiable ﬂuid dynamics for deep neural networks.
+In Conference on Robot Learning, pp. 317–335, 2018.
+Markus Schöberl, Nicholas Zabaras, and Phaedon-Stelios Koutsourelakis.
+Predictive collective
+variable discovery with deep bayesian models. The Journal of Chemical Physics, 150(2):024109,
+2019. doi: 10.1063/1.5058063. URL https://doi.org/10.1063/1.5058063.
+Justin Sirignano and Konstantinos Spiliopoulos. Dgm: A deep learning algorithm for solving partial
+differential equations. Journal of Computational Physics, 375:1339 – 1364, 2018. ISSN 0021-
+9991. doi: https://doi.org/10.1016/j.jcp.2018.08.029. URL http://www.sciencedirect.
+com/science/article/pii/S0021999118305527.
+Jos Stam. Stable ﬂuids. In Proceedings of the 26th annual conference on Computer graphics and
+interactive techniques, pp. 121–128, 1999.
+Tetsuya Takahashi, Junbang Liang, Yi-Ling Qiao, and Ming C Lin. Differentiable ﬂuids with solid
+coupling for learning and control. 2021.
+Nils Thuerey, Konstantin Weißenow, Lukas Prantl, and Xiangyu Hu. Deep learning methods for
+reynolds-averaged navier–stokes simulations of airfoil ﬂows. AIAA Journal, pp. 1–12, 2019.
+Jonathan Tompson, Kristofer Schlachter, Pablo Sprechmann, and Ken Perlin. Accelerating eulerian
+ﬂuid simulation with convolutional networks. In Proceedings of the 34th International Conference
+on Machine Learning-Volume 70, pp. 3424–3433. JMLR. org, 2017.
+Rohit K. Tripathy and Ilias Bilionis. Deep uq: Learning deep neural network surrogate models for
+high dimensional uncertainty quantiﬁcation. Journal of Computational Physics, 375:565 – 588,
+2018. ISSN 0021-9991. doi: https://doi.org/10.1016/j.jcp.2018.08.036. URL http://www.
+sciencedirect.com/science/article/pii/S0021999118305655.
+Kiwon Um, Raymond Fei, Philipp Holl, Robert Brand, and Nils Thuerey.
+Solver-in-the-loop:
+Learning from differentiable physics to interact with iterative pde-solvers, 2020.
+Benjamin Ummenhofer, Lukas Prantl, Nils Thuerey, and Vladlen Koltun.
+Lagrangian ﬂuid
+simulation with continuous convolutions.
+In 8th International Conference on Learning
+Representations, ICLR 2020, Addis Ababa, Ethiopia, April 26-30, 2020. OpenReview.net, 2020.
+URL https://openreview.net/forum?id=B1lDoJSYDH.
+You Xie, Erik Franz, Mengyu Chu, and Nils Thuerey. Tempogan: A temporally coherent, volumetric
+gan for super-resolution ﬂuid ﬂow. ACM Trans. Graph., 37(4), July 2018. ISSN 0730-0301. doi:
+10.1145/3197517.3201304. URL https://doi.org/10.1145/3197517.3201304.
+Cheng Yang, Xubo Yang, and Xiangyun Xiao. Data-driven projection method in ﬂuid simulation.
+Computer Animation and Virtual Worlds, 27(3-4):415–424, 2016. doi: 10.1002/cav.1695. URL
+https://onlinelibrary.wiley.com/doi/abs/10.1002/cav.1695.
+Yinhao Zhu and Nicholas Zabaras. Bayesian deep convolutional encoder–decoder networks for
+surrogate modeling and uncertainty quantiﬁcation. Journal of Computational Physics, 366:415
+– 447, 2018. ISSN 0021-9991. doi: https://doi.org/10.1016/j.jcp.2018.04.018. URL http:
+//www.sciencedirect.com/science/article/pii/S0021999118302341.
+Yinhao Zhu, Nicholas Zabaras, Phaedon-Stelios Koutsourelakis, and Paris Perdikaris.
+Physics-
+constrained deep learning for high-dimensional surrogate modeling and uncertainty quantiﬁcation
+without labeled data. Journal of Computational Physics, 394:56 – 81, 2019. ISSN 0021-9991.
+doi: https://doi.org/10.1016/j.jcp.2019.05.024. URL http://www.sciencedirect.com/
+science/article/pii/S0021999119303559.
+11
+
+Published as a conference paper at ICLR 2021
+A
+PHYSICS-CONSTRAINED LOSS ON A MAC GRID
+As mentioned in Section 3.3 of the paper, our method relies on a staggered marker-and-cell grid
+representation for the vector potential as well as the velocity and pressure ﬁelds. In the following, we
+provide further details on how to apply this representation to learn incompressible ﬂuid dynamics.
+To calculate the velocity ﬁeld ⃗v = ∇× ⃗a of a vector potential ⃗a on a MAC grid in 2D, we have to
+compute the curl as follows:
+(vx)i,j = (az)i+1,j −(az)i,j
+(vy)i,j = (az)i,j −(az)i,j+1
+(14)
+If this vector potential is inserted into the divergence operator on a MAC grid, we can show that
+∇· ⃗vi,j = 0 is indeed fulﬁlled:
+∇· ⃗vi,j = (vx)i,j+1 −(vx)i,j + (vy)i+1,j −(vy)i,j
+(15)
+=
+((az)i+1,j+1 −(az)i,j+1) −((az)i+1,j −(az)i,j)
++ ((az)i+1,j −(az)i+1,j+1) −((az)i,j −(az)i,j+1)
+(16)
+=0
+(17)
+Thus, for the ⃗a-Net, the incompressibility equation is automatically fulﬁlled and no further training
+on the divergence loss Ld is required. However, for the ⃗v-Net, the residuals of the divergence are
+still of importance:
+(Rd)t+dt
+i,j
+= ∇· ⃗vt+dt
+i,j
+(= 0 for ⃗a-Net)
+(18)
+The residuals of the momentum equation in x-direction can be computed as follows:
+(Rpx)t+dt
+i,j
+=ρ
+ 
+(vx)t+dt
+i,j
+−(vx)t
+i,j
+dt
++ (vx)t′
+i,j · (vx)t′
+i,j+1 −(vx)t′
+i,j−1
+2
++
+(vy)t′
+i,j−1+(vy)t′
+i,j
+2
+·
+
+(vx)t′
+i,j −(vx)t′
+i−1,j
+
++
+(vy)t′
+i+1,j−1+(vy)t′
+i+1,j
+2
+·
+
+(vx)t′
+i+1,j −(vx)t′
+i,j
+
+2
+
+
+
++
+ pt+dt
+i,j
+−pt+dt
+i,j−1
+
+−µ · ∆(vx)t′
+i,j
+(19)
+Here, we use the following isotropic Laplace operator:
+∆si,j = 1
+4(1 ∗si−1,j−1 + 2 ∗si−1,j + 1 ∗si−1,j+1
++2 ∗si,j−1 −12 ∗si,j + 2 ∗si,j+1
++1 ∗si+1,j−1 + 2 ∗si+1,j + 1 ∗si+1,j+1)
+(20)
+The derivation of the advection term for Rpx is a bit more complex since on a MAC grid, vx and
+vy are displaced by half a pixel in x-direction and y-direction.
+To obtain the residuals of the
+momentum equation in y-direction, (Rpy)i,j, one has to take (Rpx)i,j and swap x and y and the
+indices respectively.
+Now, the discretized loss terms can be written as follows:
+Lt+dt
+d
+=
+X
+i,j
+Ωt+dt
+i,j
+((Rd)t+dt
+i,j
+)2
+(21)
+Lt+dt
+p
+=
+X
+i,j
+Ωt+dt
+i,j
+ ((Rpx)t+dt
+i,j
+)2 + ((Rpy)t+dt
+i,j
+)2
+(22)
+Lt+dt
+b
+=
+X
+i,j
+∂Ωt+dt
+i,j
+⃗vt+dt
+d
+−⃗vt+dt2
+(23)
+12
+
+Published as a conference paper at ICLR 2021
+Note, that all mentioned operations can be efﬁciently implemented with convolutions. To obtain the
+ﬁnal velocities on a square grid, we project the velocity ﬁelds of the MAC grid back onto the ⃗a-grid
+using linear interpolation:
+⃗v = 1
+2
+
+(vx)i−1,j + (vx)i,j
+(vy)i,j−1 + (vy)i,j
+
+(24)
+B
+NETWORK ARCHITECTURE
+Our ﬂuid model is based on the U-Net architecture (Ronneberger et al. (2015)) with fewer channels
+(see Figure 6). As the pressure ﬁeld and vector potential can have an arbitrary offset, we always
+normalize the mean of the pressure (∆p) and vector potential (∆az) to 0 to keep these ﬁelds well-
+deﬁned and prevent drifting offset values.
+Figure 6: U-Net architecture with fewer channels.
+C
+EXAMPLES OF TRAINING DOMAINS
+The domains we used for training consist of 100 × 300 grids. We used 3 different randomized
+domains as exemplary depicted in Figure 7. First, we have boxes with randomized height and width
+that ﬂoat on randomized paths inspired by Brownian motion in a pipe with randomized ﬂow speed.
+Second, we have the same setup but replaced the boxes by cylinders with randomized radii and
+angular velocities in order to learn the Magnus effect. Finally, we have a folded pipe system with
+randomized ﬂow speed, that is randomly ﬂipped along the x-axis.
+D
+FURTHER EXAMPLES OF GENERALIZATION
+Note that the network was only trained on simple domain geometries as presented in appendix C.
+Still, as can be seen in Figure 8, the network is capable of generalizing to far more complicated
+domain geometries (e.g. shark, car). Figure 8c shows that it can generalize to multiple objects in the
+scene, although the training set contained at most one object per scene. And Figure 8d shows that
+we can alter the outer boundary conditions as well. For real-time simulations, please have a look at
+our source code and the supplementary video.
+E
+QUANTITATIVE ANALYSIS: THE BENCHMARK PROBLEM
+Figure 9 shows the domain Ωand vd on a 100×100 grid which was used as the benchmark problem
+for quantitative analysis. The ﬂow speed for the inlet and outlet was set to 0.5. The timestep of
+the integrator was set to dt = 4 and the viscosity and ﬂuid density were set to µ = 0.1 and ρ = 4
+respectively.
+13
+
+Published as a conference paper at ICLR 2021
+(a)
+(b)
+(c)
+(d)
+(e)
+(f)
+Figure 7: The left column shows Ω(in white) / ∂Ω(in black) and the right column shows ⃗vd for three examples
+of training domains. (Colors indicate the direction and magnitude of ⃗vd as depicted in Figure 9a)
+(a) Shark
+(b) Car
+(c) Smiley
+(d) Smiley in cave
+Figure 8: Our models generalize to various domain geometries, although being trained only on simple shapes
+(see Figure 7)
+F
+QUALITATIVE COMPARISON OF ⃗a-NET AND ⃗v-NET
+We give a qualitative example to show the beneﬁts of using a vector potential.
+Figure 10
+demonstrates that the⃗a-Net ﬁnds plausible solutions for a folded pipe domain while the ⃗v-Net looses
+most of the ﬂow in the center of the domain. This is in good accordance with quantitative results
+shown in section 1. The folded pipe domain is particularly difﬁcult to learn as the ﬂow ﬁeld contains
+long range dependencies to the inlet and outlet (as shown in the bottom row in Figure 7).
+G
+TRAINING WITHOUT RESETTING ENVIRONMENTS
+We performed an ablation study to investigate what happens if we do not reset old environments from
+time to time and, thus, do not continuously present the ﬂuid model with cold starts during training.
+Figure 11 shows that in this case, large error spikes appear in the validation curve. These error spikes
+appear since the model has troubles to perform a cold start as can be seen in Figure 11b: compared
+14
+
+Published as a conference paper at ICLR 2021
+(a)
+(b)
+(c)
+Figure 9: a) shows legend for ⃗vd; b) shows Ω(in white) / ∂Ω(in black) for the benchmark problem; c) shows
+⃗vd for the benchmark problem. (Colors indicate the direction of ⃗vd as depicted in a)
+(a) ⃗a-Net
+(b) ⃗v-Net
+Figure 10: Qualitative comparison of ⃗a-Net and ⃗v-Net in a folded pipe domain
+to a properly trained model (see Figure 4) the model takes longer to perform a cold start (ca 100
+steps) and converges to a solution with high Lp- and Ld- losses. By resetting the environments from
+time to time during training, we can prevent these error spikes as shown in Figure 11c.
+(a)
+(b)
+(c)
+Figure 11: a) ablation study without resetting environments: validation curve shows large error spikes during
+training; b) error spike: the ﬂuid model takes longer to perform a cold start and converges to a solution with
+high losses; c) original training with resetting environments: validation curve is stable
+15
+

@@ -1,0 +1,14033 @@
+Learning to grok: Emergence of in-context learning
+and skill composition in modular arithmetic tasks
+Tianyu He a, †
+Darshil Doshi a
+Aritra Das a
+Andrey Gromov b, a
+{tianyuh, ddoshi, aritrad}@umd.edu
+gromovand@meta.com
+Abstract
+Large language models can solve tasks that were not present in the training set.
+This capability is believed to be due to in-context learning and skill composition.
+In this work, we study the emergence of in-context learning and skill composition
+in a collection of modular arithmetic tasks. Specifically, we consider a finite
+collection of linear modular functions z = a x + b y mod p labeled by the vector
+(a, b) ∈Z2
+p. We use some of these tasks for pre-training and the rest for out-of-
+distribution testing. We empirically show that a GPT-style transformer exhibits a
+transition from in-distribution to out-of-distribution generalization as the number
+of pre-training tasks increases. We find that the smallest model capable of out-
+of-distribution generalization requires two transformer blocks, while for deeper
+models, the out-of-distribution generalization phase is transient, necessitating early
+stopping. Finally, we perform an interpretability study of the pre-trained models,
+revealing highly structured representations in both attention heads and MLPs; and
+discuss the learned algorithms. Notably, we find an algorithmic shift in deeper
+models, as we go from few to many in-context examples.
+1
+Introduction
+Large language models (LLMs) can perform simple tasks absent from their training data. This ability
+is usually achieved via in-context learning [5]. More importantly, LLMs can perform an even larger
+variety of very complex tasks upon appropriate prompting or fine-tuning. The latter ability to perform
+complex tasks is usually attributed to the following mechanism. First, LLMs learn a large variety of
+simple tasks and, then, how to compose those skills to form very complex skills [3]. Furthermore,
+LLMs also exhibit “emergent capabilities” – a sudden emergence of a new complex skill as a function
+of scale (either model size, compute or data) [29, 9]. It is plausible that these sudden performance
+improvements are due to one or both of these mechanisms. For example, LLMs show grokking
+on algorithmic tasks [24], which results from the model learning very structured representations
+[18, 11, 20]. Once these representations emerge, the model abruptly learns how to perform the task.
+In this work, we set out to examine skill composition both empirically and mechanistically. Inspired
+by the prior work that investigated emergence of in-context learning on linear regression tasks [1, 25],
+we introduce a finite collection of discrete modular arithmetic tasks [24] generalized to the in-context
+learning setting. Each task corresponds to learning a linear function z = a x + b y mod p over Zp
+from the examples provided in context of the autoregressive model(AM). In the bi-variate case there
+are p2 such functions labeled by the vector (a, b). The main objective of this algorithmic dataset is to
+probe how AM utilizes the tasks it has learnt during training to solve the new tasks.
+aDepartment of Physics, University of Maryland, College Park
+bMeta AI
+†Corresponding author
+*Source Code: https://github.com/ablghtianyi/ICL_Modular_Arithmetic
+38th Conference on Neural Information Processing Systems (NeurIPS 2024).
+
+0
+task = (1,1)
+. . .
+task = (2,3)
+. . .
+. . .
+task = (4,3)
+o.o.d.
+memorization
+o.o.d.
+generali-
+-zation
+in-distribution
+generalization
+in-distribution
+memorization
+(a)
+(b)
+(c)
+(d)
+(e)
+Figure 1: (a) The dataset. The tasks are labeled by vectors (a, b) ∈Z2
+p. Each table contains examples
+of ax + by mod p. A fraction 1 −α of the examples is blacked out; while the remaining examples
+are flattened into a single “document” in the batch. Each document is organized as a collection of
+triples (x, y, ax + by) for x, y from the training set (i.e. not blacked out in the table). Our training
+is similar to the traditional next-token prediction (autoregressive); with the main difference that we
+predict every third token, which are marked in red (x and y are uncorrelated). Every task appears
+exactly the same number of times in each batch. (b) Phase diagram for a six-layer model. We find
+four different phases. (1) in-distribution memorization: The model only performs well on tasks (a, b)
+and examples (x, y) from the training set – it does not generalize on unseen examples or tasks. (2)
+in-distribution generalization: model generalizes on unseen examples (x, y) but not on unseen tasks
+(a, b). (3) out-of-distribution memorization: model generalizes on unseen tasks (a, b) but only for
+examples (x, y) it has seen during training. (4) out-of-distribution generalization: model generalizes
+on unseen tasks (a, b) for seen as well as unseen examples (x, y). We focus on investigating phase (4)
+in more detail. (c) In-context sample complexity. Accuracy of the model in phase (4) as a function of
+the number of few-shot examples. (d) Representations developed by one of the attention heads in the
+first layer. These are projections of the embedding of a pair of numbers onto the two largest principal
+components (PCs) of the internal representation formed after passing through the attention layer and
+projection matrix. (e) First 3 PCs of embeddings separate log27-annotated numbers into even/odd
+planes, with 0 sandwiched between them.
+Our analysis shows that the solution found by the AM after optimization is qualitatively different
+from the linear regression cases studied before [1]. In those cases, due to the continuous nature
+of the task, AM develops an emergent first-order optimization method that minimizes an emergent
+quadratic loss function. Furthermore, as it was shown in [1], a single linear attention layer can solve
+the regression problem, while adding extra layers and non-linearities slightly modifies the gradient
+descent. In the modular arithmetic case, AM first learns how to solve the pre-training tasks and later
+(assuming enough different tasks) develops a generalizing solution by combining the solved tasks.
+Our main findings as well as the structure of the algorithmic dataset are illustrated on Fig. 1. Our main
+findings are: (i) there are four different phases in the end of pre-training depending on the number
+of tasks, ni.d., and number of examples per task, α. (ii) At inference time, there is a generalization
+transition in the number of few-shot examples, as the number of examples grows, the models starts to
+generalize. This effect is somewhat similar to the transition in sample complexity for the modular
+arithmetic found in [24]. (iii) model develops a striking circular representation for all of the tasks that
+naturally generalizes the circular representations found in the original work [24]. We further find that
+the deeper models are easier to optimize, but much harder to interpret. The optimization is discussed
+in more detail in the main text. Here we will highlight that optimization for these tasks is challenging
+and the AM tends to prefer the minimum that just solve a handful of tasks and memorize the training
+set. To avoid such minima we make sure that every batch contains equal number of tasks (meaning
+that no tasks is over- or under-represented in each batch). We further find that for larger models early
+stopping is necessary because the generalizing solution is transient.
+We organize our paper as follows. Section 2 contains the literature review. In Section 3 we explain
+our notations and discuss the experimental details. In Section 4 we demonstrate empirically that the
+2
+
+out-of-distribution ICL ability emerges as the number of training tasks increases. We also study the
+effects of model depth and task difficulty. In Section 5 we carefully examine a minimal setting, i.e.
+two-block transformer: we compare the representations learnt in four different phases and show that
+in the generalizing phase the representations are highly structured and generalize the original modular
+addition case of [24].
+2
+Related Works
+In-Context Learning (ICL)
+Brown et al. [5] first demonstrated that large models performance
+improves substantially when a few examples of the task at hand are provided at inference time, in the
+prompt. Akyürek et al. [2], Ahn et al. [1], von Oswald et al. [28] showed that the AM implements
+emergent first-order optimization on an emergent objective function to solve linear regression tasks.
+Furthermore, [2] showed that larger models learn to perform Bayesian estimation. Garg et al. [10]
+demonstrated that transformers can learn several simple classes of functions in context. Kirsch
+et al. [15] presented how task diversity and model size would affect the ICL performance for unseen
+tasks using a mixture of modified MNIST datasets. Raventos et al. [25] investigated the relation
+between task diversity and out-of-distribution ICL ability on linear regression tasks. Lin and Lee [16]
+identified two operating modes in ICL using a mixture of linear regression tasks, where for the first
+several shots, the model tries to figure out the correct task vector and later uses it to predict the correct
+results. Boix-Adserà et al. [4] showed theoretically and experimentally that with enough pre-training
+data, a transformer model can perform abstract reasoning that a MLP cannot do. Guo et al. [13]
+showed that transformers can use lower layers to memorize and upper layers to perform ICL in a
+feature regression setting. It was found in [26] that ICL is a transient phase from the optimization
+point of view: it goes away once the model is over-trained. Hendel et al. [14], Liu et al. [17] showed
+that language models form in-context vectors, which can be used to steer model predictions.
+Modular Arithmetic
+Power et al. [24] discovered Grokking, where models trained on modular
+arithmetic datasets have an abrupt change from random guessing to generalization on the test set way
+after the model memorized the training set. Gromov [11], Nanda et al. [20], Gu et al. [12] showed
+that for modular addition tasks, models learned to map integers to Fourier features to solve modular
+arithmetic tasks. Liu et al. [18] showed that grokking is related to learning highly structural features,
+and the grokking transition can be explained by a toy model. Zhong et al. [30] showed that there
+is more than one algorithm that a model can implement to solve modular addition. Doshi et al. [6]
+showed that corruption of the label does not prevent the models from finding a generalizing solution.
+Doshi et al. [7] showed that MLP and transformer models can solve a specific family of modular
+polynomial tasks by bijectively mapping them to modular addition tasks.
+Interpretability
+Elhage et al. [8], Olsson et al. [22] showed that transformers can form induction
+heads that predict the next token in a sequence by identifying and copying patterns from earlier in the
+sequence. With several indirect empirical evidences, they showed that those heads might constitute
+the core mechanism of ICL. Nichani et al. [21] showed theoretically and empirically how disentangled
+transformers learn causal structures from in-context Markov chains by forming induction heads.
+3
+Preliminaries
+Linear Modular Functions
+We consider modular arithmetic tasks of the form: zt
+i = atxi +
+btyi mod p. We will refer to the coefficients (at, bt) ∈Z2
+p as the task vector. The superscript
+t ∈{1, · · · , p2} labels the p2 possible tasks. We will refer to (xi, yi) ∈Z2
+p as the input vector, which
+is labeled by the subscript i ∈{1, · · · , p2}.
+In-Context Learning with Transformers
+We use GPT-like transformers [5] with ReLU activation
+function and Rotary Positional Embedding (RoPE) [27]. The model has d consecutive blocks, H
+attention-heads, and embedding dimension dembed. Each number is tokenized as an independent
+token. The pre-training is done following a slightly modified next-token prediction setup, with
+sequences of the form:
+st = (x1
+y1
+zt
+1
+x2
+y2
+zt
+2
+· · ·
+xnctx
+ynctx
+zt
+nctx) ∈Z3×nctx
+p
+,
+(1)
+3
+
+where nctx is the maximum number of in-context examples. The model is asked to predict only the
+labels {zt
+1, · · · , zt
+nctx}. We emphasize that we do not explicitly provide the task vectors (at, bt) to the
+model (see Fig. 1) – this information is implicit in the in-context labels {zt
+i}. In order for the model
+to generalize, it must determine the underlying task vector (at, bt) from the few-shot examples.
+𝑆!"#!
+$.$.&.
+𝑆!'()*
+$.$.&.
+𝑆!"#!
+).&.
+𝑆!'()*
+).&.
+In-distribution 
+memorization
+In-distribution 
+generalization
+Out-of-distribution 
+memorization
+Out-of-distribution 
+generalization
+= performs well
+= performs poorly
+Generalization
+There are two notions of generaliza-
+tion in this setup. (i) In-distribution: Generalization
+to unseen input vectors (xi, yi), but on task vector
+(at, bt) the model has seen during pre-training. (ii)
+Out-of-distribution: Generalization to task vectors the
+model has not seen during pre-training. To clearly
+separate these regimes, we split the task vectors into
+in-distribution (i.d.) set Ti.d. := {(at, bt)}i.d. and out-
+of-distribution (o.o.d.) set To.o.d. := {(at, bt)}o.o.d..
+Similarly, we split the input vectors into train and test
+sets: Xtrain := {(xi, yi)}train, Xtest := {(xi, yi)}test. This results in four distinct sets of sequences
+constructed from those sets; we name them Si.d.
+train, Si.d.
+test, So.o.d.
+train and So.o.d.
+test . The set Si.d.
+train is used
+for pre-training, while the other three sets are used for evaluations.
+Pre-Training Task Selection and Sequence Design
+We always sample the pre-training task vectors
+Ti.d. in sets of 4, following the rectangular rule, shown in Figure 2(a). Additionally, each batch
+contains an equal representation from all the task vectors in the set Ti.d.. Moreover, all the tasks share
+the same sequence of inputs. For example, a batch with two different task vectors (at1, bt1); (at2, bt2)
+and two distinct input sequences per task (resulting in four total sequences) is shown in Figure 2(b).
+(a1, b1)
+(a1+Δa1, b1+Δb1)
+(a1+Δa1, b1)
+(a1, b1+Δb1)
+(a2+Δa2,
+b2+Δb2)
+(a2, b2) (a2+Δa2, b2)
+(a2, b2+Δb2)
+(a3+Δa3,
+b3+Δb3)
+(a3, b3+Δb3)
+(a3, b3)
+(a3+Δa3, b3)
+Pre-training Sequence Design :
+Pre-training
+Task Selection
+with
+Rectagular Rule
+(Schematic)
+(a)
+(b)
+Figure 2: Structured selection of pre-training tasks and sequences.
+This structured approach creates a coherent signal from the sequences within each batch; ensuring
+that the model learns multiple task vectors with reasonable batch sizes. Alternatively, if the batches
+are sampled i.i.d., then the model is confused by the batch noise and cannot learn any tasks.
+Detailed discussions on task selection and sequence design are presented in Appendix D.
+Default Setting
+Unless stated explicitly, we will use p = 29, the number of heads H = 4, and
+embedding dimension dembed = 512, with nctx = 32 in-context examples. All models are trained
+with AdamW optimizer [19] with batch size B = 1024 for 200k steps. We have also tied the
+embedding layer of the model with the readout layer.
+4
+Emergence of In-Context Learning and Task Composition
+In this section, we demonstrate that a transformer model with depth d ≥2 can develop ICL and
+out-of-distribution generalization on modular arithmetic tasks. We delve deeper into the two notions
+of generalization (i.d. and o.o.d.), and discuss the relevant factors. We find that the model’s ability to
+generalize out-of-distribution is predominantly determined by the number of pretraining tasks ni.d..
+4.1
+Transition driven by the number of tasks
+In Figure 3(a), we show the accuracy of d = 6 models vs the number of training tasks ni.d. and the
+number of few-shot examples quantified by the fraction of the total number of data points, α; on sets
+Si.d.
+train, Si.d.
+test, So.o.d.
+train and So.o.d.
+test . The phase diagram in Figure 1 is constructed by merging the last
+shot accuracy version of these four diagrams shown in Figure 27(a) of Appendix G.
+4
+
+(a) Accuracy phase diagrams of all four sets
+0
+50k
+100k
+150k
+200k
+step
+0.0
+2.0
+4.0
+6.0
+8.0
+10.0
+12.0
+loss
+ni. d.
+23
+24
+25
+26
+27
+28
+29
+(b) Loss - step
+0
+50k
+100k
+150k
+200k
+step
+0
+25
+50
+75
+100
+accuracy (%)
+(c) Accuracy - step
+0
+5
+10
+15
+20
+25
+30
+number of shots
+0.0
+2.0
+4.0
+6.0
+8.0
+10.0
+12.0
+loss
+ni. d.
+23
+24
+25
+26
+27
+28
+29
+(d) Loss - # of shots
+0
+5
+10
+15
+20
+25
+30
+number of shots
+0
+20
+40
+60
+80
+accuracy (%)
+(e) Accuracy - # of shots
+Figure 3: Phase diagram for the depth d = 6 models. (a) Accuracy on all four sets used to plot the 1
+phase diagram, with an early stopping applied. Notably, in the regions when models generalize to
+o.o.d. sets, the pre-training performance degrades; (b, c) α = 0.6 training accuracy and o.o.d. test
+accuracy (dotted line). For ni.d. = 28, we notice that the o.o.d. generalization ability of the model
+first improves then degrades as we train longer; (d, e) α = 0.6, loss and accuracy vs context length,
+measured on So.o.d.
+test
+at the end of training, where for ni.d. = 28 case the ICL ability fades away.
+The ability of the model to generalize in-distribution increases with α, as can be seen by comparing
+the first two panels of Figure 3(a). This behavior is in correspondence with the original work on
+grokking, where the transition to generalizing solution is driven by the amount of data. Further, we
+observe that an increase in ni.d. enhances the in-context sample efficiency, i.e. the model generalizes
+at inference time with fewer few-shot examples. This indicates the onset of the transition from a
+task-memorizing solution to the one that generalizes out-of-distribution. The model switches to a
+new algorithmic way of solving the task and the solution is more few-shot-sample-efficient.
+Shifting our focus to the last two panels of Figure 3(a), we see that when ni.d. ≥256, the model
+can solve new tasks that were absent in the training set. Notably, there appears to be a trade-off
+between memorization and generalization when the model attains this o.o.d. generalization ability.
+As the o.o.d. performance increases, the pre-training performance simultaneously degrades. This
+phenomenon indicates a shift in the algorithm implemented by the model. Prior to this transition, the
+model primarily needed to select possible vectors from the list of memorized tasks and apply them.
+However, post-transition, the model adopts a more universal approach to solve the task in-context.
+We emphasize, that the model learns to perform ICL in both scenarios. The difference lies in the
+approach to generalization. When the model can only generalize in-distribution it’s task is to classify
+the sequence as one of the seen tasks or as unknown. Once it matches the sequence to one of the
+memorized task vectors, it does well for x, y pairs that only appear in the test set. However, as the
+number of tasks vectors grows the model fails to store them all and is forced to find a method of
+determining the task vector algorithmically at inference time. In that case model performs equally
+well on seen and un-seen tasks alike. In fact, the small two-layer model we study has such a low
+capacity that it entirely skips the in-distribution generalization phase and immediately jumps from
+pure memorization to out-of-distribution generalization.
+Next, to further illustrate the effect of task diversity, we plot the pre-training accuracy (set Si.d.
+train) and
+the o.o.d. test accuracy (set So.o.d.
+test ) as a function of training steps (Figure 3(b, c)); for various values
+of ni.d.. We observe a clear memorization-to-generalization transition as task diversity increases.
+Interestingly, for ni.d. = 28, the ICL ability on So.o.d.
+test
+set exhibits non-monotonic behavior, where
+the o.o.d. performance rises and falls along the training process. This phenomenon is likely due to
+a competition between the memorizing and generalizing circuits inside the model. Note that this
+phenomenon is akin to the one analyzed in Singh et al. [26], albeit with a different setup.
+5
+
+(b)  d = 2
+(a)  d = 4
+i.d. train
+o.o.d. test
+o.o.d. test
+i.d. train
+o.o.d. test
+o.o.d. test
+Figure 4: Phases of depth d = 4 and d = 2 models. With decreasing model capacity, the performance
+on both sets degrades. At the same time, the transient nature of ICL does not appear. (a, b) from left
+to right: accuracy phase diagrams on pre-training set Si.d.
+train and on o.o.d. test set So.o.d.
+test , with early
+stopping; loss and accuracy vs context length on o.o.d. test set So.o.d.
+test
+for α = 0.6.
+Further evidence supporting the two-circuit competition can be observed in panel (d) of Figure
+3. The loss curves show a “monotonic →non-monotonic →monotonic” transition as the task
+diversity increases. With a minimal number of pre-training tasks, the model primarily engages in
+memorization, resulting in a monotonically increasing o.o.d. loss curve. As the number of pre-training
+tasks increases, the loss curve exhibits non-monotonic behavior, indicating competition between two
+distinct neural circuits. This transient nature of o.o.d. generalization for ni.d. = 28 is a peculiar case
+where memorization circuits are initially suppressed but eventually prevail. With substantial task
+diversity, the circuits responsible for generalization take over, culminating in a monotonic loss curve.
+Similar insights can be derived from examining the monotonicity of the accuracy curves in panel (e).
+4.2
+Effect of Model Size and Task Difficulty
+A natural question to ask is if similar phenomena can be observed with different model sizes or task
+difficulties. Here we present our results with d = 4 and d = 2 in Figure 4 and leave the results for
+other prime p values in Appendix H.
+When comparing phase diagrams in Figure 3 with Figure 4, we observe that those phase diagrams
+across different depths are qualitatively similar, where the o.o.d. generalization only emerges with a
+large enough number of pre-training tasks. As model capacity decreases, performance on both the
+pre-training set and the o.o.d. test set degrades. This is particularly evident in the d = 2 case, where
+the pre-training accuracy falls drastically as the model gains o.o.d. generalization ability.
+Interesting observations can be made by comparing loss and accuracy on the o.o.d. test set as
+a function of context length at the end of training. First, it is evident that as the model depth
+decreases, the 1-shot loss surge attributable to memorization becomes milder. Notably, for models
+with ni.d. = 29, there is no loss surge in the 1-shot case across all three depths. Furthermore, the
+d = 4 model with ni.d. = 28 behaves significantly differently from the corresponding one with d = 2
+case, where the model fails to perform ICL for the o.o.d. test set. This is also distinct from the d = 6
+case, where the model tends heavily toward memorization due to its excessive capacity. Instead, the
+d = 4 model manages to maintain a better balance between memorization and generalization at the
+end of pre-training. Consequently, the model has a 1-shot loss surge followed by a notable drop in
+ICL loss. This suggests that d = 4 optimally leverages the available model capacity to facilitate
+effective learning dynamics for o.o.d. generalization.
+6
+
+(4  21  5)  (2  6  19)  (x  y  ?)
+(4  21  5)  (x  y  ?)
+. . .
+1-shot
+2-shot
+13-shot
+. . .
+(4  21  5) . . . (19  4  22)  (x  y  ?)
+(4  21  5) . . . (15  23  25)  (x  y  ?)
+. . .
+. . .
+. . .
+. . .
+row 1 :
+k-shot
+predictions
+row 2 :
+Mark correct if
+(x, y) = ci(xi,  yi)
+holds for
+any i ≤ k
+row 3 :
+Subtractrow 2
+from row 1
+correct
+incorrect
+correct
+incorrect
+1
+0
+-1
+x
+x
+x
+y
+y
+y
+31-shot
+(4  21  5)  (x  y  ?)
+. . .
+1-shot
+13-shot
+. . .
+(4  21  5) . . . (19  4  22)  (x  y  ?)
+(4  21  5) . . . (15  23  25)  (x  y  ?)
+. . .
+. . .
+. . .
+. . .
+x
+x
+x
+31-shot
+depth = 4 model
+depth = 2 model
+x
+Figure 5: d = 4 and d = 2 models’ performance on k-shot inference, on the grid of inputs
+(x, y) ∈Z2
+p (task vector = (6, 6)).
+row 1: Models’ predictions on o.o.d.
+task of the type
+(x1
+y1
+z1
+· · ·
+xk
+yk
+zk
+x
+y
+?). row 2: Analytical plots showing predictions solely
+based on Modular Regression algorithm. row 3: Subtract row 2 from row 1, by using correct=1 and
+incorrect=0. The red points correspond to the examples where Ratio Matching does not give the
+correct predictions but the model predicts correctly. The blue points are examples that the model
+missed despite Ratio Matching being applicable. This row tells us about the model’s ability to
+implement Modular Regression by combining the in-context examples. Note that d = 4 model readily
+learns to combine previous examples, while its d = 2 counterpart struggles due to its limited capacity.
+5
+Interpreting the Learned Algorithms
+We now explain the algorithms implemented by the models to achieve o.o.d generalization. We
+find that the models implement two distinct algorithms depending on the depth and the number of
+in-context examples during inference.
+Ratio Matching: If there exists i s.t. ci(xi, yi) = (x, y) mod p then z = cizt
+i mod p. This
+algorithm only works when y/x = yi/xi mod p holds for at least one of the in-context examples.
+Modular Regression: Find {c1, c2, . . . , ck} s.t. Pk
+i=1 ci(xi, yi) = (x, y) mod p. Then the predic-
+tion is z = Pk
+i=1 cizi mod p. This can be viewed as discretized circular regression over GF(p).
+We find telling signatures of these algorithms upon analyzing model predictions with varying numbers
+of in-context examples (Figure 5). With very few in-context examples, the models implement the
+Ratio Matching algorithm. As a canonical example, consider the 1-shot scenario (x1 y1 z1 x y ?).
+In this case, Ratio Matching will only solve the task for inputs that obey (x, y) = c1(x1, y1) mod p
+for some c1. Indeed, this is exactly what we observe in Figure 5 for both d = 2, 4 models. With many
+(∼10) in-context examples, d = 2 and d = 4 models implement different algorithms. The d = 4
+model can combine the in-context examples using the Modular Regression algorithm, leading to
+near-perfect o.o.d. generalization. On the other hand, the d = 2 model still uses Ratio Matching and
+shows sub-optimal performance. We ascribe this to the limited capacity of the d = 2 models. In other
+words, the d = 4 models exhibits an algorithmic shift from Ratio Matching to Modular Regression as
+them number of in-context examples increases. Whereas, the d = 2 models shows no such shift.
+To implement these algorithms, the model needs to perform linear operations over GF(p), which
+can be broken down into the following essential skills (in addition to copying information, which is
+readily implemented by attention heads).
+I. Modular Map: Encode the tokens such that operations over GF(p) can be easily implemented
+II. Multiplication: A necessary skill to rescale in-context examples in both algorithms
+III. Addition: A necessary skill for combining in-context examples in Modular Regression algorithm
+While both d = 2, 4 models learn skills I, II perfectly; the d = 4 model outperforms its d = 2
+counterpart in skill III – which helps it combining the in-context examples.
+In the remainder of this section, we show the special attention heads that implement skill I (Section 5.1)
+and MLPs that implement skills II, III (Section 5.2). We explicitly show the deterioration in this
+7
+
+1.0
+0.8
+0.0
+0.2
+0.4
+0.6
+layer 1, head 3
+layer 2, head 2
+layer 1, head 1
+layer 1, head 4
+(c)
+(d)
+(b)
+(a)
+Query
+Query
+Key
+Key
+Key
+Key
+2nd principal component
+2nd principal component
+1st principal component
+1st principal component
+1st principal component
+1st principal component
+4
+28, 2
+26
+22, 24
+18, 20
+16
+12, 14
+10
+6, 8
+Query
+Query
+2nd principal component
+ni.d. = 29
+ni.d. = 27
+ni.d. = 28
+Figure 6: Models that generalize o.o.d. (left) exhibit more structured attention maps. Additionally, the
+top-2 principal components of the features from the corresponding heads also show more structured
+patterns. The features are computed for sequences with an o.o.d. task vector (at, bt) = (6, 6), loop
+over (xi, yi) at a specific shot while the previous parts of the sequence are fixed. We annotate each
+PCA plot with the (log27 xi, log27 yi) mod p pairs. (a) The principal components form a circle of
+circles where the position of the outer circle is controlled by xi. This pattern remains the same
+for different task vectors or the shot choices; (b) Only plotted pairs with even log27 xi, with each
+log27 xi circled with different colors. The PCA pattern forms a similar double circle as those in (a),
+with the key difference that those circles depend on task vector choices and the shot choices; (c, d)
+Models without o.o.d. generalization ability. We pick heads from the first block that corresponds to
+the first column of (a). Clearly, the structure of attention maps and PCA patterns deteriorate as the
+task diversity decreases.
+structures as pre-training task diversity (ni.d.) decreases. We also elucidate the algorithmic shift in
+the d = 4 models as the number of in-context examples increases.
+5.1
+Attention Heads Implement Skill I
+So far we have presented “black-box” evidence suggesting that the model is implementing the pro-
+posed algorithms (Figure 5). Now, we turn to “white-box” interpretability, to identify the components
+within the transformer model that are responsible for the essential skills. In Figure 6(a, b), we analyze
+the important attention heads in the d = 2 model. Specifically, we compare the emergent structures
+in models trained with different pre-training task diversities.
+In Figure 6(a), we show the attention head from layer 1 that implements skill I. In the top panel, we
+see that each query only pays attention to itself and the two preceding keys. This pattern likely stems
+from the fact that each example in the sequence contains three tokens xi, yi, zt
+i; and suggests that this
+head is mostly focused on the information within the example.
+In the bottom panel, we perform principal component analysis (PCA) on the outputs of this head.
+Specifically, we feed a batched k-shot sequence of the form (x1 y1 z1
+· · · xk yk zk x y z),
+where the first k inputs are fixed and the last input (x, y) is scanned over all p2 possible pairs. We
+concatenate the resulting features from x and y, resulting in p2 × 2dembed batch of features – and
+perform PCA on this matrix. We project all these 2dembed dimensional features onto the first two
+principal components. Annotating the pairs (x, y) with (log27 x, log27 y)1, we find a “circle-of-
+circles” – where circles of period 28 are arranged in a bigger circle of period 28. Number 0 is located
+1We use 27 as the base of logarithm, which is a primitive root of GF(29)
+8
+
+layer 3, 16-shot
+layer 2, 2-shot
+layer 3, 2-shot
+layer 3, 5-shot
+layer 1, 2-shot
+layer 4, 5-shot
+layer 4, 2-shot
+layer 4, 16-shot
+depth = 2 model
+depth = 4 model
+(x=1, y)
+(x=2, y)
+(x=3, y)
+(x’=1, y’)
+(x=4, y)
+(x’=2, y’)
+(x’=4, y’)
+(x’=3, y’)
+(x=1, y)
+(x=2, y)
+(x=3, y)
+(x’=1, y’)
+(x=4, y)
+(x’=2, y’)
+(x’=4, y’)
+(x’=3, y’)
+(x=1, y)
+(x=2, y)
+(x=3, y)
+(x’=1, y’)
+(x=4, y)
+(x’=2, y’)
+(x’=4, y’)
+(x’=3, y’)
+(x=1, y)
+(x=2, y)
+(x=3, y)
+(x’=1, y’)
+(x=4, y)
+(x’=2, y’)
+(x’=4, y’)
+(x’=3, y’)
+. . .
+. . .
+(x=1, y)
+(x=2, y)
+(x=3, y)
+(x’=1, y’)
+(x=4, y)
+(x’=2, y’)
+(x’=4, y’)
+(x’=3, y’)
+(x=1, y)
+(x=2, y)
+(x=3, y)
+(x’=1, y’)
+(x=4, y)
+(x’=2, y’)
+(x’=4, y’)
+(x’=3, y’)
+. . .
+. . .
+. . .
+. . .
+. . .
+. . .
+y/x = y’/x’ mod p 
+y/x = y1/x1 mod p ;   y/x = y2/x2 mod p ;
+y’/x’ = y1/x1 mod p ;   y’/x’ = y2/x2 mod p
+(x=1, y)
+(x=2, y)
+(x=3, y)
+(x’=1, y’)
+(x=4, y)
+(x’=2, y’)
+(x’=4, y’)
+(x’=3, y’)
+. . .
+. . .
+(x=1, y)
+(x=2, y)
+(x=3, y)
+(x’=1, y’)
+(x=4, y)
+(x’=2, y’)
+(x’=4, y’)
+(x’=3, y’)
+. . .
+. . .
+. . .
+. . .
+. . .
+. . .
+y/x = y’/x’ mod p 
+y/x = y’/x’ mod p 
+y/x = y’/x’ mod p 
+ax’ + by‘ = ax + by mod p
+(a=2, b=6)
+y/x = y1/x1 mod p ;   y/x = y2/x2 mod p ;
+y’/x’ = y1/x1 mod p ;   y’/x’ = y2/x2 mod p
+Ratio Matching
+Ratio Matching
+Modular Regression
+Figure 7:
+Cosine-similarities (Equation (2)) between layer outputs hl at token z position
+(cos(hl
+z(x, y), hl
+z(x′, y′)), first row) and token y position (cos(hl
+y(x, y), hl
+y(x′, y′)), second row)
+reveal patterns in the models’ internal representations. For clarity, we only show selected x and
+x′ values, where y and y′ values range from 0 to 28 between each tick. For the d = 4 model,
+kaleidoscopic patterns in the third layer indicate the generation of all possible yi/xi features for
+subsequent computations. The last layer shows an algorithmic shift from Ratio Matching to Modular
+Regression. The d = 2 model also shows the kaleidoscopic pattern in the first layer, while the second
+layer identifies the relevant y/x features from the in-context examples for matching.
+at the center of the circles2. We observe similar circle-of-circles for concatenated features from (x, z)
+and (y, z) as well. We refer the reader to Appendix E for further details.
+In Figure 6(b), we analyze the head from layer 2 that effectively “copies” in-context examples.
+The upper panel shows the highly structured attention map that focuses on the current as well as
+the preceding examples. This pattern aligns with the Ratio Matching algorithm where the model
+compares (x, y) pairs across different in-context examples.
+In the bottom panel, by conducting a PCA analysis, we again identify circles when annotating
+examples in the (log27 x, log27 y) format. However, unlike the previously discussed pattern, the
+specifics of this “circle-of-circles” arrangement vary depending on the position and the choice of task
+vector (at, bt). This variability suggests that the head in question possesses information about the
+specific task from the context.
+We further highlight the importance of the structure we find in the above paragraphs via comparison
+with models, trained with lower pre-training task diversity, that do not generalize o.o.d (Figure 6
+c, d). Note that as the number of pre-training tasks ni.d. decreases, the attention map starts to get
+mosaicked (top panels); and the PCA projections lose their shape (bottom panels). As a result, these
+models lose the ability to perform ICL on modular arithmetic out-of-distribution.
+5.2
+MLPs Implement Skill II and III
+After applying Skill I, the model maps numbers onto circular feature spaces, enabling discrete
+modular operations such as multiplication, division, addition, and subtraction through subse-
+quent model components. To analyze this behavior, we compute the cosine-similarity between
+layer l (i.e.
+lth Transformer block) k-shot output vectors (standardized) at token position y:
+hl
+y(x1, y1, z1, · · · , xk, yk, zk, x, y).
+2This is expected since log27 0 is mathematically ill-defined and needs special treatment.
+9
+
+cos(hl
+y(x, y), hl
+y(x′, y′)) =
+hl
+y(. . . , xk, yk, zk, x, y) · hl
+y(. . . , xk, yk, z′
+k, x′, y′)
+∥hly(. . . , xk, yk, zk, x, y)∥∥hly(. . . , xk, yk, zk, x′, y′)∥
+(2)
+layer 2
+layer 3
+y
+x
+x
+y
+x
+x
+layer 1
+layer 2
+depth = 4
+depth = 2
+Figure 8: MLP activations (post-ReLU) wrt inputs (x, y)
+We evaluate this similarity metric across
+all possible input pairs (x, y) and
+(x′, y′), resulting in a p2 × p2 matrix.
+We also repeat the analysis to layer
+output vectors at z tokens hl
+z(·).
+In
+line with our previous analysis, we use
+controlled (fixed) in-context examples
+(x1 y1 z1 . . . xk yk zk).
+For the d
+=
+4 model,
+the top
+panel of Figure 7 reveals a distinctive
+kaleidoscopic pattern3 of high cosine-
+similarities. The pattern corresponds to
+input pairs (x, y) that share the same ra-
+tio y/x mod p. In the MLP modules,
+we find highly structured activations as functions of inputs (x, y) (Figure 8 left). Together with our
+earlier analysis of Skill I, these observations suggest that the MLP layer following the attention
+module with a “circle-of-circles” head (layer 2, head 4 for d = 4 model, see Figure 13 (a)) imple-
+ments division operations over GF(p). The bottom panel of Figure 7 succinctly demonstrates the
+algorithmic shift from Ratio Matching to Modular Regression as the number of in-context examples
+increases. At 2-shot, layer 4 features collapse to identical vectors except when the ratio y/x matches
+one of the ratios (y1/x1 or y2/x2). At higher shots, we see a transition to a task-dependent pattern
+where features align for input pairs (x, y) for which a x + b y mod p match – a signature of Modular
+Regression.
+For d = 2 models, we again observe the kaleidoscopic pattern in cosine-similarities (Figure 7 top-
+right) and structured MLP activations (Figure 8 right). However, in this case we only find signatures
+of Ratio Matching in the cosine similarities (Figure 7 bottom-right), as expected.
+Thus, we conclude that the d = 2 model has scarcely acquired skill III, due to its limited capacity. On
+the other hand, d = 4 model is very good at combining equations via skill III, explaining its superior
+performance. For a more detailed discussion, see Appendix E.
+6
+Discussion
+We have investigated the emergence of in-context learning and skill composition in autoregressive
+models on a novel algorithmic dataset. The dataset includes a large discrete set of modular arithmetic
+tasks and is specifically designed to force models to learn how to solve a variety of tasks. It consists
+of learning linear modular functions, where the model is expected to identify and perform a modular
+operation in-context. When the number of tasks is relatively small the models can only generalize
+in-distribution. Although such models develop ICL capabilities, they simply memorize these task
+vectors and use them to classify the input vectors. Once the number of training tasks becomes too
+large, the models transition to a qualitatively different algorithmic approach, where the task vector is
+determined at inference time.
+Finally, we have examined the learnt representations and shown that qualitatively different circuits
+are formed in different phases. In the o.o.d. generalization phase, we explain the learnt algorithms
+and highlight an in-context algorithmic shift in deeper models.
+Limitations
+We have limited this work to algorithmic datasets. It remains to be investigated what
+lessons can be translated to realistic language models, and what lessons are specific to the current
+setting. White-box interpretability analysis of deeper models has proved to be much more difficult
+than that of shallower models. Consequently, we still do not understand the role of every individual
+component of the network in the deeper cases.
+3Patterns are cropped due to file size limit, check the GitHub repo for the full kaleidoscopic pattern.
+10
+
+Acknowledgments
+T.H. thanks Yue Xu and Dayal Singh Kalra for helpful discussions. A.G.’s work at the University of
+Maryland was supported in part by NSF CAREER Award DMR-2045181, Sloan Foundation. The
+authors acknowledge the University of Maryland supercomputing resources (http://hpcc.umd.
+edu) made available for conducting the research reported in this paper.
+References
+[1] Kwangjun Ahn, Xiang Cheng, Hadi Daneshmand, and Suvrit Sra. Transformers learn to implement precon-
+ditioned gradient descent for in-context learning. In A. Oh, T. Neumann, A. Globerson, K. Saenko, M. Hardt,
+and S. Levine, editors, Advances in Neural Information Processing Systems, volume 36, pages 45614–
+45650. Curran Associates, Inc., 2023. URL https://openreview.net/forum?id=LziniAXEI9.
+[2] Ekin Akyürek, Dale Schuurmans, Jacob Andreas, Tengyu Ma, and Denny Zhou. What learning algorithm
+is in-context learning? investigations with linearmodels, 2023. URL https://openreview.net/forum?
+id=0g0X4H8yN4I.
+[3] Sanjeev Arora and Anirudh Goyal. A theory for emergence of complex skills in language models. arXiv
+preprint arXiv:2307.15936, 2023.
+[4] Enric Boix-Adserà, Omid Saremi, Emmanuel Abbe, Samy Bengio, Etai Littwin, and Joshua M. Susskind.
+When can transformers reason with abstract symbols? In The Twelfth International Conference on Learning
+Representations, 2024. URL https://openreview.net/forum?id=STUGfUz8ob.
+[5] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind
+Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, Sandhini Agarwal, Ariel Herbert-Voss,
+Gretchen Krueger, Tom Henighan, Rewon Child, Aditya Ramesh, Daniel Ziegler, Jeffrey Wu, Clemens
+Winter, Chris Hesse, Mark Chen, Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin Chess, Jack Clark,
+Christopher Berner, Sam McCandlish, Alec Radford, Ilya Sutskever, and Dario Amodei. Language
+models are few-shot learners. In H. Larochelle, M. Ranzato, R. Hadsell, M.F. Balcan, and H. Lin,
+editors, Advances in Neural Information Processing Systems, volume 33, pages 1877–1901. Curran As-
+sociates, Inc., 2020. URL https://proceedings.neurips.cc/paper_files/paper/2020/file/
+1457c0d6bfcb4967418bfb8ac142f64a-Paper.pdf.
+[6] Darshil Doshi, Aritra Das, Tianyu He, and Andrey Gromov. To grok or not to grok: Disentangling general-
+ization and memorization on corrupted algorithmic datasets. In The Twelfth International Conference on
+Learning Representations, 2024. URL https://openreview.net/forum?id=UHjE5v5MB7.
+[7] Darshil Doshi, Tianyu He, Aritra Das, and Andrey Gromov. Grokking modular polynomials, 2024. URL
+https://arxiv.org/abs/2406.03495.
+[8] Nelson Elhage, Neel Nanda, Catherine Olsson, Tom Henighan, Nicholas Joseph, Ben Mann, Amanda
+Askell, Yuntao Bai, Anna Chen, Tom Conerly, Nova DasSarma, Dawn Drain, Deep Ganguli, Zac
+Hatfield-Dodds, Danny Hernandez, Andy Jones, Jackson Kernion, Liane Lovitt, Kamal Ndousse,
+Dario Amodei, Tom Brown, Jack Clark, Jared Kaplan, Sam McCandlish, and Chris Olah. A mathe-
+matical framework for transformer circuits. Transformer Circuits Thread, 2021. https://transformer-
+circuits.pub/2021/framework/index.html.
+[9] Deep Ganguli, Danny Hernandez, Liane Lovitt, Amanda Askell, Yuntao Bai, Anna Chen, Tom Conerly,
+Nova Dassarma, Dawn Drain, Nelson Elhage, et al. Predictability and surprise in large generative models.
+In Proceedings of the 2022 ACM Conference on Fairness, Accountability, and Transparency, pages
+1747–1764, 2022.
+[10] Shivam Garg, Dimitris Tsipras, Percy Liang, and Gregory Valiant. What can transformers learn in-context?
+a case study of simple function classes. 2023.
+[11] Andrey Gromov. Grokking modular arithmetic, 2023. URL https://arxiv.org/abs/2301.02679.
+[12] Jiuxiang Gu, Chenyang Li, Yingyu Liang, Zhenmei Shi, Zhao Song, and Tianyi Zhou. Fourier circuits in
+neural networks: Unlocking the potential of large language models in mathematical reasoning and modular
+arithmetic, 2024.
+[13] Tianyu Guo, Wei Hu, Song Mei, Huan Wang, Caiming Xiong, Silvio Savarese, and Yu Bai. How do
+transformers learn in-context beyond simple functions? a case study on learning with representations. In
+The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.
+net/forum?id=ikwEDva1JZ.
+11
+
+[14] Roee Hendel, Mor Geva, and Amir Globerson. In-context learning creates task vectors, 2023.
+[15] Louis Kirsch, James Harrison, Jascha Sohl-Dickstein, and Luke Metz. General-purpose in-context learning
+by meta-learning transformers, 2024.
+[16] Ziqian Lin and Kangwook Lee. Dual operating modes of in-context learning, 2024.
+[17] Sheng Liu, Haotian Ye, Lei Xing, and James Zou. In-context vectors: Making in context learning more
+effective and controllable through latent space steering, 2024.
+[18] Ziming Liu, Ouail Kitouni, Niklas S Nolte, Eric Michaud, Max Tegmark, and Mike Williams. Towards
+understanding grokking: An effective theory of representation learning. Advances in Neural Information
+Processing Systems, 35:34651–34663, 2022.
+[19] Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In International Conference on
+Learning Representations, 2019. URL https://openreview.net/forum?id=Bkg6RiCqY7.
+[20] Neel Nanda, Lawrence Chan, Tom Lieberum, Jess Smith, and Jacob Steinhardt. Progress measures
+for grokking via mechanistic interpretability. In The Eleventh International Conference on Learning
+Representations, 2023. URL https://openreview.net/forum?id=9XFSbDPmdW.
+[21] Eshaan Nichani, Alex Damian, and Jason D. Lee. How transformers learn causal structure with gradient
+descent, 2024.
+[22] Catherine Olsson, Nelson Elhage, Neel Nanda, Nicholas Joseph, Nova DasSarma, Tom Henighan, Ben
+Mann, Amanda Askell, Yuntao Bai, Anna Chen, Tom Conerly, Dawn Drain, Deep Ganguli, Zac Hatfield-
+Dodds, Danny Hernandez, Scott Johnston, Andy Jones, Jackson Kernion, Liane Lovitt, Kamal Ndousse,
+Dario Amodei, Tom Brown, Jack Clark, Jared Kaplan, Sam McCandlish, and Chris Olah. In-context
+learning and induction heads, 2022.
+[23] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory Chanan, Trevor
+Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, Alban Desmaison, Andreas Köpf, Edward Yang,
+Zach DeVito, Martin Raison, Alykhan Tejani, Sasank Chilamkurthy, Benoit Steiner, Lu Fang, Junjie Bai,
+and Soumith Chintala. Pytorch: An imperative style, high-performance deep learning library, 2019.
+[24] Alethea Power, Yuri Burda, Harri Edwards, Igor Babuschkin, and Vedant Misra. Grokking: Generalization
+beyond overfitting on small algorithmic datasets. arXiv preprint arXiv:2201.02177, 2022.
+[25] Allan Raventos, Mansheej Paul, Feng Chen, and Surya Ganguli. Pretraining task diversity and the
+emergence of non-bayesian in-context learning for regression. In Thirty-seventh Conference on Neural
+Information Processing Systems, 2023. URL https://openreview.net/forum?id=BtAz4a5xDg.
+[26] Aaditya K Singh, Stephanie C.Y. Chan, Ted Moskovitz, Erin Grant, Andrew M Saxe, and Felix Hill. The
+transient nature of emergent in-context learning in transformers. In Thirty-seventh Conference on Neural
+Information Processing Systems, 2023. URL https://openreview.net/forum?id=Of0GBzow8P.
+[27] Jianlin Su, Yu Lu, Shengfeng Pan, Ahmed Murtadha, Bo Wen, and Yunfeng Liu. Roformer: Enhanced
+transformer with rotary position embedding, 2023.
+[28] Johannes von Oswald, Eyvind Niklasson, Ettore Randazzo, João Sacramento, Alexander Mordvintsev,
+Andrey Zhmoginov, and Max Vladymyrov. Transformers learn in-context by gradient descent, 2023.
+[29] Jason Wei, Yi Tay, Rishi Bommasani, Colin Raffel, Barret Zoph, Sebastian Borgeaud, Dani Yogatama,
+Maarten Bosma, Denny Zhou, Donald Metzler, et al. Emergent abilities of large language models. arXiv
+preprint arXiv:2206.07682, 2022.
+[30] Ziqian Zhong, Ziming Liu, Max Tegmark, and Jacob Andreas. The clock and the pizza: Two stories
+in mechanistic explanation of neural networks. In Thirty-seventh Conference on Neural Information
+Processing Systems, 2023. URL https://openreview.net/forum?id=S5wmbQc1We.
+12
+
+A
+Experimental Details
+A.1
+Model and Training Hyperparameters
+Architecture
+We used GPT-like architectures with Rotary Positional Embedding (θ = 10, 000)
+and ReLU activations. We fix the number of heads H = 4, embedding dimension dembed = 512 and
+MLP widening factor 4 throughout every model. We use d = 2, 4, 6 throughout the paper. Embedding
+layers and the output layer are tied via weight tying.
+Initialization
+All linear layers and embedding layer weights are sampled from Gaussian distribution
+N(0, 0.022) at initialization, with the exception that the last linear layer in each MLP is sampled
+from N(0, 0.022/2d). No bias is used in any layer.
+Optimization and Schedule
+We trained most models using AdamW optimizer with learning rate
+η = 1.5 × 10−4, weight decay λ = 2.0, β1 = 0.9, β2 = 0.98, ϵ = 10−8, batch size B = 1024,
+nct = 32 in-context examples for 200k steps, together with a 5% linear warmup starting from 0.01η
+and a cosine annealing towards the end to 0.1η. Weight decay is not applied to LayerNorm layers.
+Hyperparameter Choice
+For d = 2 models we scanned learning rates η ∈{7.5 × 10−5, 1.5 ×
+10−4, 3 × 10−4, 6 × 10−4} and weight decay values λ ∈{0.5, 1.0, 2.0, 5.0}. Then we transfer our
+hyperparameters to other depths. Benefiting from the extra scaling in the initialization of the last
+linear in MLP, we find that the hyperparameters perform well for other depths. For larger p values,
+we lowering down the learning rate to 10−4.
+A.2
+Further Details of Each Plot in the Main Text
+Figure 1 (b) Phase diagram constructed using d = 6 data shown in Figure 27, threshold for defining
+each phase is set to 75% for the corresponding set; (c) accuracy - number of shots curve for d = 4,
+ni.d. = 28, p = 29 and α = 0.7. (d, e) d = 2 model with p = 29, ni.d. = 29 and α = 0.6.
+Figure 3 (a) Selected the best out of three random seeds with early stopping. (b, c) averaged over
+three random seeds with standard error labeled. All o.o.d. data are measured every 1, 000 step for 16
+randomly sampled sequences along the pre-training. (d, e) Used checkpoint at the end of pre-training,
+averaged over 128 random sequences sampled from So.o.d.
+test .
+Figure 4 (a, b) Both phase diagrams are the best selected from three random seeds with early stopping.
+The loss - number of shots curves are plotted with α = 0.6.
+Figure 5 We use a d = 2 model trained with α = 0.6 and ni.d. = 29, and a d = 4 model trained with
+α = 0.8 and ni.d. = 29 with batch size B = 1536.
+Figure 6 (a, b) Attention heads extracted form d = 2 model trained with ni.d. = 29 and α = 0.6. (c,
+d) Both models are trained with α = 0.6.
+B
+Details of resources used
+To generate each phase diagram and training curve, we used 90 GPU days on NVIDIA A100
+40GB, with automatic mixed precision (BFloat16) and Flash Attention implemented in the PyTorch
+library[23]. During the exploring stage, we also used around another 90 GPU days. Most inferences
+were running on 1/7-NVIDIA A100 40GB GPU, of which the cost is negligible compared to the
+pre-training cost.
+C
+Table of log map for p = 29
+n
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+log27(n)
+04
+28
+15
+19
+2
+22
+6
+12
+17
+10
+9
+11
+21
+18
+27
+n
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+log27(n)
+13
+4
+7
+25
+23
+24
+3
+26
+20
+8
+16
+5
+1
+14
+13
+
+D
+Task Selection and Sequence Design
+Task Selection
+During the initial exploration phase, we observed that it was challenging for the
+model to learn multiple modular arithmetic tasks simultaneously. Typically, the loss would stagnate
+at a plateau indefinitely.
+We hypothesize that when the model is trained on multiple modular arithmetic tasks, the strong bias
+inherent in each individual task may interfere significantly. When tasks are selected randomly, the
+resultant noise appears to inhibit the learning capabilities of the model, preventing it from acquiring
+any meaningful patterns or rules from the data.
+Ultimately, we adopted a more structured approach to task selection as illustrated in Figure Figure 2,
+based on the following rationale: If the model is to learn a specific task vector (at, bt), it would
+presumably be more straightforward if one of the two components – either at or bt – has already
+learned by the model. This would leave the model with only the other component to decipher, which
+we assume is a comparatively simpler task. Thus, we decided to employ the rectangular rule for
+sampling task vectors, which we believe strategically reduces the complexity of the learning process
+by partially leveraging previously acquired knowledge.
+In Figure 9, we show an ablation plot of phase diagrams with a randomly selected task vector
+collection for pre-training. We still use the special sequence design.
+23
+24
+25
+26
+27
+28
+29
+# of pre-training tasks (ni. d. )
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+pre-training inputs fraction ( )
+i.d. train
+23
+24
+25
+26
+27
+28
+29
+# of pre-training tasks (ni. d. )
+i.d. test
+23
+24
+25
+26
+27
+28
+29
+# of pre-training tasks (ni. d. )
+o.o.d. train
+23
+24
+25
+26
+27
+28
+29
+# of pre-training tasks (ni. d. )
+o.o.d. test
+0
+20
+40
+60
+80
+100
+Figure 9: d = 6 phase diagram with task vectors randomly selected, selected the best results from
+two random seeds. Learning rate η = 10−4.
+Sequence Design
+Following a similar spirit, we use a balanced batch where sequences generated
+from all task vectors appear exactly the same number of times during the training. We further align
+the examples across sequences generated by different task vectors, which we believe reduces the
+chance of the model getting confused by the same input (x, y) appearing at different positions within
+the batch. Without this design, we could not make the model train.
+Here, we also show the training curve per task in Figure 10, trained with all of our tricks. We see that
+the model first learned very few tasks and then eventually found its way out. For training without the
+task selection and sequence design, the loss typically plateau around ∼3.0.
+14
+
+0
+20000
+40000
+60000
+80000
+100000
+step
+0.0
+0.5
+1.0
+1.5
+2.0
+2.5
+3.0
+3.5
+loss
+i.d. train
+0
+20000
+40000
+60000
+80000
+100000
+step
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+accuracy (%)
+i.d. train
+0
+20000
+40000
+60000
+80000
+100000
+step
+0.0
+0.5
+1.0
+1.5
+2.0
+2.5
+3.0
+3.5
+loss
+o.o.d. test
+0
+20000
+40000
+60000
+80000
+100000
+step
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+accuracy (%)
+o.o.d. test
+Figure 10: d = 4 training curve, with loss and accuracy measured per task for the last in context
+example. Trained with ni.d. = 28 and α = 0.8. There are six tasks learned almost instantly: (5, 26),
+(21, 23), (28, 27), (3, 9), (10, 10), (5, 9).
+E
+Additional Interpretability Results
+In this section, we show additional results on interpretability. Where we continue our discussion on
+how the algorithm might be implemented inside the model. Importantly, This includes PCA analysis
+of embedding (Appendix E.1), other attention heads (Appendix E.2), attentions and MLPs outputs
+(Appendix E.3), and finally, the role of MLPs (Appendix E.4). We think it is also crucial to study
+LayerNorm layers, which we leave for future work.
+E.1
+PCA over Embeddings
+We begin the discussion with the role of embedding layers. By further examining different models,
+we find highly structured embedding from d = 2 models. d = 4 models, on the other hand, does not
+have such structured embedding layers.
+First we focus the embedding of d = 2 models. As shown in Figure 11, clearly, the logarithm of
+each number is split into even and odd groups, and each group forms one circle, which is a suitable
+embedding for doing modular multiplications. However, one should note that this will not obviate the
+importance of the head shown in Figure 6(a), as the model still needs a way to distinguish the same
+number that appears in the different positions in the context.
+Curiously, we could not find such a structured embedding for the d = 4 model, as shown in Figure 12.
+However, as we will show in the next subsection, this non-structural embedding, together with
+the first layer, prepares a foundation for the essential heads in the latter layer to create a similar
+“circle-of-circles” feature as we shown in Figure 6 (a, b).
+E.2
+Attention Heads
+E.2.1
+d = 4 Model
+To continue the story, we analyse the attention heads in different models. We first study the d = 4
+model, where we also find a similar head with “circle-of-circles” (Figure 6(a)). Moreover, two other
+15
+
+0.06
+0.04
+0.02 0.00
+0.02
+0.04
+0.06
+0.08
+1st principle component
+0.08
+0.06
+0.04
+0.02
+0.00
+0.02
+0.04
+0.06
+2nd principle component
+0
+28
+15
+19
+2
+22
+6
+12
+17
+10
+9
+11
+21
+18
+27
+13
+4
+7
+25
+23
+24
+3
+26
+20
+8
+16
+5
+1
+14
+(a) seed 2
+0.06 0.04 0.02 0.00 0.02 0.04 0.06 0.08
+1st principle component
+0.04
+0.02
+0.00
+0.02
+0.04
+0.06
+0.08
+2nd principle component
+0
+28
+15
+19
+2
+22
+6
+12
+17
+10
+9
+11
+21
+18
+27
+13
+4
+7
+25
+23
+24
+3
+26
+20
+8
+16
+5
+1
+14
+0.04
+0.02 0.00
+0.02
+0.04
+0.06
+0.08
+2nd principle component
+0.04
+0.02
+0.00
+0.02
+0.04
+0.06
+0.08
+3rd principle component
+0
+28
+15
+19
+2
+22
+6
+12
+17
+10
+9
+11
+21
+18
+27
+13
+4
+7
+25
+23
+24
+3
+26
+20
+8
+16
+5
+1
+14
+(b) seed 1
+Figure 11: PCA over the embedding layers of d = 2 models with different random seeds. Each
+number is annotated by its log27 value.
+0.04 0.02 0.00 0.02 0.04 0.06 0.08 0.10
+1st principle component
+0.06
+0.04
+0.02
+0.00
+0.02
+0.04
+0.06
+0.08
+2nd principle component
+0
+28
+15
+19
+2
+22
+6
+12
+1710
+9
+11
+21
+18
+27
+13
+4
+7
+25
+23
+24
+3
+26
+20
+8
+16
+5
+1
+14
+0.04 0.02 0.00 0.02 0.04 0.06 0.08 0.10
+1st principle component
+0.06
+0.04
+0.02
+0.00
+0.02
+0.04
+0.06
+0.08
+3rd principle component
+0
+28
+15
+19
+2
+22
+6
+12
+17
+10
+9
+11
+21
+18
+27
+13
+4
+7
+25
+23
+24 3
+26
+20
+8
+16
+5
+1
+14
+0.06 0.04 0.02 0.00 0.02 0.04 0.06 0.08
+2nd principle component
+0.06
+0.04
+0.02
+0.00
+0.02
+0.04
+0.06
+0.08
+3rd principle component
+0
+28
+15
+19
+2
+22
+6
+12
+17
+10
+9
+11
+21
+18
+27
+13
+4
+7
+25
+23
+24
+3
+26
+20
+8
+16
+5
+1
+14
+(a) PCA over the embedding layer for top-3 principal components
+Figure 12: PCA over the embedding layers of d = 4. Each number is annotated by its log27 value.
+heads put together are seemingly equivalent to Figure 6(b). We surmise that any model that solves
+modular arithmetic in-context requires such heads.
+From Figure 13(a), we see that the head still pays attention locally within three token positions.
+Importantly, it also creates a circle-of-circles while performing PCA over concatenated (x, y) features.
+The difference here is that the circle winds twice to go back to its origin. We believe that this factor
+of two differences in the period means that this head is effectively combing the row of the embedding
+layer of the d = 2 model and the role of the head in Figure 6(a). Overall, we do not yet know why
+the model needs to split the logarithm of numbers into even and odd groups.
+From Figure 13(b, c), we find two heads that are structured but different from Figure 6(b). The
+PCA pattern forms circles while annotated within logarithm space, but depends on the choice of
+the sequences. This hints that those two heads are trying to exchange information with the previous
+inputs. We leave PCA analysis across different in-context examples to future work.
+E.2.2
+d = 2 Model
+Next we focus on the d = 2 model. In Figure 14, we plot similar PCA to the one in Figure 6(a), but
+with different concatenated features from the same heads: (x, z) and (y, z). We again see circle-of-
+circles, solidifying our argument that this head provides proper spaces for later heads to perform
+modular operations.
+In Figure 15, we dump all the attention patterns we had for d = 2 models. The corresopnding PCA
+over concatenated (x, y) features are shown in Figure 16 (except for layer 1 head 4, for which we
+plot for (x, z)). The special head we choose here has a similar behavior to the one in Figure 6(a),
+with its main focus shifted by one position but still within two preceding tokens.
+16
+
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+0.02
+0.01
+0.00
+0.01
+0.02
+0.03
+1st principle component
+0.02
+0.01
+0.00
+0.01
+0.02
+0.03
+0.04
+2nd principle component
+(0, 0)
+(0, 28)
+(0, 15)
+(0, 19)
+(0, 2)
+(0, 22)
+(0, 6)
+(0, 12)
+(0, 17)
+(0, 10)
+(0, 9)
+(0, 11)
+(0, 21)
+(0, 18)
+(0, 27)
+(0, 13)
+(0, 4)
+(0, 7)
+(0, 25)
+(0, 23)
+(0, 24)
+(0, 3)
+(0, 26)
+(0, 20)
+(0, 8)
+(0, 16)
+(0, 5)
+(0, 1)
+(0, 14)
+(28, 0)
+(28, 28)
+(28, 15)
+(28, 19)
+(28, 2)
+(28, 22)
+(28, 6)
+(28, 12)
+(28, 17)
+(28, 10)
+(28, 9)
+(28, 11)
+(28, 21)
+(28, 18)
+(28, 27)
+(28, 13)
+(28, 4)
+(28, 7)
+(28, 25)
+(28, 23)
+(28, 24)
+(28, 3)
+(28, 26)
+(28, 20)
+(28, 8)
+(28, 16)
+(28, 5)
+(28, 1)
+(28, 14)
+(15, 0)
+(15, 28)
+(15, 15)
+(15, 19)
+(15, 2)
+(15, 22)
+(15, 6)
+(15, 12)
+(15, 17)
+(15, 10)
+(15, 9)
+(15, 11)
+(15, 21)
+(15, 18)
+(15, 27)
+(15, 13)
+(15, 4)
+(15, 7)
+(15, 25)
+(15, 23)
+(15, 24)
+(15, 3)
+(15, 26)
+(15, 20)
+(15, 8)
+(15, 16)
+(15, 5)
+(15, 1)
+(15, 14)
+(19, 0)
+(19, 28)
+(19, 15)
+(19, 19)
+(19, 2)
+(19, 22)
+(19, 6)
+(19, 12)
+(19, 17)
+(19, 10)
+(19, 9)
+(19, 11)
+(19, 21)
+(19, 18)
+(19, 27)
+(19, 13)
+(19, 4)
+(19, 7)
+(19, 25)
+(19, 23) (19, 24)
+(19, 3)
+(19, 26)
+(19, 20)
+(19, 8)
+(19, 16)
+(19, 5)
+(19, 1)
+(19, 14)
+(2, 0)
+(2, 28)
+(2, 15)
+(2, 19)
+(2, 2)
+(2, 22)
+(2, 6)
+(2, 12)
+(2, 17)
+(2, 10)
+(2, 9)
+(2, 11)
+(2, 21)
+(2, 18)
+(2, 27)
+(2, 13)
+(2, 4)
+(2, 7)
+(2, 25)
+(2, 23)
+(2, 24)
+(2, 3)
+(2, 26)
+(2, 20)
+(2, 8)
+(2, 16)
+(2, 5)
+(2, 1)
+(2, 14)
+(22, 0)
+(22, 28)
+(22, 15)
+(22, 19)
+(22, 2)
+(22, 22)
+(22, 6)
+(22, 12)
+(22, 17)
+(22, 10)
+(22, 9)
+(22, 11)
+(22, 21)
+(22, 18)
+(22, 27)
+(22, 13)
+(22, 4)
+(22, 7)
+(22, 25)
+(22, 23)
+(22, 24)
+(22, 3)
+(22, 26)
+(22, 20)
+(22, 8)
+(22, 16)
+(22, 5)
+(22, 1)
+(22, 14)
+(6, 0)
+(6, 28)
+(6, 15)
+(6, 19)
+(6, 2)
+(6, 22)
+(6, 6)
+(6, 12)
+(6, 17)
+(6, 10)
+(6, 9)
+(6, 11)
+(6, 21)
+(6, 18)
+(6, 27)
+(6, 13)
+(6, 4)
+(6, 7)
+(6, 25)
+(6, 23)
+(6, 24)
+(6, 3)
+(6, 26)
+(6, 20)
+(6, 8)
+(6, 16)
+(6, 5)
+(6, 1)
+(6, 14)
+(12, 0)
+(12, 28)
+(12, 15)
+(12, 19)
+(12, 2)
+(12, 22)
+(12, 6)
+(12, 12)
+(12, 17)
+(12, 10)
+(12, 9)
+(12, 11)
+(12, 21)
+(12, 18)
+(12, 27)
+(12, 13)
+(12, 4)
+(12, 7)
+(12, 25)
+(12, 23)
+(12, 24)
+(12, 3)
+(12, 26)
+(12, 20)
+(12, 8)
+(12, 16)
+(12, 5)
+(12, 1)
+(12, 14)
+(17, 0)
+(17, 28)
+(17, 15)
+(17, 19)
+(17, 2)
+(17, 22)
+(17, 6)
+(17, 12)
+(17, 17)
+(17, 10)
+(17, 9)
+(17, 11)
+(17, 21)
+(17, 18)
+(17, 27)
+(17, 13)
+(17, 4)
+(17, 7)
+(17, 25)
+(17, 23)
+(17, 24)
+(17, 3)
+(17, 26)
+(17, 20)
+(17, 8)
+(17, 16)
+(17, 5)
+(17, 1)
+(17, 14)
+(10, 0)
+(10, 28)
+(10, 15)
+(10, 19)
+(10, 2)
+(10, 22)
+(10, 6)
+(10, 12)
+(10, 17)
+(10, 10)
+(10, 9)
+(10, 11)
+(10, 21)
+(10, 18)
+(10, 27)
+(10, 13)
+(10, 4)
+(10, 7)
+(10, 25)
+(10, 23)
+(10, 24)
+(10, 3)
+(10, 26)
+(10, 20)
+(10, 8)
+(10, 16)
+(10, 5)
+(10, 1)
+(10, 14)
+(9, 0)
+(9, 28)
+(9, 15)
+(9, 19)
+(9, 2)
+(9, 22)
+(9, 6)
+(9, 12)
+(9, 17)
+(9, 10)
+(9, 9)
+(9, 11)
+(9, 21)
+(9, 18)
+(9, 27)
+(9, 13)
+(9, 4)
+(9, 7)
+(9, 25)
+(9, 23)
+(9, 24)
+(9, 3)
+(9, 26)
+(9, 20)
+(9, 8)
+(9, 16)
+(9, 5)
+(9, 1)
+(9, 14)
+(11, 0)
+(11, 28)
+(11, 15)
+(11, 19)
+(11, 2)
+(11, 22)
+(11, 6)
+(11, 12)
+(11, 17)
+(11, 10)
+(11, 9)
+(11, 11)
+(11, 21)
+(11, 18)
+(11, 27)
+(11, 13)
+(11, 4)
+(11, 7)
+(11, 25)
+(11, 23)
+(11, 24)
+(11, 3)
+(11, 26)
+(11, 20)
+(11, 8)
+(11, 16)
+(11, 5)
+(11, 1)
+(11, 14)
+(21, 0)
+(21, 28)
+(21, 15)
+(21, 19)
+(21, 2)
+(21, 22)
+(21, 6)
+(21, 12)
+(21, 17)
+(21, 10)
+(21, 9)
+(21, 11)
+(21, 21)
+(21, 18)
+(21, 27)
+(21, 13)
+(21, 4)
+(21, 7)
+(21, 25)
+(21, 23)
+(21, 24)
+(21, 3)
+(21, 26)
+(21, 20)
+(21, 8)
+(21, 16)
+(21, 5)
+(21, 1)
+(21, 14)
+(18, 0)
+(18, 28)
+(18, 15)
+(18, 19)
+(18, 2)
+(18, 22)
+(18, 6)
+(18, 12)
+(18, 17)
+(18, 10)
+(18, 9)
+(18, 11)
+(18, 21)
+(18, 18)
+(18, 27)
+(18, 13)
+(18, 4)
+(18, 7)
+(18, 25)
+(18, 23) (18, 24)
+(18, 3)
+(18, 26)
+(18, 20)
+(18, 8)
+(18, 16)
+(18, 5)
+(18, 1)
+(18, 14)
+(27, 0)
+(27, 28)
+(27, 15)
+(27, 19)
+(27, 2)
+(27, 22)
+(27, 6)
+(27, 12)
+(27, 17)
+(27, 10)
+(27, 9)
+(27, 11)
+(27, 21)
+(27, 18)
+(27, 27)
+(27, 13)
+(27, 4)
+(27, 7)
+(27, 25)
+(27, 23)
+(27, 24)
+(27, 3)
+(27, 26)
+(27, 20)
+(27, 8)
+(27, 16)
+(27, 5)
+(27, 1)
+(27, 14)
+(13, 0)
+(13, 28)
+(13, 15)
+(13, 19)
+(13, 2)
+(13, 22)
+(13, 6)
+(13, 12)
+(13, 17)
+(13, 10)
+(13, 9)
+(13, 11)
+(13, 21)
+(13, 18)
+(13, 27)
+(13, 13)
+(13, 4)
+(13, 7)
+(13, 25)
+(13, 23)
+(13, 24)
+(13, 3)
+(13, 26)
+(13, 20)
+(13, 8)
+(13, 16)
+(13, 5)
+(13, 1)
+(13, 14)
+(4, 0)
+(4, 28)
+(4, 15)
+(4, 19)
+(4, 2)
+(4, 22)
+(4, 6)
+(4, 12)
+(4, 17)
+(4, 10)
+(4, 9)
+(4, 11)
+(4, 21)
+(4, 18)
+(4, 27)
+(4, 13)
+(4, 4)
+(4, 7)
+(4, 25)
+(4, 23)
+(4, 24)
+(4, 3)
+(4, 26)
+(4, 20)
+(4, 8)
+(4, 16)
+(4, 5)
+(4, 1)
+(4, 14)
+(7, 0)
+(7, 28)
+(7, 15)
+(7, 19)
+(7, 2)
+(7, 22)
+(7, 6)
+(7, 12)
+(7, 17)
+(7, 10)
+(7, 9)
+(7, 11)
+(7, 21)
+(7, 18)
+(7, 27)
+(7, 13)
+(7, 4)
+(7, 7)
+(7, 25)
+(7, 23)
+(7, 24)
+(7, 3)
+(7, 26)
+(7, 20)
+(7, 8)
+(7, 16)
+(7, 5)
+(7, 1)
+(7, 14)
+(25, 0)
+(25, 28)
+(25, 15)
+(25, 19)
+(25, 2)
+(25, 22)
+(25, 6)
+(25, 12)
+(25, 17)
+(25, 10)
+(25, 9)
+(25, 11)
+(25, 21)
+(25, 18)
+(25, 27)
+(25, 13)
+(25, 4)
+(25, 7)
+(25, 25)
+(25, 23)
+(25, 24)
+(25, 3)
+(25, 26)
+(25, 20)
+(25, 8)
+(25, 16)
+(25, 5)
+(25, 1)
+(25, 14)
+(23, 0)
+(23, 28)
+(23, 15)
+(23, 19)
+(23, 2)
+(23, 22)
+(23, 6)
+(23, 12)
+(23, 17)
+(23, 10)
+(23, 9)
+(23, 11)
+(23, 21)
+(23, 18)
+(23, 27)
+(23, 13)
+(23, 4)
+(23, 7)
+(23, 25)
+(23, 23)
+(23, 24)
+(23, 3)
+(23, 26)
+(23, 20)
+(23, 8)
+(23, 16)
+(23, 5)
+(23, 1)
+(23, 14)
+(24, 0)
+(24, 28)
+(24, 15)
+(24, 19)
+(24, 2)
+(24, 22)
+(24, 6)
+(24, 12)
+(24, 17)
+(24, 10)
+(24, 9)
+(24, 11)
+(24, 21)
+(24, 18)
+(24, 27)
+(24, 13)
+(24, 4)
+(24, 7)
+(24, 25)
+(24, 23)
+(24, 24)
+(24, 3)
+(24, 26)
+(24, 20)
+(24, 8)
+(24, 16)
+(24, 5)
+(24, 1)
+(24, 14)
+(3, 0)
+(3, 28)
+(3, 15)
+(3, 19)
+(3, 2)
+(3, 22)
+(3, 6)
+(3, 12)
+(3, 17)
+(3, 10)
+(3, 9)
+(3, 11)
+(3, 21)
+(3, 18)
+(3, 27)
+(3, 13)
+(3, 4)
+(3, 7)
+(3, 25)
+(3, 23)
+(3, 24)
+(3, 3)
+(3, 26)
+(3, 20)
+(3, 8)
+(3, 16)
+(3, 5)
+(3, 1)
+(3, 14)
+(26, 0)
+(26, 28)
+(26, 15)
+(26, 19)
+(26, 2)
+(26, 22)
+(26, 6)
+(26, 12)
+(26, 17)
+(26, 10)
+(26, 9)
+(26, 11)
+(26, 21)
+(26, 18)
+(26, 27)
+(26, 13)
+(26, 4)
+(26, 7)
+(26, 25)
+(26, 23)
+(26, 24)
+(26, 3)
+(26, 26)
+(26, 20)
+(26, 8)
+(26, 16)
+(26, 5)
+(26, 1)
+(26, 14)
+(20, 0)
+(20, 28)
+(20, 15)
+(20, 19)
+(20, 2)
+(20, 22)
+(20, 6)
+(20, 12)
+(20, 17)
+(20, 10)
+(20, 9)
+(20, 11)
+(20, 21)
+(20, 18)
+(20, 27)
+(20, 13)
+(20, 4)
+(20, 7)
+(20, 25)
+(20, 23)
+(20, 24)
+(20, 3)
+(20, 26)
+(20, 20)
+(20, 8)
+(20, 16)
+(20, 5)
+(20, 1)
+(20, 14)
+(8, 0)
+(8, 28)
+(8, 15)
+(8, 19)
+(8, 2)
+(8, 22)
+(8, 6)
+(8, 12)
+(8, 17)
+(8, 10)
+(8, 9)
+(8, 11)
+(8, 21)
+(8, 18)
+(8, 27)
+(8, 13)
+(8, 4)
+(8, 7)
+(8, 25)
+(8, 23)
+(8, 24)
+(8, 3)
+(8, 26)
+(8, 20)
+(8, 8)
+(8, 16)
+(8, 5)
+(8, 1)
+(8, 14)
+(16, 0)
+(16, 28)
+(16, 15)
+(16, 19)
+(16, 2)
+(16, 22)
+(16, 6)
+(16, 12)
+(16, 17)
+(16, 10)
+(16, 9)
+(16, 11)
+(16, 21)
+(16, 18)
+(16, 27)
+(16, 13)
+(16, 4)
+(16, 7)
+(16, 25)
+(16, 23)
+(16, 24)
+(16, 3)
+(16, 26)
+(16, 20)
+(16, 8)
+(16, 16)
+(16, 5)
+(16, 1)
+(16, 14)
+(5, 0)
+(5, 28)
+(5, 15)
+(5, 19)
+(5, 2)
+(5, 22)
+(5, 6)
+(5, 12)
+(5, 17)
+(5, 10)
+(5, 9)
+(5, 11)
+(5, 21)
+(5, 18)
+(5, 27)
+(5, 13)
+(5, 4)
+(5, 7)
+(5, 25)
+(5, 23)
+(5, 24)
+(5, 3)
+(5, 26)
+(5, 20)
+(5, 8)
+(5, 16)
+(5, 5)
+(5, 1)
+(5, 14)
+(1, 0)
+(1, 28)
+(1, 15)
+(1, 19)
+(1, 2)
+(1, 22)
+(1, 6)
+(1, 12)
+(1, 17)
+(1, 10)
+(1, 9)
+(1, 11)
+(1, 21)
+(1, 18)
+(1, 27)
+(1, 13)
+(1, 4)
+(1, 7)
+(1, 25)
+(1, 23)
+(1, 24)
+(1, 3)
+(1, 26)
+(1, 20)
+(1, 8)
+(1, 16)
+(1, 5)
+(1, 1)
+(1, 14)
+(14, 0)
+(14, 28)
+(14, 15)
+(14, 19)
+(14, 2)
+(14, 22)
+(14, 6)
+(14, 12)
+(14, 17)
+(14, 10)
+(14, 9)
+(14, 11)
+(14, 21)
+(14, 18)
+(14, 27)
+(14, 13)
+(14, 4)
+(14, 7)
+(14, 25)
+(14, 23)
+(14, 24)
+(14, 3)
+(14, 26)
+(14, 20)
+(14, 8)
+(14, 16)
+(14, 5)
+(14, 1)
+(14, 14)
+(a) layer 2 head 4
+0.000 0.001 0.002 0.003 0.004 0.005 0.006 0.007
+1st principle component
+0.010
+0.009
+0.008
+0.007
+0.006
+0.005
+0.004
+0.003
+2nd principle component
+(0, 0)
+(0, 28)
+(0, 15)
+(0, 19)
+(0, 2)
+(0, 22)
+(0, 6)
+(0, 12)
+(0, 17)
+(0, 10)
+(0, 9)
+(0, 11)
+(0, 21)
+(0, 18)
+(0, 27)
+(0, 13)
+(0, 4)
+(0, 7)
+(0, 25)
+(0, 23)
+(0, 24)
+(0, 3)
+(0, 26)
+(0, 20)
+(0, 8)
+(0, 16)
+(0, 5)
+(0, 1)
+(0, 14)
+(28, 0)
+(28, 28)
+(28, 15)
+(28, 19)
+(28, 2)
+(28, 22)
+(28, 6)
+(28, 12)
+(28, 17)
+(28, 10)
+(28, 9)
+(28, 11)
+(28, 21)
+(28, 18)
+(28, 27)
+(28, 13)
+(28, 4)
+(28, 7)
+(28, 25)
+(28, 23)
+(28, 24)
+(28, 3)
+(28, 26) (28, 20)
+(28, 8)
+(28, 16)
+(28, 5)
+(28, 1)
+(28, 14)
+(15, 0)
+(15, 28)
+(15, 15) (15, 19)
+(15, 2)
+(15, 22)
+(15, 6)
+(15, 12)
+(15, 17)
+(15, 10)
+(15, 9)
+(15, 11)
+(15, 21)
+(15, 18)
+(15, 27)
+(15, 13) (15, 4)
+(15, 7)
+(15, 25)
+(15, 23)
+(15, 24)
+(15, 3)
+(15, 26)
+(15, 20)
+(15, 8)
+(15, 16)
+(15, 5)
+(15, 1)
+(15, 14)
+(19, 0)
+(19, 28)
+(19, 15)
+(19, 19)
+(19, 2)
+(19, 22)
+(19, 6)
+(19, 12)
+(19, 17)
+(19, 10)
+(19, 9)
+(19, 11)
+(19, 21)
+(19, 18)
+(19, 27)
+(19, 13)
+(19, 4)
+(19, 7)
+(19, 25)
+(19, 23)
+(19, 24)
+(19, 3)
+(19, 26)
+(19, 20)
+(19, 8)
+(19, 16)
+(19, 5)
+(19, 1)
+(19, 14)
+(2, 0)
+(2, 28)
+(2, 15)
+(2, 19)
+(2, 2)
+(2, 22)
+(2, 6)
+(2, 12)
+(2, 17)
+(2, 10)
+(2, 9)
+(2, 11)
+(2, 21)
+(2, 18)
+(2, 27)
+(2, 13)
+(2, 4)
+(2, 7)
+(2, 25)(2, 23)
+(2, 24)
+(2, 3)
+(2, 26)
+(2, 20)
+(2, 8)
+(2, 16)
+(2, 5)
+(2, 1)
+(2, 14)
+(22, 0)
+(22, 28)
+(22, 15)
+(22, 19)(22, 2)
+(22, 22)
+(22, 6)
+(22, 12)
+(22, 17)
+(22, 10)
+(22, 9)
+(22, 11)
+(22, 21)
+(22, 18)
+(22, 27)
+(22, 13)
+(22, 4)
+(22, 7)
+(22, 25)
+(22, 23)
+(22, 24)
+(22, 3)
+(22, 26)
+(22, 20)
+(22, 8)
+(22, 16)
+(22, 5)
+(22, 1)
+(22, 14)
+(6, 0)
+(6, 28)
+(6, 15)
+(6, 19)
+(6, 2)
+(6, 22)
+(6, 6)
+(6, 12)
+(6, 17)
+(6, 10)
+(6, 9)
+(6, 11)
+(6, 21)
+(6, 18)
+(6, 27)
+(6, 13)
+(6, 4)
+(6, 7)
+(6, 25)
+(6, 23)
+(6, 24)
+(6, 3)
+(6, 26)
+(6, 20)
+(6, 8)
+(6, 16)
+(6, 5)
+(6, 1)(6, 14)
+(12, 0)
+(12, 28)
+(12, 15)
+(12, 19)
+(12, 2)
+(12, 22)
+(12, 6)
+(12, 12)
+(12, 17)
+(12, 10)
+(12, 9)
+(12, 11)
+(12, 21)
+(12, 18)
+(12, 27)
+(12, 13)
+(12, 4)
+(12, 7)
+(12, 25)
+(12, 23)
+(12, 24)
+(12, 3)
+(12, 26)
+(12, 20)
+(12, 8)
+(12, 16)
+(12, 5)
+(12, 1)
+(12, 14)
+(17, 0)
+(17, 28)
+(17, 15)
+(17, 19)
+(17, 2)
+(17, 22)
+(17, 6)
+(17, 12)
+(17, 17)
+(17, 10)
+(17, 9)
+(17, 11)
+(17, 21)
+(17, 18)
+(17, 27)
+(17, 13)
+(17, 4)
+(17, 7)
+(17, 25)
+(17, 23)
+(17, 24)
+(17, 3)
+(17, 26)
+(17, 20)
+(17, 8)
+(17, 16)
+(17, 5)
+(17, 1)
+(17, 14)
+(10, 0)
+(10, 28)
+(10, 15)
+(10, 19)
+(10, 2)
+(10, 22)
+(10, 6)
+(10, 12)
+(10, 17)
+(10, 10)
+(10, 9)
+(10, 11)
+(10, 21)
+(10, 18)
+(10, 27)
+(10, 13)
+(10, 4)
+(10, 7)
+(10, 25)
+(10, 23)
+(10, 24)
+(10, 3)
+(10, 26)
+(10, 20)
+(10, 8)
+(10, 16)
+(10, 5)
+(10, 1)
+(10, 14)
+(9, 0)
+(9, 28)
+(9, 15)
+(9, 19)(9, 2)
+(9, 22)
+(9, 6)
+(9, 12)
+(9, 17)
+(9, 10)
+(9, 9)
+(9, 11)
+(9, 21)
+(9, 18)
+(9, 27)
+(9, 13)
+(9, 4)
+(9, 7)
+(9, 25)
+(9, 23)
+(9, 24)
+(9, 3)
+(9, 26)
+(9, 20)
+(9, 8)
+(9, 16)
+(9, 5)
+(9, 1)
+(9, 14)
+(11, 0)
+(11, 28)
+(11, 15)
+(11, 19)
+(11, 2)
+(11, 22)
+(11, 6)
+(11, 12)
+(11, 17)
+(11, 10)
+(11, 9)
+(11, 11)
+(11, 21)
+(11, 18)
+(11, 27)
+(11, 13)
+(11, 4)
+(11, 7)
+(11, 25)
+(11, 23)
+(11, 24)
+(11, 3)
+(11, 26)
+(11, 20)
+(11, 8)
+(11, 16)
+(11, 5)
+(11, 1)
+(11, 14)
+(21, 0)
+(21, 28)
+(21, 15)
+(21, 19)
+(21, 2)
+(21, 22)
+(21, 6)
+(21, 12)
+(21, 17)
+(21, 10)
+(21, 9)
+(21, 11)
+(21, 21)
+(21, 18)
+(21, 27)
+(21, 13)
+(21, 4)
+(21, 7)(21, 25)
+(21, 23)
+(21, 24)
+(21, 3)
+(21, 26)
+(21, 20)
+(21, 8)
+(21, 16)
+(21, 5)
+(21, 1)
+(21, 14)
+(18, 0)
+(18, 28)
+(18, 15)
+(18, 19)
+(18, 2)
+(18, 22)
+(18, 6)
+(18, 12)
+(18, 17)
+(18, 10)
+(18, 9)
+(18, 11)
+(18, 21)
+(18, 18)
+(18, 27)
+(18, 13)
+(18, 4)(18, 7)
+(18, 25)
+(18, 23)
+(18, 24)
+(18, 3)
+(18, 26)
+(18, 20)
+(18, 8)
+(18, 16)
+(18, 5)
+(18, 1)
+(18, 14)
+(27, 0)
+(27, 28)
+(27, 15)
+(27, 19)
+(27, 2)
+(27, 22)
+(27, 6)
+(27, 12)
+(27, 17)
+(27, 10)
+(27, 9)
+(27, 11)
+(27, 21)
+(27, 18)
+(27, 27)
+(27, 13)
+(27, 4)
+(27, 7)
+(27, 25)
+(27, 23)
+(27, 24)
+(27, 3)
+(27, 26)
+(27, 20)
+(27, 8)
+(27, 16)
+(27, 5)
+(27, 1)
+(27, 14)
+(13, 0)
+(13, 28)
+(13, 15)
+(13, 19)
+(13, 2)
+(13, 22)
+(13, 6)
+(13, 12)
+(13, 17)
+(13, 10)
+(13, 9)
+(13, 11)
+(13, 21)
+(13, 18)
+(13, 27)
+(13, 13) (13, 4)
+(13, 7)
+(13, 25)
+(13, 23)
+(13, 24)
+(13, 3)
+(13, 26)
+(13, 20)
+(13, 8)
+(13, 16)
+(13, 5)
+(13, 1)
+(13, 14)
+(4, 0)
+(4, 28)
+(4, 15)
+(4, 19)
+(4, 2)
+(4, 22)
+(4, 6)
+(4, 12)
+(4, 17)
+(4, 10)
+(4, 9)
+(4, 11)
+(4, 21)
+(4, 18)
+(4, 27)
+(4, 13)
+(4, 4) (4, 7)
+(4, 25)
+(4, 23)
+(4, 24)
+(4, 3)
+(4, 26)
+(4, 20)
+(4, 8)
+(4, 16)
+(4, 5)
+(4, 1) (4, 14)
+(7, 0)
+(7, 28)
+(7, 15)
+(7, 19)
+(7, 2)
+(7, 22)
+(7, 6)
+(7, 12)
+(7, 17)
+(7, 10)
+(7, 9)
+(7, 11)
+(7, 21)
+(7, 18)
+(7, 27)
+(7, 13)
+(7, 4)
+(7, 7)
+(7, 25)
+(7, 23)
+(7, 24)
+(7, 3)
+(7, 26)
+(7, 20)
+(7, 8)
+(7, 16)
+(7, 5)
+(7, 1)
+(7, 14)
+(25, 0)
+(25, 28)
+(25, 15)
+(25, 19)
+(25, 2)
+(25, 22)
+(25, 6)
+(25, 12)
+(25, 17)
+(25, 10)
+(25, 9)
+(25, 11)
+(25, 21) (25, 18)
+(25, 27)
+(25, 13)
+(25, 4)
+(25, 7)
+(25, 25)
+(25, 23)
+(25, 24)
+(25, 3)
+(25, 26)
+(25, 20)
+(25, 8)
+(25, 16)
+(25, 5)
+(25, 1)
+(25, 14)
+(23, 0)
+(23, 28)
+(23, 15)
+(23, 19)
+(23, 2)
+(23, 22)
+(23, 6)
+(23, 12)
+(23, 17)
+(23, 10)
+(23, 9)
+(23, 11)
+(23, 21)
+(23, 18)
+(23, 27)
+(23, 13)
+(23, 4)
+(23, 7)
+(23, 25)
+(23, 23)
+(23, 24)
+(23, 3)
+(23, 26)
+(23, 20)
+(23, 8)
+(23, 16)
+(23, 5)
+(23, 1)
+(23, 14)
+(24, 0)
+(24, 28)
+(24, 15)
+(24, 19)
+(24, 2)
+(24, 22)
+(24, 6)
+(24, 12)
+(24, 17)
+(24, 10)
+(24, 9)
+(24, 11)
+(24, 21) (24, 18)
+(24, 27)
+(24, 13)
+(24, 4)
+(24, 7)
+(24, 25)
+(24, 23)
+(24, 24)
+(24, 3)
+(24, 26)
+(24, 20)
+(24, 8)
+(24, 16)
+(24, 5)
+(24, 1)
+(24, 14)
+(3, 0)
+(3, 28)
+(3, 15)
+(3, 19)
+(3, 2)
+(3, 22)
+(3, 6)
+(3, 12)
+(3, 17)
+(3, 10)
+(3, 9)
+(3, 11)
+(3, 21)
+(3, 18)
+(3, 27)
+(3, 13)
+(3, 4)
+(3, 7)
+(3, 25)
+(3, 23)
+(3, 24)
+(3, 3)
+(3, 26)
+(3, 20)
+(3, 8)
+(3, 16)
+(3, 5)
+(3, 1)
+(3, 14)
+(26, 0)
+(26, 28)
+(26, 15)
+(26, 19)
+(26, 2)
+(26, 22)
+(26, 6)
+(26, 12)(26, 17)
+(26, 10)
+(26, 9)
+(26, 11)
+(26, 21)
+(26, 18)
+(26, 27)
+(26, 13)
+(26, 4)
+(26, 7)
+(26, 25)
+(26, 23)
+(26, 24)
+(26, 3)
+(26, 26)
+(26, 20)
+(26, 8)
+(26, 16)
+(26, 5)
+(26, 1)
+(26, 14)
+(20, 0)
+(20, 28)
+(20, 15)
+(20, 19)
+(20, 2)
+(20, 22)
+(20, 6)
+(20, 12)
+(20, 17)
+(20, 10)
+(20, 9)
+(20, 11)
+(20, 21)
+(20, 18)
+(20, 27)
+(20, 13)
+(20, 4)
+(20, 7)
+(20, 25)
+(20, 23)
+(20, 24)
+(20, 3)
+(20, 26)
+(20, 20)
+(20, 8)
+(20, 16)
+(20, 5)
+(20, 1)
+(20, 14)
+(8, 0)
+(8, 28)
+(8, 15)
+(8, 19)
+(8, 2)
+(8, 22)
+(8, 6)
+(8, 12)
+(8, 17)
+(8, 10)
+(8, 9)
+(8, 11)
+(8, 21)
+(8, 18)
+(8, 27)
+(8, 13)
+(8, 4)
+(8, 7)
+(8, 25)
+(8, 23)
+(8, 24)
+(8, 3)
+(8, 26)
+(8, 20)
+(8, 8)
+(8, 16)
+(8, 5)
+(8, 1)
+(8, 14)
+(16, 0)
+(16, 28)
+(16, 15)
+(16, 19)
+(16, 2)
+(16, 22)
+(16, 6)
+(16, 12)
+(16, 17)
+(16, 10)
+(16, 9)
+(16, 11)
+(16, 21)
+(16, 18)
+(16, 27)
+(16, 13)
+(16, 4)
+(16, 7)
+(16, 25)
+(16, 23)
+(16, 24)
+(16, 3)
+(16, 26)
+(16, 20)
+(16, 8)
+(16, 16)(16, 5)
+(16, 1)
+(16, 14)
+(5, 0)
+(5, 28)
+(5, 15)
+(5, 19)
+(5, 2)
+(5, 22)
+(5, 6)
+(5, 12)
+(5, 17)
+(5, 10)
+(5, 9)
+(5, 11)
+(5, 21)
+(5, 18)
+(5, 27)
+(5, 13)
+(5, 4)
+(5, 7)
+(5, 25)
+(5, 23)
+(5, 24)
+(5, 3)
+(5, 26)
+(5, 20)
+(5, 8)
+(5, 16)
+(5, 5)
+(5, 1) (5, 14)
+(1, 0)
+(1, 28)(1, 15) (1, 19)
+(1, 2)
+(1, 22)
+(1, 6)
+(1, 12)
+(1, 17)
+(1, 10)
+(1, 9)
+(1, 11)(1, 21)
+(1, 18)
+(1, 27)
+(1, 13)
+(1, 4)
+(1, 7)
+(1, 25)(1, 23)
+(1, 24)
+(1, 3)
+(1, 26)
+(1, 20)
+(1, 8)
+(1, 16)
+(1, 5)
+(1, 1)
+(1, 14)
+(14, 0)
+(14, 28)
+(14, 15)
+(14, 19)
+(14, 2)
+(14, 22)
+(14, 6)
+(14, 12)
+(14, 17)
+(14, 10)
+(14, 9)
+(14, 11) (14, 21)
+(14, 18)
+(14, 27)
+(14, 13)
+(14, 4)
+(14, 7)
+(14, 25)
+(14, 23)
+(14, 24)
+(14, 3)
+(14, 26)
+(14, 20)
+(14, 8)
+(14, 16)
+(14, 5)
+(14, 1)
+(14, 14)
+(b) layer 3 head 1
+0.02
+0.00
+0.02
+0.04
+0.06
+1st principle component
+0.02
+0.00
+0.02
+0.04
+0.06
+2nd principle component
+(0, 0)
+(0, 6)
+(0, 21)
+(0, 25)
+(0, 8)
+(0, 28)
+(0, 12)
+(0, 18)
+(0, 23)
+(0, 16)
+(0, 15)
+(0, 17)
+(0, 27)
+(0, 24)
+(0, 5)
+(0, 19)
+(0, 10)
+(0, 13)
+(0, 3)
+(0, 1)
+(0, 2)
+(0, 9)
+(0, 4)
+(0, 26)
+(0, 14)
+(0, 22)
+(0, 11)
+(0, 7)
+(0, 20)
+(28, 6)
+(28, 21)
+(28, 25)
+(28, 8)
+(28, 28)
+(28, 12)
+(28, 18)
+(28, 23)
+(28, 16)
+(28, 15)
+(28, 17)
+(28, 27)
+(28, 24)
+(28, 5)
+(28, 19)
+(28, 10)
+(28, 13)
+(28, 3)
+(28, 1)
+(28, 2)
+(28, 9)
+(28, 4)
+(28, 26)
+(28, 14)
+(28, 22)
+(28, 11)
+(28, 7)
+(28, 20)
+(28, 0)
+(15, 21)
+(15, 25)
+(15, 8)
+(15, 28)
+(15, 12)
+(15, 18)
+(15, 23)
+(15, 16)
+(15, 15)
+(15, 17)
+(15, 27)
+(15, 24)
+(15, 5)
+(15, 19)
+(15, 10)
+(15, 13)
+(15, 3)
+(15, 1)
+(15, 2)
+(15, 9)
+(15, 4)
+(15, 26)
+(15, 14)
+(15, 22)
+(15, 11)
+(15, 7)
+(15, 20)
+(15, 0)
+(15, 6)
+(19, 25)
+(19, 8)
+(19, 28)
+(19, 12)
+(19, 18)
+(19, 23)
+(19, 16)
+(19, 15)
+(19, 17)
+(19, 27)
+(19, 24)
+(19, 5)
+(19, 19)
+(19, 10)
+(19, 13)
+(19, 3)
+(19, 1)
+(19, 2)
+(19, 9)
+(19, 4)
+(19, 26)
+(19, 14)
+(19, 22)
+(19, 11)
+(19, 7)
+(19, 20)
+(19, 0)
+(19, 6)
+(19, 21)
+(2, 8)
+(2, 28)
+(2, 12)
+(2, 18)
+(2, 23)
+(2, 16)
+(2, 15)
+(2, 17)
+(2, 27)
+(2, 24)
+(2, 5)
+(2, 19)
+(2, 10)
+(2, 13)
+(2, 3)
+(2, 1)
+(2, 2)
+(2, 9)
+(2, 4)
+(2, 26)
+(2, 14)
+(2, 22)
+(2, 11)
+(2, 7)
+(2, 20)
+(2, 0)
+(2, 6)
+(2, 21)
+(2, 25)
+(22, 28)
+(22, 12)
+(22, 18)
+(22, 23)
+(22, 16)
+(22, 15)
+(22, 17)
+(22, 27)
+(22, 24)
+(22, 5)
+(22, 19)
+(22, 10)
+(22, 13)
+(22, 3)
+(22, 1)
+(22, 2)
+(22, 9)
+(22, 4)
+(22, 26)
+(22, 14)
+(22, 22)
+(22, 11)
+(22, 7)
+(22, 20)
+(22, 0)
+(22, 6)
+(22, 21)
+(22, 25)
+(22, 8)
+(6, 12)
+(6, 18)
+(6, 23)
+(6, 16)
+(6, 15)
+(6, 17)
+(6, 27)
+(6, 24)
+(6, 5)
+(6, 19)
+(6, 10)
+(6, 13)
+(6, 3)
+(6, 1)
+(6, 2)
+(6, 9)
+(6, 4)
+(6, 26)
+(6, 14)
+(6, 22)
+(6, 11)
+(6, 7)
+(6, 20)
+(6, 0)
+(6, 6)
+(6, 21)
+(6, 25)
+(6, 8)
+(6, 28)
+(12, 18)
+(12, 23)
+(12, 16)
+(12, 15)
+(12, 17)
+(12, 27)
+(12, 24)
+(12, 5)
+(12, 19)
+(12, 10)
+(12, 13)
+(12, 3)
+(12, 1)
+(12, 2)
+(12, 9)
+(12, 4)
+(12, 26)
+(12, 14)
+(12, 22)
+(12, 11)
+(12, 7)
+(12, 20)
+(12, 0)
+(12, 6)
+(12, 21)
+(12, 25)
+(12, 8)
+(12, 28)
+(12, 12)
+(17, 23)
+(17, 16)
+(17, 15)
+(17, 17)
+(17, 27)
+(17, 24)
+(17, 5)
+(17, 19)
+(17, 10)
+(17, 13)
+(17, 3)
+(17, 1)
+(17, 2)
+(17, 9)
+(17, 4)
+(17, 26)
+(17, 14)
+(17, 22)
+(17, 11)
+(17, 7)
+(17, 20)
+(17, 0)
+(17, 6)
+(17, 21)
+(17, 25)
+(17, 8)
+(17, 28)
+(17, 12)
+(17, 18)
+(10, 16)
+(10, 15)
+(10, 17)
+(10, 27)
+(10, 24)
+(10, 5)
+(10, 19)
+(10, 10)
+(10, 13)
+(10, 3)
+(10, 1)
+(10, 2)
+(10, 9)
+(10, 4)
+(10, 26)
+(10, 14)
+(10, 22)
+(10, 11)
+(10, 7)
+(10, 20)
+(10, 0)
+(10, 6)
+(10, 21)
+(10, 25)
+(10, 8)
+(10, 28)
+(10, 12)
+(10, 18)
+(10, 23)
+(9, 15)
+(9, 17)
+(9, 27)
+(9, 24)
+(9, 5)
+(9, 19)
+(9, 10)
+(9, 13)
+(9, 3)
+(9, 1)
+(9, 2)
+(9, 9)
+(9, 4)
+(9, 26)
+(9, 14)
+(9, 22)
+(9, 11)
+(9, 7)
+(9, 20)
+(9, 0)
+(9, 6)
+(9, 21)
+(9, 25)
+(9, 8)
+(9, 28)
+(9, 12)
+(9, 18)
+(9, 23)
+(9, 16)
+(11, 17)
+(11, 27)
+(11, 24)
+(11, 5)
+(11, 19)
+(11, 10)
+(11, 13)
+(11, 3)
+(11, 1)
+(11, 2)
+(11, 9)
+(11, 4)
+(11, 26)
+(11, 14)
+(11, 22)
+(11, 11)
+(11, 7)
+(11, 20)
+(11, 0)
+(11, 6)
+(11, 21)
+(11, 25)
+(11, 8)
+(11, 28)
+(11, 12)
+(11, 18)
+(11, 23)
+(11, 16)
+(11, 15)
+(21, 27)
+(21, 24)
+(21, 5)
+(21, 19)
+(21, 10)
+(21, 13)
+(21, 3)
+(21, 1)
+(21, 2)
+(21, 9)
+(21, 4)
+(21, 26)
+(21, 14)
+(21, 22)
+(21, 11)
+(21, 7)
+(21, 20)
+(21, 0)
+(21, 6)
+(21, 21)
+(21, 25)
+(21, 8)
+(21, 28)
+(21, 12)
+(21, 18)
+(21, 23)
+(21, 16)
+(21, 15)
+(21, 17)
+(18, 24)
+(18, 5)
+(18, 19)
+(18, 10)
+(18, 13)
+(18, 3)
+(18, 1)
+(18, 2)
+(18, 9)
+(18, 4)
+(18, 26)
+(18, 14)
+(18, 22)
+(18, 11)
+(18, 7)
+(18, 20)
+(18, 0)
+(18, 6)
+(18, 21)
+(18, 25)
+(18, 8)
+(18, 28)
+(18, 12)
+(18, 18)
+(18, 23)
+(18, 16)
+(18, 15)
+(18, 17)
+(18, 27)
+(27, 5)
+(27, 19)
+(27, 10)
+(27, 13)
+(27, 3)
+(27, 1)
+(27, 2)
+(27, 9)
+(27, 4)
+(27, 26)
+(27, 14)
+(27, 22)
+(27, 11)
+(27, 7)
+(27, 20)
+(27, 0)
+(27, 6)
+(27, 21)
+(27, 25)
+(27, 8)
+(27, 28)
+(27, 12)
+(27, 18)
+(27, 23)
+(27, 16)
+(27, 15)
+(27, 17)
+(27, 27)
+(27, 24)
+(13, 19)
+(13, 10)
+(13, 13)
+(13, 3)
+(13, 1)
+(13, 2)
+(13, 9)
+(13, 4)
+(13, 26)
+(13, 14)
+(13, 22)
+(13, 11)
+(13, 7)
+(13, 20)
+(13, 0)
+(13, 6)
+(13, 21)
+(13, 25)
+(13, 8)
+(13, 28)
+(13, 12)
+(13, 18)
+(13, 23)
+(13, 16)
+(13, 15)
+(13, 17)
+(13, 27)
+(13, 24)
+(13, 5)
+(4, 10)
+(4, 13)
+(4, 3)
+(4, 1)
+(4, 2)
+(4, 9)
+(4, 4)
+(4, 26)
+(4, 14)
+(4, 22)
+(4, 11)
+(4, 7)
+(4, 20)
+(4, 0)
+(4, 6)
+(4, 21)
+(4, 25)
+(4, 8)
+(4, 28)
+(4, 12)
+(4, 18)
+(4, 23)
+(4, 16)
+(4, 15)
+(4, 17)
+(4, 27)
+(4, 24)
+(4, 5)
+(4, 19)
+(7, 13)
+(7, 3)
+(7, 1)
+(7, 2)
+(7, 9)
+(7, 4)
+(7, 26)
+(7, 14)
+(7, 22)
+(7, 11)
+(7, 7)
+(7, 20)
+(7, 0)
+(7, 6)
+(7, 21)
+(7, 25)
+(7, 8)
+(7, 28)
+(7, 12)
+(7, 18)
+(7, 23)
+(7, 16)
+(7, 15)
+(7, 17)
+(7, 27)
+(7, 24)
+(7, 5)
+(7, 19)
+(7, 10)
+(25, 3)
+(25, 1)
+(25, 2)
+(25, 9)
+(25, 4)
+(25, 26)
+(25, 14)
+(25, 22)
+(25, 11)
+(25, 7)
+(25, 20)
+(25, 0)
+(25, 6)
+(25, 21)
+(25, 25)
+(25, 8)
+(25, 28)
+(25, 12)
+(25, 18)
+(25, 23)
+(25, 16)
+(25, 15)
+(25, 17)
+(25, 27)
+(25, 24)
+(25, 5)
+(25, 19)
+(25, 10)
+(25, 13)
+(23, 1)
+(23, 2)
+(23, 9)
+(23, 4)
+(23, 26)
+(23, 14)
+(23, 22)
+(23, 11)
+(23, 7)
+(23, 20)
+(23, 0)
+(23, 6)
+(23, 21)
+(23, 25)
+(23, 8)
+(23, 28)
+(23, 12)
+(23, 18)
+(23, 23)
+(23, 16)
+(23, 15)
+(23, 17)
+(23, 27)
+(23, 24)
+(23, 5)
+(23, 19)
+(23, 10)
+(23, 13)
+(23, 3)
+(24, 2)
+(24, 9)
+(24, 4)
+(24, 26)
+(24, 14)
+(24, 22)
+(24, 11)
+(24, 7)
+(24, 20)
+(24, 0)
+(24, 6)
+(24, 21)
+(24, 25)
+(24, 8)
+(24, 28)
+(24, 12)
+(24, 18)
+(24, 23)
+(24, 16)
+(24, 15)
+(24, 17)
+(24, 27)
+(24, 24)
+(24, 5)
+(24, 19)
+(24, 10)
+(24, 13)
+(24, 3)
+(24, 1)
+(3, 9)
+(3, 4)
+(3, 26)
+(3, 14)
+(3, 22)
+(3, 11)
+(3, 7)
+(3, 20)
+(3, 0)
+(3, 6)
+(3, 21)
+(3, 25)
+(3, 8)
+(3, 28)
+(3, 12)
+(3, 18)
+(3, 23)
+(3, 16)
+(3, 15)
+(3, 17)
+(3, 27)
+(3, 24)
+(3, 5)
+(3, 19)
+(3, 10)
+(3, 13)
+(3, 3)
+(3, 1)
+(3, 2)
+(26, 4)
+(26, 26)
+(26, 14)
+(26, 22)
+(26, 11)
+(26, 7)
+(26, 20)
+(26, 0)
+(26, 6)
+(26, 21)
+(26, 25)
+(26, 8)
+(26, 28)
+(26, 12)
+(26, 18)
+(26, 23)
+(26, 16)
+(26, 15)
+(26, 17)
+(26, 27)
+(26, 24)
+(26, 5)
+(26, 19)
+(26, 10)
+(26, 13)
+(26, 3)
+(26, 1)
+(26, 2)
+(26, 9)
+(20, 26)
+(20, 14)
+(20, 22)
+(20, 11)
+(20, 7)
+(20, 20)
+(20, 0)
+(20, 6)
+(20, 21)
+(20, 25)
+(20, 8)
+(20, 28)
+(20, 12)
+(20, 18)
+(20, 23)
+(20, 16)
+(20, 15)
+(20, 17)
+(20, 27)
+(20, 24)
+(20, 5)
+(20, 19)
+(20, 10)
+(20, 13)
+(20, 3)
+(20, 1)
+(20, 2)
+(20, 9)
+(20, 4)
+(8, 14)
+(8, 22)
+(8, 11)
+(8, 7)
+(8, 20)
+(8, 0)
+(8, 6)
+(8, 21)
+(8, 25)
+(8, 8)
+(8, 28)
+(8, 12)
+(8, 18)
+(8, 23)
+(8, 16)
+(8, 15)
+(8, 17)
+(8, 27)
+(8, 24)
+(8, 5)
+(8, 19)
+(8, 10)
+(8, 13)
+(8, 3)
+(8, 1)
+(8, 2)
+(8, 9)
+(8, 4)
+(8, 26)
+(16, 22)
+(16, 11)
+(16, 7)
+(16, 20)
+(16, 0)
+(16, 6)
+(16, 21)
+(16, 25)
+(16, 8)
+(16, 28)
+(16, 12)
+(16, 18)
+(16, 23)
+(16, 16)
+(16, 15)
+(16, 17)
+(16, 27)
+(16, 24)
+(16, 5)
+(16, 19)
+(16, 10)
+(16, 13)
+(16, 3)
+(16, 1)
+(16, 2)
+(16, 9)
+(16, 4)
+(16, 26)
+(16, 14)
+(5, 11)
+(5, 7)
+(5, 20)
+(5, 0)
+(5, 6)
+(5, 21)
+(5, 25)
+(5, 8)
+(5, 28)
+(5, 12)
+(5, 18)
+(5, 23)
+(5, 16)
+(5, 15)
+(5, 17)
+(5, 27)
+(5, 24)
+(5, 5)
+(5, 19)
+(5, 10)
+(5, 13)
+(5, 3)
+(5, 1)
+(5, 2)
+(5, 9)
+(5, 4)
+(5, 26)
+(5, 14)
+(5, 22)
+(1, 7)
+(1, 20)
+(1, 0)
+(1, 6)
+(1, 21)
+(1, 25)
+(1, 8)
+(1, 28)
+(1, 12)
+(1, 18)
+(1, 23)
+(1, 16)
+(1, 15)
+(1, 17)
+(1, 27)
+(1, 24)
+(1, 5)
+(1, 19)
+(1, 10)
+(1, 13)
+(1, 3)
+(1, 1)
+(1, 2)
+(1, 9)
+(1, 4)
+(1, 26)
+(1, 14)
+(1, 22)
+(1, 11)
+(14, 20)
+(14, 0)
+(14, 6)
+(14, 21)
+(14, 25)
+(14, 8)
+(14, 28)
+(14, 12)
+(14, 18)
+(14, 23)
+(14, 16)
+(14, 15)
+(14, 17)
+(14, 27)
+(14, 24)
+(14, 5)
+(14, 19)
+(14, 10)
+(14, 13)
+(14, 3)
+(14, 1)
+(14, 2)
+(14, 9)
+(14, 4)
+(14, 26)
+(14, 14)
+(14, 22)
+(14, 11)
+(14, 7)
+(c) layer 3 head 4
+Figure 13: PCA over the features of specific heads for d = 4 model. Each number is annotated by its
+log27 value. We plotted PCA over (a, b) (x, y) and (c) (y, z) concatenated features. Where the circle
+in (b, c) heavily depends on the sequence and (a) remains unchanged.
+0.06 0.04 0.02 0.00 0.02 0.04 0.06 0.08
+1st principle component
+0.06
+0.04
+0.02
+0.00
+0.02
+0.04
+0.06
+0.08
+2nd principle component
+(0, 0)
+(0, 6)
+(0, 21)
+(0, 25)
+(0, 8)
+(0, 28)
+(0, 12)
+(0, 18)
+(0, 23)
+(0, 16)
+(0, 15)
+(0, 17)
+(0, 27)
+(0, 24)
+(0, 5)
+(0, 19)
+(0, 10)
+(0, 13)
+(0, 3)
+(0, 1)
+(0, 2)
+(0, 9)
+(0, 4)
+(0, 26)
+(0, 14)
+(0, 22)
+(0, 11)
+(0, 7)
+(0, 20)
+(28, 6)
+(28, 21)
+(28, 25)
+(28, 8)
+(28, 28)
+(28, 12)
+(28, 18)
+(28, 23)
+(28, 16)
+(28, 15)
+(28, 17)
+(28, 27)
+(28, 24)
+(28, 5)
+(28, 19)
+(28, 10)
+(28, 13)
+(28, 3)
+(28, 1)
+(28, 2)
+(28, 9)
+(28, 4)
+(28, 26)
+(28, 14)
+(28, 22)
+(28, 11)
+(28, 7)
+(28, 20)
+(28, 0)
+(15, 21)
+(15, 25)
+(15, 8)
+(15, 28)
+(15, 12)
+(15, 18)
+(15, 23)
+(15, 16)
+(15, 15)
+(15, 17)
+(15, 27)
+(15, 24)
+(15, 5)
+(15, 19)
+(15, 10)
+(15, 13)
+(15, 3)
+(15, 1)
+(15, 2)
+(15, 9)
+(15, 4)
+(15, 26)
+(15, 14)
+(15, 22)
+(15, 11)
+(15, 7)
+(15, 20)
+(15, 0)
+(15, 6)
+(19, 25)
+(19, 8)
+(19, 28)
+(19, 12)
+(19, 18)
+(19, 23)
+(19, 16)
+(19, 15)
+(19, 17)
+(19, 27)
+(19, 24)
+(19, 5)
+(19, 19)
+(19, 10)
+(19, 13)
+(19, 3)
+(19, 1)
+(19, 2)
+(19, 9)
+(19, 4)
+(19, 26)
+(19, 14)
+(19, 22)
+(19, 11)
+(19, 7)
+(19, 20)
+(19, 0)
+(19, 6)
+(19, 21)
+(2, 8)
+(2, 28)
+(2, 12)
+(2, 18)
+(2, 23)
+(2, 16)
+(2, 15)
+(2, 17)
+(2, 27)
+(2, 24)
+(2, 5)
+(2, 19)
+(2, 10)
+(2, 13)
+(2, 3)
+(2, 1)
+(2, 2)
+(2, 9)
+(2, 4)
+(2, 26)
+(2, 14)
+(2, 22)
+(2, 11)
+(2, 7)
+(2, 20)
+(2, 0)
+(2, 6)
+(2, 21)
+(2, 25)
+(22, 28)
+(22, 12)
+(22, 18)
+(22, 23)
+(22, 16)
+(22, 15)
+(22, 17)
+(22, 27)
+(22, 24)
+(22, 5)
+(22, 19)
+(22, 10)
+(22, 13)
+(22, 3)
+(22, 1)
+(22, 2)
+(22, 9)
+(22, 4)
+(22, 26)
+(22, 14)
+(22, 22)
+(22, 11)
+(22, 7)
+(22, 20)
+(22, 0)
+(22, 6)
+(22, 21)
+(22, 25)
+(22, 8)
+(6, 12)
+(6, 18)
+(6, 23)
+(6, 16)
+(6, 15)
+(6, 17)
+(6, 27)
+(6, 24)
+(6, 5)
+(6, 19)
+(6, 10)
+(6, 13)
+(6, 3)
+(6, 1)
+(6, 2)
+(6, 9)
+(6, 4)
+(6, 26)
+(6, 14)
+(6, 22)
+(6, 11)
+(6, 7)
+(6, 20)
+(6, 0)
+(6, 6)
+(6, 21)
+(6, 25)
+(6, 8)
+(6, 28)
+(12, 18)
+(12, 23)
+(12, 16)
+(12, 15)
+(12, 17)
+(12, 27)
+(12, 24)
+(12, 5)
+(12, 19)
+(12, 10)
+(12, 13)
+(12, 3)
+(12, 1)
+(12, 2)
+(12, 9)
+(12, 4)
+(12, 26)
+(12, 14)
+(12, 22)
+(12, 11)
+(12, 7)
+(12, 20)
+(12, 0)
+(12, 6)
+(12, 21)
+(12, 25)
+(12, 8)
+(12, 28)
+(12, 12)
+(17, 23)
+(17, 16)
+(17, 15)
+(17, 17)
+(17, 27)
+(17, 24)
+(17, 5)
+(17, 19)
+(17, 10)
+(17, 13)
+(17, 3)
+(17, 1)
+(17, 2)
+(17, 9)
+(17, 4)
+(17, 26)
+(17, 14)
+(17, 22)
+(17, 11)
+(17, 7)
+(17, 20)
+(17, 0)
+(17, 6)
+(17, 21)
+(17, 25)
+(17, 8)
+(17, 28)
+(17, 12)
+(17, 18)
+(10, 16)
+(10, 15)
+(10, 17)
+(10, 27)
+(10, 24)
+(10, 5)
+(10, 19)
+(10, 10)
+(10, 13)
+(10, 3)
+(10, 1)
+(10, 2)
+(10, 9)
+(10, 4)
+(10, 26)
+(10, 14)
+(10, 22)
+(10, 11)
+(10, 7)
+(10, 20)
+(10, 0)
+(10, 6)
+(10, 21)
+(10, 25)
+(10, 8)
+(10, 28)
+(10, 12)
+(10, 18)
+(10, 23)
+(9, 15)
+(9, 17)
+(9, 27)
+(9, 24)
+(9, 5)
+(9, 19)
+(9, 10)
+(9, 13)
+(9, 3)
+(9, 1)
+(9, 2)
+(9, 9)
+(9, 4)
+(9, 26)
+(9, 14)
+(9, 22)
+(9, 11)
+(9, 7)
+(9, 20)
+(9, 0)
+(9, 6)
+(9, 21)
+(9, 25)
+(9, 8)
+(9, 28)
+(9, 12)
+(9, 18)
+(9, 23)
+(9, 16)
+(11, 17)
+(11, 27)
+(11, 24)
+(11, 5)
+(11, 19)
+(11, 10)
+(11, 13)
+(11, 3)
+(11, 1)
+(11, 2)
+(11, 9)
+(11, 4)
+(11, 26)
+(11, 14)
+(11, 22)
+(11, 11)
+(11, 7)
+(11, 20)
+(11, 0)
+(11, 6)
+(11, 21)
+(11, 25)
+(11, 8)
+(11, 28)
+(11, 12)
+(11, 18)
+(11, 23)
+(11, 16)
+(11, 15)
+(21, 27)
+(21, 24)
+(21, 5)
+(21, 19)
+(21, 10)
+(21, 13)
+(21, 3)
+(21, 1)
+(21, 2)
+(21, 9)
+(21, 4)
+(21, 26)
+(21, 14)
+(21, 22)
+(21, 11)
+(21, 7)
+(21, 20)
+(21, 0)
+(21, 6)
+(21, 21)
+(21, 25)
+(21, 8)
+(21, 28)
+(21, 12)
+(21, 18)
+(21, 23)
+(21, 16)
+(21, 15)
+(21, 17)
+(18, 24)
+(18, 5)
+(18, 19)
+(18, 10)
+(18, 13)
+(18, 3)
+(18, 1)
+(18, 2)
+(18, 9)
+(18, 4)
+(18, 26)
+(18, 14)
+(18, 22)
+(18, 11)
+(18, 7)
+(18, 20)
+(18, 0)
+(18, 6)
+(18, 21)
+(18, 25)
+(18, 8)
+(18, 28)
+(18, 12)
+(18, 18)
+(18, 23)
+(18, 16)
+(18, 15)
+(18, 17)
+(18, 27)
+(27, 5)
+(27, 19)
+(27, 10)
+(27, 13)
+(27, 3)
+(27, 1)
+(27, 2)
+(27, 9)
+(27, 4)
+(27, 26)
+(27, 14)
+(27, 22)
+(27, 11)
+(27, 7)
+(27, 20)
+(27, 0)
+(27, 6)
+(27, 21)
+(27, 25)
+(27, 8)
+(27, 28)
+(27, 12)
+(27, 18)
+(27, 23)
+(27, 16)
+(27, 15)
+(27, 17)
+(27, 27)
+(27, 24)
+(13, 19)
+(13, 10)
+(13, 13)
+(13, 3)
+(13, 1)
+(13, 2)
+(13, 9)
+(13, 4)
+(13, 26)
+(13, 14)
+(13, 22)
+(13, 11)
+(13, 7)
+(13, 20)
+(13, 0)
+(13, 6)
+(13, 21)
+(13, 25)
+(13, 8)
+(13, 28)
+(13, 12)
+(13, 18)
+(13, 23)
+(13, 16)
+(13, 15)
+(13, 17)
+(13, 27)
+(13, 24)
+(13, 5)
+(4, 10)
+(4, 13)
+(4, 3)
+(4, 1)
+(4, 2)
+(4, 9)
+(4, 4)
+(4, 26)
+(4, 14)
+(4, 22)
+(4, 11)
+(4, 7)
+(4, 20)
+(4, 0)
+(4, 6)
+(4, 21)
+(4, 25)
+(4, 8)
+(4, 28)
+(4, 12)
+(4, 18)
+(4, 23)
+(4, 16)
+(4, 15)
+(4, 17)
+(4, 27)
+(4, 24)
+(4, 5)
+(4, 19)
+(7, 13)
+(7, 3)
+(7, 1)
+(7, 2)
+(7, 9)
+(7, 4)
+(7, 26)
+(7, 14)
+(7, 22)
+(7, 11)
+(7, 7)
+(7, 20)
+(7, 0)
+(7, 6)
+(7, 21)
+(7, 25)
+(7, 8)
+(7, 28)
+(7, 12)
+(7, 18)
+(7, 23)
+(7, 16)
+(7, 15)
+(7, 17)
+(7, 27)
+(7, 24)
+(7, 5)
+(7, 19)
+(7, 10)
+(25, 3)
+(25, 1)
+(25, 2)
+(25, 9)
+(25, 4)
+(25, 26)
+(25, 14)
+(25, 22)
+(25, 11)
+(25, 7)
+(25, 20)
+(25, 0)
+(25, 6)
+(25, 21)
+(25, 25)
+(25, 8)
+(25, 28)
+(25, 12)
+(25, 18)
+(25, 23)
+(25, 16)
+(25, 15)
+(25, 17)
+(25, 27)
+(25, 24)
+(25, 5)
+(25, 19)
+(25, 10)
+(25, 13)
+(23, 1)
+(23, 2)
+(23, 9)
+(23, 4)
+(23, 26)
+(23, 14)
+(23, 22)
+(23, 11)
+(23, 7)
+(23, 20)
+(23, 0)
+(23, 6)
+(23, 21)
+(23, 25)
+(23, 8)
+(23, 28)
+(23, 12)
+(23, 18)
+(23, 23)
+(23, 16)
+(23, 15)
+(23, 17)
+(23, 27)
+(23, 24)
+(23, 5)
+(23, 19)
+(23, 10)
+(23, 13)
+(23, 3)
+(24, 2)
+(24, 9)
+(24, 4)
+(24, 26)
+(24, 14)
+(24, 22)
+(24, 11)
+(24, 7)
+(24, 20)
+(24, 0)
+(24, 6)
+(24, 21)
+(24, 25)
+(24, 8)
+(24, 28)
+(24, 12)
+(24, 18)
+(24, 23)
+(24, 16)
+(24, 15)
+(24, 17)
+(24, 27)
+(24, 24)
+(24, 5)
+(24, 19)
+(24, 10)
+(24, 13)
+(24, 3)
+(24, 1)
+(3, 9)
+(3, 4)
+(3, 26)
+(3, 14)
+(3, 22)
+(3, 11)
+(3, 7)
+(3, 20)
+(3, 0)
+(3, 6)
+(3, 21)
+(3, 25)
+(3, 8)
+(3, 28)
+(3, 12)
+(3, 18)
+(3, 23)
+(3, 16)
+(3, 15)
+(3, 17)
+(3, 27)
+(3, 24)
+(3, 5)
+(3, 19)
+(3, 10)
+(3, 13)
+(3, 3)
+(3, 1)
+(3, 2)
+(26, 4)
+(26, 26)
+(26, 14)
+(26, 22)
+(26, 11)
+(26, 7)
+(26, 20)
+(26, 0)
+(26, 6)
+(26, 21)
+(26, 25)
+(26, 8)
+(26, 28)
+(26, 12)
+(26, 18)
+(26, 23)
+(26, 16)
+(26, 15)
+(26, 17)
+(26, 27)
+(26, 24)
+(26, 5)
+(26, 19)
+(26, 10)
+(26, 13)
+(26, 3)
+(26, 1)
+(26, 2)
+(26, 9)
+(20, 26)
+(20, 14)
+(20, 22)
+(20, 11)
+(20, 7)
+(20, 20)
+(20, 0)
+(20, 6)
+(20, 21)
+(20, 25)
+(20, 8)
+(20, 28)
+(20, 12)
+(20, 18)
+(20, 23)
+(20, 16)
+(20, 15)
+(20, 17)
+(20, 27)
+(20, 24)
+(20, 5)
+(20, 19)
+(20, 10)
+(20, 13)
+(20, 3)
+(20, 1)
+(20, 2)
+(20, 9)
+(20, 4)
+(8, 14)
+(8, 22)
+(8, 11)
+(8, 7)
+(8, 20)
+(8, 0)
+(8, 6)
+(8, 21)
+(8, 25)
+(8, 8)
+(8, 28)
+(8, 12)
+(8, 18)
+(8, 23)
+(8, 16)
+(8, 15)
+(8, 17)
+(8, 27)
+(8, 24)
+(8, 5)
+(8, 19)
+(8, 10)
+(8, 13)
+(8, 3)
+(8, 1)
+(8, 2)
+(8, 9)
+(8, 4)
+(8, 26)
+(16, 22)
+(16, 11)
+(16, 7)
+(16, 20)
+(16, 0)
+(16, 6)
+(16, 21)
+(16, 25)
+(16, 8)
+(16, 28)
+(16, 12)
+(16, 18)
+(16, 23)
+(16, 16)
+(16, 15)
+(16, 17)
+(16, 27)
+(16, 24)
+(16, 5)
+(16, 19)
+(16, 10)
+(16, 13)
+(16, 3)
+(16, 1)
+(16, 2)
+(16, 9)
+(16, 4)
+(16, 26)
+(16, 14)
+(5, 11)
+(5, 7)
+(5, 20)
+(5, 0)
+(5, 6)
+(5, 21)
+(5, 25)
+(5, 8)
+(5, 28)
+(5, 12)
+(5, 18)
+(5, 23)
+(5, 16)
+(5, 15)
+(5, 17)
+(5, 27)
+(5, 24)
+(5, 5)
+(5, 19)
+(5, 10)
+(5, 13)
+(5, 3)
+(5, 1)
+(5, 2)
+(5, 9)
+(5, 4)
+(5, 26)
+(5, 14)
+(5, 22)
+(1, 7)
+(1, 20)
+(1, 0)
+(1, 6)
+(1, 21)
+(1, 25)
+(1, 8)
+(1, 28)
+(1, 12)
+(1, 18)
+(1, 23)
+(1, 16)
+(1, 15)
+(1, 17)
+(1, 27)
+(1, 24)
+(1, 5)
+(1, 19)
+(1, 10)
+(1, 13)
+(1, 3)
+(1, 1)
+(1, 2)
+(1, 9)
+(1, 4)
+(1, 26)
+(1, 14)
+(1, 22)
+(1, 11)
+(14, 20)
+(14, 0)
+(14, 6)
+(14, 21)
+(14, 25)
+(14, 8)
+(14, 28)
+(14, 12)
+(14, 18)
+(14, 23)
+(14, 16)
+(14, 15)
+(14, 17)
+(14, 27)
+(14, 24)
+(14, 5)
+(14, 19)
+(14, 10)
+(14, 13)
+(14, 3)
+(14, 1)
+(14, 2)
+(14, 9)
+(14, 4)
+(14, 26)
+(14, 14)
+(14, 22)
+(14, 11)
+(14, 7)
+(a) (x, z)
+0.10
+0.05
+0.00
+0.05
+0.10
+1st principle component
+0.10
+0.05
+0.00
+0.05
+0.10
+2nd principle component
+(0, 0)
+(28, 6)
+(15, 21)
+(19, 25)
+(2, 8)
+(22, 28)
+(6, 12)
+(12, 18)
+(17, 23)
+(10, 16)
+(9, 15)
+(11, 17)
+(21, 27)
+(18, 24)
+(27, 5)
+(13, 19)
+(4, 10)
+(7, 13)
+(25, 3)
+(23, 1)
+(24, 2)
+(3, 9)
+(26, 4)
+(20, 26)
+(8, 14)
+(16, 22)
+(5, 11)
+(1, 7)
+(14, 20)
+(0, 6)
+(28, 21)
+(15, 25)
+(19, 8)
+(2, 28)
+(22, 12)
+(6, 18)
+(12, 23)
+(17, 16)
+(10, 15)
+(9, 17)
+(11, 27)
+(21, 24)
+(18, 5)
+(27, 19)
+(13, 10)
+(4, 13)
+(7, 3)
+(25, 1)
+(23, 2)
+(24, 9)
+(3, 4)
+(26, 26)
+(20, 14)
+(8, 22)
+(16, 11)
+(5, 7)
+(1, 20)
+(14, 0)
+(0, 21)
+(28, 25)
+(15, 8)
+(19, 28)
+(2, 12)
+(22, 18)
+(6, 23)
+(12, 16)
+(17, 15)
+(10, 17)
+(9, 27)
+(11, 24)
+(21, 5)
+(18, 19)
+(27, 10)
+(13, 13)
+(4, 3)
+(7, 1)
+(25, 2)
+(23, 9)
+(24, 4)
+(3, 26)
+(26, 14)
+(20, 22)
+(8, 11)
+(16, 7)
+(5, 20)
+(1, 0)
+(14, 6)
+(0, 25)
+(28, 8)
+(15, 28)
+(19, 12)
+(2, 18)
+(22, 23)
+(6, 16)
+(12, 15)
+(17, 17)
+(10, 27)
+(9, 24)
+(11, 5)
+(21, 19)
+(18, 10)
+(27, 13)
+(13, 3)
+(4, 1)
+(7, 2)
+(25, 9)
+(23, 4)
+(24, 26)
+(3, 14)
+(26, 22)
+(20, 11)
+(8, 7)
+(16, 20)
+(5, 0)
+(1, 6)
+(14, 21)
+(0, 8)
+(28, 28)
+(15, 12)
+(19, 18)
+(2, 23)
+(22, 16)
+(6, 15)
+(12, 17)
+(17, 27)
+(10, 24)
+(9, 5)
+(11, 19)
+(21, 10)
+(18, 13)
+(27, 3)
+(13, 1)
+(4, 2)
+(7, 9)
+(25, 4)
+(23, 26)
+(24, 14)
+(3, 22)
+(26, 11)
+(20, 7)
+(8, 20)
+(16, 0)
+(5, 6)
+(1, 21)
+(14, 25)
+(0, 28)
+(28, 12)
+(15, 18)
+(19, 23)
+(2, 16)
+(22, 15)
+(6, 17)
+(12, 27)
+(17, 24)
+(10, 5)
+(9, 19)
+(11, 10)
+(21, 13)
+(18, 3)
+(27, 1)
+(13, 2)
+(4, 9)
+(7, 4)
+(25, 26)
+(23, 14)
+(24, 22)
+(3, 11)
+(26, 7)
+(20, 20)
+(8, 0)
+(16, 6)
+(5, 21)
+(1, 25)
+(14, 8)
+(0, 12)
+(28, 18)
+(15, 23)
+(19, 16)
+(2, 15)
+(22, 17)
+(6, 27)
+(12, 24)
+(17, 5)
+(10, 19)
+(9, 10)
+(11, 13)
+(21, 3)
+(18, 1)
+(27, 2)
+(13, 9)
+(4, 4)
+(7, 26)
+(25, 14)
+(23, 22)
+(24, 11)
+(3, 7)
+(26, 20)
+(20, 0)
+(8, 6)
+(16, 21)
+(5, 25)
+(1, 8)
+(14, 28)
+(0, 18)
+(28, 23)
+(15, 16)
+(19, 15)
+(2, 17)
+(22, 27)
+(6, 24)
+(12, 5)
+(17, 19)
+(10, 10)
+(9, 13)
+(11, 3)
+(21, 1)
+(18, 2)
+(27, 9)
+(13, 4)
+(4, 26)
+(7, 14)
+(25, 22)
+(23, 11)
+(24, 7)
+(3, 20)
+(26, 0)
+(20, 6)
+(8, 21)
+(16, 25)
+(5, 8)
+(1, 28)
+(14, 12)
+(0, 23)
+(28, 16)
+(15, 15)
+(19, 17)
+(2, 27)
+(22, 24)
+(6, 5)
+(12, 19)
+(17, 10)
+(10, 13)
+(9, 3)
+(11, 1)
+(21, 2)
+(18, 9)
+(27, 4)
+(13, 26)
+(4, 14)
+(7, 22)
+(25, 11)
+(23, 7)
+(24, 20)
+(3, 0)
+(26, 6)
+(20, 21)
+(8, 25)
+(16, 8)
+(5, 28)
+(1, 12)
+(14, 18)
+(0, 16)
+(28, 15)
+(15, 17)
+(19, 27)
+(2, 24)
+(22, 5)
+(6, 19)
+(12, 10)
+(17, 13)
+(10, 3)
+(9, 1)
+(11, 2)
+(21, 9)
+(18, 4)
+(27, 26)
+(13, 14)
+(4, 22)
+(7, 11)
+(25, 7)
+(23, 20)
+(24, 0)
+(3, 6)
+(26, 21)
+(20, 25)
+(8, 8)
+(16, 28)
+(5, 12)
+(1, 18)
+(14, 23)
+(0, 15)
+(28, 17)
+(15, 27)
+(19, 24)
+(2, 5)
+(22, 19)
+(6, 10)
+(12, 13)
+(17, 3)
+(10, 1)
+(9, 2)
+(11, 9)
+(21, 4)
+(18, 26)
+(27, 14)
+(13, 22)
+(4, 11)
+(7, 7)
+(25, 20)
+(23, 0)
+(24, 6)
+(3, 21)
+(26, 25)
+(20, 8)
+(8, 28)
+(16, 12)
+(5, 18)
+(1, 23)
+(14, 16)
+(0, 17)
+(28, 27)
+(15, 24)
+(19, 5)
+(2, 19)
+(22, 10)
+(6, 13)
+(12, 3)
+(17, 1)
+(10, 2)
+(9, 9)
+(11, 4)
+(21, 26)
+(18, 14)
+(27, 22)
+(13, 11)
+(4, 7)
+(7, 20)
+(25, 0)
+(23, 6)
+(24, 21)
+(3, 25)
+(26, 8)
+(20, 28)
+(8, 12)
+(16, 18)
+(5, 23)
+(1, 16)
+(14, 15)
+(0, 27)
+(28, 24)
+(15, 5)
+(19, 19)
+(2, 10)
+(22, 13)
+(6, 3)
+(12, 1)
+(17, 2)
+(10, 9)
+(9, 4)
+(11, 26)
+(21, 14)
+(18, 22)
+(27, 11)
+(13, 7)
+(4, 20)
+(7, 0)
+(25, 6)
+(23, 21)
+(24, 25)
+(3, 8)
+(26, 28)
+(20, 12)
+(8, 18)
+(16, 23)
+(5, 16)
+(1, 15)
+(14, 17)
+(0, 24)
+(28, 5)
+(15, 19)
+(19, 10)
+(2, 13)
+(22, 3)
+(6, 1)
+(12, 2)
+(17, 9)
+(10, 4)
+(9, 26)
+(11, 14)
+(21, 22)
+(18, 11)
+(27, 7)
+(13, 20)
+(4, 0)
+(7, 6)
+(25, 21)
+(23, 25)
+(24, 8)
+(3, 28)
+(26, 12)
+(20, 18)
+(8, 23)
+(16, 16)
+(5, 15)
+(1, 17)
+(14, 27)
+(0, 5)
+(28, 19)
+(15, 10)
+(19, 13)
+(2, 3)
+(22, 1)
+(6, 2)
+(12, 9)
+(17, 4)
+(10, 26)
+(9, 14)
+(11, 22)
+(21, 11)
+(18, 7)
+(27, 20)
+(13, 0)
+(4, 6)
+(7, 21)
+(25, 25)
+(23, 8)
+(24, 28)
+(3, 12)
+(26, 18)
+(20, 23)
+(8, 16)
+(16, 15)
+(5, 17)
+(1, 27)
+(14, 24)
+(0, 19)
+(28, 10)
+(15, 13)
+(19, 3)
+(2, 1)
+(22, 2)
+(6, 9)
+(12, 4)
+(17, 26)
+(10, 14)
+(9, 22)
+(11, 11)
+(21, 7)
+(18, 20)
+(27, 0)
+(13, 6)
+(4, 21)
+(7, 25)
+(25, 8)
+(23, 28)
+(24, 12)
+(3, 18)
+(26, 23)
+(20, 16)
+(8, 15)
+(16, 17)
+(5, 27)
+(1, 24)
+(14, 5)
+(0, 10)
+(28, 13)
+(15, 3)
+(19, 1)
+(2, 2)
+(22, 9)
+(6, 4)
+(12, 26)
+(17, 14)
+(10, 22)
+(9, 11)
+(11, 7)
+(21, 20)
+(18, 0)
+(27, 6)
+(13, 21)
+(4, 25)
+(7, 8)
+(25, 28)
+(23, 12)
+(24, 18)
+(3, 23)
+(26, 16)
+(20, 15)
+(8, 17)
+(16, 27)
+(5, 24)
+(1, 5)
+(14, 19)
+(0, 13)
+(28, 3)
+(15, 1)
+(19, 2)
+(2, 9)
+(22, 4)
+(6, 26)
+(12, 14)
+(17, 22)
+(10, 11)
+(9, 7)
+(11, 20)
+(21, 0)
+(18, 6)
+(27, 21)
+(13, 25)
+(4, 8)
+(7, 28)
+(25, 12)
+(23, 18)
+(24, 23)
+(3, 16)
+(26, 15)
+(20, 17)
+(8, 27)
+(16, 24)
+(5, 5)
+(1, 19)
+(14, 10)
+(0, 3)
+(28, 1)
+(15, 2)
+(19, 9)
+(2, 4)
+(22, 26)
+(6, 14)
+(12, 22)
+(17, 11)
+(10, 7)
+(9, 20)
+(11, 0)
+(21, 6)
+(18, 21)
+(27, 25)
+(13, 8)
+(4, 28)
+(7, 12)
+(25, 18)
+(23, 23)
+(24, 16)
+(3, 15)
+(26, 17)
+(20, 27)
+(8, 24)
+(16, 5)
+(5, 19)
+(1, 10)
+(14, 13)
+(0, 1)
+(28, 2)
+(15, 9)
+(19, 4)
+(2, 26)
+(22, 14)
+(6, 22)
+(12, 11)
+(17, 7)
+(10, 20)
+(9, 0)
+(11, 6)
+(21, 21)
+(18, 25)
+(27, 8)
+(13, 28)
+(4, 12)
+(7, 18)
+(25, 23)
+(23, 16)
+(24, 15)
+(3, 17)
+(26, 27)
+(20, 24)
+(8, 5)
+(16, 19)
+(5, 10)
+(1, 13)
+(14, 3)
+(0, 2)
+(28, 9)
+(15, 4)
+(19, 26)
+(2, 14)
+(22, 22)
+(6, 11)
+(12, 7)
+(17, 20)
+(10, 0)
+(9, 6)
+(11, 21)
+(21, 25)
+(18, 8)
+(27, 28)
+(13, 12)
+(4, 18)
+(7, 23)
+(25, 16)
+(23, 15)
+(24, 17)
+(3, 27)
+(26, 24)
+(20, 5)
+(8, 19)
+(16, 10)
+(5, 13)
+(1, 3)
+(14, 1)
+(0, 9)
+(28, 4)
+(15, 26)
+(19, 14)
+(2, 22)
+(22, 11)
+(6, 7)
+(12, 20)
+(17, 0)
+(10, 6)
+(9, 21)
+(11, 25)
+(21, 8)
+(18, 28)
+(27, 12)
+(13, 18)
+(4, 23)
+(7, 16)
+(25, 15)
+(23, 17)
+(24, 27)
+(3, 24)
+(26, 5)
+(20, 19)
+(8, 10)
+(16, 13)
+(5, 3)
+(1, 1)
+(14, 2)
+(0, 4)
+(28, 26)
+(15, 14)
+(19, 22)
+(2, 11)
+(22, 7)
+(6, 20)
+(12, 0)
+(17, 6)
+(10, 21)
+(9, 25)
+(11, 8)
+(21, 28)
+(18, 12)
+(27, 18)
+(13, 23)
+(4, 16)
+(7, 15)
+(25, 17)
+(23, 27)
+(24, 24)
+(3, 5)
+(26, 19)
+(20, 10)
+(8, 13)
+(16, 3)
+(5, 1)
+(1, 2)
+(14, 9)
+(0, 26)
+(28, 14)
+(15, 22)
+(19, 11)
+(2, 7)
+(22, 20)
+(6, 0)
+(12, 6)
+(17, 21)
+(10, 25)
+(9, 8)
+(11, 28)
+(21, 12)
+(18, 18)
+(27, 23)
+(13, 16)
+(4, 15)
+(7, 17)
+(25, 27)
+(23, 24)
+(24, 5)
+(3, 19)
+(26, 10)
+(20, 13)
+(8, 3)
+(16, 1)
+(5, 2)
+(1, 9)
+(14, 4)
+(0, 14)
+(28, 22)
+(15, 11)
+(19, 7)
+(2, 20)
+(22, 0)
+(6, 6)
+(12, 21)
+(17, 25)
+(10, 8)
+(9, 28)
+(11, 12)
+(21, 18)
+(18, 23)
+(27, 16)
+(13, 15)
+(4, 17)
+(7, 27)
+(25, 24)
+(23, 5)
+(24, 19)
+(3, 10)
+(26, 13)
+(20, 3)
+(8, 1)
+(16, 2)
+(5, 9)
+(1, 4)
+(14, 26)
+(0, 22)
+(28, 11)
+(15, 7)
+(19, 20)
+(2, 0)
+(22, 6)
+(6, 21)
+(12, 25)
+(17, 8)
+(10, 28)
+(9, 12)
+(11, 18)
+(21, 23)
+(18, 16)
+(27, 15)
+(13, 17)
+(4, 27)
+(7, 24)
+(25, 5)
+(23, 19)
+(24, 10)
+(3, 13)
+(26, 3)
+(20, 1)
+(8, 2)
+(16, 9)
+(5, 4)
+(1, 26)
+(14, 14)
+(0, 11)
+(28, 7)
+(15, 20)
+(19, 0)
+(2, 6)
+(22, 21)
+(6, 25)
+(12, 8)
+(17, 28)
+(10, 12)
+(9, 18)
+(11, 23)
+(21, 16)
+(18, 15)
+(27, 17)
+(13, 27)
+(4, 24)
+(7, 5)
+(25, 19)
+(23, 10)
+(24, 13)
+(3, 3)
+(26, 1)
+(20, 2)
+(8, 9)
+(16, 4)
+(5, 26)
+(1, 14)
+(14, 22)
+(0, 7)
+(28, 20)
+(15, 0)
+(19, 6)
+(2, 21)
+(22, 25)
+(6, 8)
+(12, 28)
+(17, 12)
+(10, 18)
+(9, 23)
+(11, 16)
+(21, 15)
+(18, 17)
+(27, 27)
+(13, 24)
+(4, 5)
+(7, 19)
+(25, 10)
+(23, 13)
+(24, 3)
+(3, 1)
+(26, 2)
+(20, 9)
+(8, 4)
+(16, 26)
+(5, 14)
+(1, 22)
+(14, 11)
+(0, 20)
+(28, 0)
+(15, 6)
+(19, 21)
+(2, 25)
+(22, 8)
+(6, 28)
+(12, 12)
+(17, 18)
+(10, 23)
+(9, 16)
+(11, 15)
+(21, 17)
+(18, 27)
+(27, 24)
+(13, 5)
+(4, 19)
+(7, 10)
+(25, 13)
+(23, 3)
+(24, 1)
+(3, 2)
+(26, 9)
+(20, 4)
+(8, 26)
+(16, 14)
+(5, 22)
+(1, 11)
+(14, 7)
+(b) (y, z)
+Figure 14: PCA over the same head in Figure 6(a), with feature concatenated differently. We annotate
+numbers with their corresponding logarithm.
+In Figure 17, we extend our PCA analysis to different task vectors and up to top-4 components, where
+the spatial structure of the features is better depicted.
+We have reasons to believe that the non-circle heads are not essential to the models’ performance.
+However, we leave a careful exploration of this front for future work.
+E.3
+PCA over Attention and MLP Outputs
+In Figure 18, we plot d = 2 PCA analysis up to top-4 components for attention and MLP outputs.
+17
+
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+(a) layer 1, head 1
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+(b) layer 1, head 2
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+(c) layer 1, head 3
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+(d) layer 1, head 4
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+(e) layer 2, head 1
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+(f) layer 2, head 2
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+(g) layer 2, head 3
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+(h) layer 2, head 4
+Figure 15: All attention heads in d = 2 model.
+0.015 0.010 0.0050.000 0.005 0.010 0.015
+1st principle component
+0.0125
+0.0100
+0.0075
+0.0050
+0.0025
+0.0000
+0.0025
+0.0050
+0.0075
+2nd principle component
+(0, 0)
+(0, 28)
+(0, 15)
+(0, 19)
+(0, 2)
+(0, 22)
+(0, 6)
+(0, 12)
+(0, 17)
+(0, 10)
+(0, 9)
+(0, 11)
+(0, 21)
+(0, 18)
+(0, 27)
+(0, 13)
+(0, 4)
+(0, 7)
+(0, 25)
+(0, 23)
+(0, 24)
+(0, 3)
+(0, 26)
+(0, 20)
+(0, 8)
+(0, 16)
+(0, 5)
+(0, 1)
+(0, 14)
+(28, 0)
+(28, 28)
+(28, 15)
+(28, 19)
+(28, 2)
+(28, 22)
+(28, 6)
+(28, 12)
+(28, 17)
+(28, 10)
+(28, 9)
+(28, 11)
+(28, 21)
+(28, 18)
+(28, 27)
+(28, 13)
+(28, 4)
+(28, 7)
+(28, 25)
+(28, 23)
+(28, 24)
+(28, 3)
+(28, 26)
+(28, 20)
+(28, 8)
+(28, 16)
+(28, 5)
+(28, 1)
+(28, 14)
+(15, 0)
+(15, 28)
+(15, 15)
+(15, 19)
+(15, 2)
+(15, 22)
+(15, 6)
+(15, 12)
+(15, 17)
+(15, 10)
+(15, 9)
+(15, 11)
+(15, 21)
+(15, 18)
+(15, 27)
+(15, 13)
+(15, 4)
+(15, 7)
+(15, 25)
+(15, 23)
+(15, 24)
+(15, 3)
+(15, 26)
+(15, 20)
+(15, 8)
+(15, 16)
+(15, 5)
+(15, 1)
+(15, 14)
+(19, 0)
+(19, 28)
+(19, 15)
+(19, 19)
+(19, 2)
+(19, 22)
+(19, 6)
+(19, 12)
+(19, 17)
+(19, 10)
+(19, 9)
+(19, 11)
+(19, 21)
+(19, 18)
+(19, 27)
+(19, 13)
+(19, 4)
+(19, 7)
+(19, 25)
+(19, 23)
+(19, 24)
+(19, 3)
+(19, 26)
+(19, 20)
+(19, 8)
+(19, 16)
+(19, 5)
+(19, 1)
+(19, 14)
+(2, 0)
+(2, 28)
+(2, 15)
+(2, 19)
+(2, 2)
+(2, 22)
+(2, 6)
+(2, 12)
+(2, 17)
+(2, 10)
+(2, 9)
+(2, 11)
+(2, 21)
+(2, 18)
+(2, 27)
+(2, 13)
+(2, 4)
+(2, 7)
+(2, 25)
+(2, 23)
+(2, 24)
+(2, 3)
+(2, 26)
+(2, 20)
+(2, 8)
+(2, 16)
+(2, 5)
+(2, 1)
+(2, 14)
+(22, 0)
+(22, 28)
+(22, 15)
+(22, 19)
+(22, 2)
+(22, 22)
+(22, 6)
+(22, 12)
+(22, 17)
+(22, 10)
+(22, 9)
+(22, 11)
+(22, 21)
+(22, 18)
+(22, 27)
+(22, 13)
+(22, 4)
+(22, 7)
+(22, 25)
+(22, 23)
+(22, 24)
+(22, 3)
+(22, 26)
+(22, 20)
+(22, 8)
+(22, 16)
+(22, 5)
+(22, 1)
+(22, 14)
+(6, 0)
+(6, 28)
+(6, 15)
+(6, 19)
+(6, 2)
+(6, 22)
+(6, 6)
+(6, 12)
+(6, 17)
+(6, 10)
+(6, 9)
+(6, 11)
+(6, 21)
+(6, 18)
+(6, 27)
+(6, 13)
+(6, 4)
+(6, 7)
+(6, 25)
+(6, 23)
+(6, 24)
+(6, 3)
+(6, 26)
+(6, 20)
+(6, 8)
+(6, 16)
+(6, 5)
+(6, 1)
+(6, 14)
+(12, 0)
+(12, 28)
+(12, 15)
+(12, 19)
+(12, 2)
+(12, 22)
+(12, 6)
+(12, 12)
+(12, 17)
+(12, 10)
+(12, 9)
+(12, 11)
+(12, 21)
+(12, 18)
+(12, 27)
+(12, 13)
+(12, 4)
+(12, 7)
+(12, 25)
+(12, 23)
+(12, 24)
+(12, 3)
+(12, 26)
+(12, 20)
+(12, 8)
+(12, 16)
+(12, 5)
+(12, 1)
+(12, 14)
+(17, 0)
+(17, 28)
+(17, 15)
+(17, 19)
+(17, 2)
+(17, 22)
+(17, 6)
+(17, 12)
+(17, 17)
+(17, 10)
+(17, 9)
+(17, 11)
+(17, 21)
+(17, 18)
+(17, 27)
+(17, 13)
+(17, 4)
+(17, 7)
+(17, 25)
+(17, 23)
+(17, 24)
+(17, 3)
+(17, 26)
+(17, 20)
+(17, 8)
+(17, 16)
+(17, 5)
+(17, 1)
+(17, 14)
+(10, 0)
+(10, 28)
+(10, 15)
+(10, 19)
+(10, 2)
+(10, 22)
+(10, 6)
+(10, 12)
+(10, 17)
+(10, 10)
+(10, 9)
+(10, 11)
+(10, 21)
+(10, 18)
+(10, 27)
+(10, 13)
+(10, 4)
+(10, 7)
+(10, 25)
+(10, 23)
+(10, 24)
+(10, 3)
+(10, 26)
+(10, 20)
+(10, 8)
+(10, 16)
+(10, 5)
+(10, 1)
+(10, 14)
+(9, 0)
+(9, 28)
+(9, 15)
+(9, 19)
+(9, 2)
+(9, 22)
+(9, 6)
+(9, 12)
+(9, 17)
+(9, 10)
+(9, 9)
+(9, 11)
+(9, 21)
+(9, 18)
+(9, 27)
+(9, 13)
+(9, 4)
+(9, 7)
+(9, 25)
+(9, 23)
+(9, 24)
+(9, 3)
+(9, 26)
+(9, 20)
+(9, 8)
+(9, 16)
+(9, 5)
+(9, 1)
+(9, 14)
+(11, 0)
+(11, 28)
+(11, 15)
+(11, 19)
+(11, 2)
+(11, 22)
+(11, 6)
+(11, 12)
+(11, 17)
+(11, 10)
+(11, 9)
+(11, 11)
+(11, 21)
+(11, 18)
+(11, 27)
+(11, 13)
+(11, 4)
+(11, 7)
+(11, 25)
+(11, 23)
+(11, 24)
+(11, 3)
+(11, 26)
+(11, 20)
+(11, 8)
+(11, 16)
+(11, 5)
+(11, 1)
+(11, 14)
+(21, 0)
+(21, 28)
+(21, 15)
+(21, 19)
+(21, 2)
+(21, 22)
+(21, 6)
+(21, 12)
+(21, 17)
+(21, 10)
+(21, 9)
+(21, 11)
+(21, 21)
+(21, 18)
+(21, 27)
+(21, 13)
+(21, 4)
+(21, 7)
+(21, 25)
+(21, 23)
+(21, 24)
+(21, 3)
+(21, 26)
+(21, 20)
+(21, 8)
+(21, 16)
+(21, 5)
+(21, 1)
+(21, 14)
+(18, 0)
+(18, 28)
+(18, 15)
+(18, 19)
+(18, 2)
+(18, 22)
+(18, 6)
+(18, 12)
+(18, 17)
+(18, 10)
+(18, 9)
+(18, 11)
+(18, 21)
+(18, 18)
+(18, 27)
+(18, 13)
+(18, 4)
+(18, 7)
+(18, 25)
+(18, 23)
+(18, 24)
+(18, 3)
+(18, 26)
+(18, 20)
+(18, 8)
+(18, 16)
+(18, 5)
+(18, 1)
+(18, 14)
+(27, 0)
+(27, 28)
+(27, 15)
+(27, 19)
+(27, 2)
+(27, 22)
+(27, 6)
+(27, 12)
+(27, 17)
+(27, 10)
+(27, 9)
+(27, 11)
+(27, 21)
+(27, 18)
+(27, 27)
+(27, 13)
+(27, 4)
+(27, 7)
+(27, 25)
+(27, 23)
+(27, 24)
+(27, 3)
+(27, 26)
+(27, 20)
+(27, 8)
+(27, 16)
+(27, 5)
+(27, 1)
+(27, 14)
+(13, 0)
+(13, 28)
+(13, 15)
+(13, 19)
+(13, 2)
+(13, 22)
+(13, 6)
+(13, 12)
+(13, 17)
+(13, 10)
+(13, 9)
+(13, 11)
+(13, 21)
+(13, 18)
+(13, 27)
+(13, 13)
+(13, 4)
+(13, 7)
+(13, 25)
+(13, 23)
+(13, 24)
+(13, 3)
+(13, 26)
+(13, 20)
+(13, 8)
+(13, 16)
+(13, 5)
+(13, 1)
+(13, 14)
+(4, 0)
+(4, 28)
+(4, 15)
+(4, 19)
+(4, 2)
+(4, 22)
+(4, 6)
+(4, 12)
+(4, 17)
+(4, 10)
+(4, 9)
+(4, 11)
+(4, 21)
+(4, 18)
+(4, 27)
+(4, 13)
+(4, 4)
+(4, 7)
+(4, 25)
+(4, 23)
+(4, 24)
+(4, 3)
+(4, 26)
+(4, 20)
+(4, 8)
+(4, 16)
+(4, 5)
+(4, 1)
+(4, 14)
+(7, 0)
+(7, 28)
+(7, 15)
+(7, 19)
+(7, 2)
+(7, 22)
+(7, 6)
+(7, 12)
+(7, 17)
+(7, 10)
+(7, 9)
+(7, 11)
+(7, 21)
+(7, 18)
+(7, 27)
+(7, 13)
+(7, 4)
+(7, 7)
+(7, 25)
+(7, 23)
+(7, 24)
+(7, 3)
+(7, 26)
+(7, 20)
+(7, 8)
+(7, 16)
+(7, 5)
+(7, 1)
+(7, 14)
+(25, 0)
+(25, 28)
+(25, 15)
+(25, 19)
+(25, 2)
+(25, 22)
+(25, 6)
+(25, 12)
+(25, 17)
+(25, 10)
+(25, 9)
+(25, 11)
+(25, 21)
+(25, 18)
+(25, 27)
+(25, 13)
+(25, 4)
+(25, 7)
+(25, 25)
+(25, 23)
+(25, 24)
+(25, 3)
+(25, 26)
+(25, 20)
+(25, 8)
+(25, 16)
+(25, 5)
+(25, 1)
+(25, 14)
+(23, 0)
+(23, 28)
+(23, 15)
+(23, 19)
+(23, 2)
+(23, 22)
+(23, 6)
+(23, 12)
+(23, 17)
+(23, 10)
+(23, 9)
+(23, 11)
+(23, 21)
+(23, 18)
+(23, 27)
+(23, 13)
+(23, 4)
+(23, 7)
+(23, 25)
+(23, 23)
+(23, 24)
+(23, 3)
+(23, 26)
+(23, 20)
+(23, 8)
+(23, 16)
+(23, 5)
+(23, 1)
+(23, 14)
+(24, 0)
+(24, 28)
+(24, 15)
+(24, 19)
+(24, 2)
+(24, 22)
+(24, 6)
+(24, 12)
+(24, 17)
+(24, 10)
+(24, 9)
+(24, 11)
+(24, 21)
+(24, 18)
+(24, 27)
+(24, 13)
+(24, 4)
+(24, 7)
+(24, 25)
+(24, 23)
+(24, 24)
+(24, 3)
+(24, 26)
+(24, 20)
+(24, 8)
+(24, 16)
+(24, 5)
+(24, 1)
+(24, 14)
+(3, 0)
+(3, 28)
+(3, 15)
+(3, 19)
+(3, 2)
+(3, 22)
+(3, 6)
+(3, 12)
+(3, 17)
+(3, 10)
+(3, 9)
+(3, 11)
+(3, 21)
+(3, 18)
+(3, 27)
+(3, 13)
+(3, 4)
+(3, 7)
+(3, 25)
+(3, 23)
+(3, 24)
+(3, 3)
+(3, 26)
+(3, 20)
+(3, 8)
+(3, 16)
+(3, 5)
+(3, 1)
+(3, 14)
+(26, 0)
+(26, 28)
+(26, 15)
+(26, 19)
+(26, 2)
+(26, 22)
+(26, 6)
+(26, 12)
+(26, 17)
+(26, 10)
+(26, 9)
+(26, 11)
+(26, 21)
+(26, 18)
+(26, 27)
+(26, 13)
+(26, 4)
+(26, 7)
+(26, 25)
+(26, 23)
+(26, 24)
+(26, 3)
+(26, 26)
+(26, 20)
+(26, 8)
+(26, 16)
+(26, 5)
+(26, 1)
+(26, 14)
+(20, 0)
+(20, 28)
+(20, 15)
+(20, 19)
+(20, 2)
+(20, 22)
+(20, 6)
+(20, 12)
+(20, 17)
+(20, 10)
+(20, 9)
+(20, 11)
+(20, 21)
+(20, 18)
+(20, 27)
+(20, 13)
+(20, 4)
+(20, 7)
+(20, 25)
+(20, 23)
+(20, 24)
+(20, 3)
+(20, 26)
+(20, 20)
+(20, 8)
+(20, 16)
+(20, 5)
+(20, 1)
+(20, 14)
+(8, 0)
+(8, 28)
+(8, 15)
+(8, 19)
+(8, 2)
+(8, 22)
+(8, 6)
+(8, 12)
+(8, 17)
+(8, 10)
+(8, 9)
+(8, 11)
+(8, 21)
+(8, 18)
+(8, 27)
+(8, 13)
+(8, 4)
+(8, 7)
+(8, 25)
+(8, 23)
+(8, 24)
+(8, 3)
+(8, 26)
+(8, 20)
+(8, 8)
+(8, 16)
+(8, 5)
+(8, 1)
+(8, 14)
+(16, 0)
+(16, 28)
+(16, 15)
+(16, 19)
+(16, 2)
+(16, 22)
+(16, 6)
+(16, 12)
+(16, 17)
+(16, 10)
+(16, 9)
+(16, 11)
+(16, 21)
+(16, 18)
+(16, 27)
+(16, 13)
+(16, 4)
+(16, 7)
+(16, 25)
+(16, 23)
+(16, 24)
+(16, 3)
+(16, 26)
+(16, 20)
+(16, 8)
+(16, 16)
+(16, 5)
+(16, 1)
+(16, 14)
+(5, 0)
+(5, 28)
+(5, 15)
+(5, 19)
+(5, 2)
+(5, 22)
+(5, 6)
+(5, 12)
+(5, 17)
+(5, 10)
+(5, 9)
+(5, 11)
+(5, 21)
+(5, 18)
+(5, 27)
+(5, 13)
+(5, 4)
+(5, 7)
+(5, 25)
+(5, 23)
+(5, 24)
+(5, 3)
+(5, 26)
+(5, 20)
+(5, 8)
+(5, 16)
+(5, 5)
+(5, 1)
+(5, 14)
+(1, 0)
+(1, 28)
+(1, 15)
+(1, 19)
+(1, 2)
+(1, 22)
+(1, 6)
+(1, 12)
+(1, 17)
+(1, 10)
+(1, 9)
+(1, 11)
+(1, 21)
+(1, 18)
+(1, 27)
+(1, 13)
+(1, 4)
+(1, 7)
+(1, 25)
+(1, 23)
+(1, 24)
+(1, 3)
+(1, 26)
+(1, 20)
+(1, 8)
+(1, 16)
+(1, 5)
+(1, 1)
+(1, 14)
+(14, 0)
+(14, 28)
+(14, 15)
+(14, 19)
+(14, 2)
+(14, 22)
+(14, 6)
+(14, 12)
+(14, 17)
+(14, 10)
+(14, 9)
+(14, 11)
+(14, 21)
+(14, 18)
+(14, 27)
+(14, 13)
+(14, 4)
+(14, 7)
+(14, 25)
+(14, 23)
+(14, 24)
+(14, 3)
+(14, 26)
+(14, 20)
+(14, 8)
+(14, 16)
+(14, 5)
+(14, 1)
+(14, 14)
+(a) layer 1, head 1
+0.03
+0.02
+0.01
+0.00
+0.01
+0.02
+0.03
+1st principle component
+0.02
+0.01
+0.00
+0.01
+0.02
+0.03
+2nd principle component
+(0, 0)
+(0, 28)
+(0, 15)
+(0, 19)
+(0, 2)
+(0, 22)
+(0, 6)
+(0, 12)
+(0, 17)
+(0, 10)
+(0, 9)
+(0, 11)
+(0, 21)
+(0, 18)
+(0, 27)
+(0, 13)
+(0, 4)
+(0, 7)
+(0, 25)
+(0, 23)
+(0, 24)
+(0, 3)
+(0, 26)
+(0, 20)
+(0, 8)
+(0, 16)
+(0, 5)
+(0, 1)
+(0, 14)
+(28, 0)
+(28, 28)
+(28, 15)
+(28, 19)
+(28, 2)
+(28, 22)
+(28, 6)
+(28, 12)
+(28, 17)
+(28, 10)
+(28, 9)
+(28, 11)
+(28, 21)
+(28, 18)
+(28, 27)
+(28, 13)
+(28, 4)
+(28, 7)
+(28, 25)
+(28, 23)
+(28, 24)
+(28, 3)
+(28, 26)
+(28, 20)
+(28, 8)
+(28, 16)
+(28, 5)
+(28, 1)
+(28, 14)
+(15, 0)
+(15, 28)
+(15, 15)
+(15, 19)
+(15, 2)
+(15, 22)
+(15, 6)
+(15, 12)
+(15, 17)
+(15, 10)
+(15, 9)
+(15, 11)
+(15, 21)
+(15, 18)
+(15, 27)
+(15, 13)
+(15, 4)
+(15, 7)
+(15, 25)
+(15, 23)
+(15, 24)
+(15, 3)
+(15, 26)
+(15, 20)
+(15, 8)
+(15, 16)
+(15, 5)
+(15, 1)
+(15, 14)
+(19, 0)
+(19, 28)
+(19, 15)
+(19, 19)
+(19, 2)
+(19, 22)
+(19, 6)
+(19, 12)
+(19, 17)
+(19, 10)
+(19, 9)
+(19, 11)
+(19, 21)
+(19, 18)
+(19, 27)
+(19, 13)
+(19, 4)
+(19, 7)
+(19, 25)
+(19, 23)
+(19, 24)
+(19, 3)
+(19, 26)
+(19, 20)
+(19, 8)
+(19, 16)
+(19, 5)
+(19, 1)
+(19, 14)
+(2, 0)
+(2, 28)
+(2, 15)
+(2, 19)
+(2, 2)
+(2, 22)
+(2, 6)
+(2, 12)
+(2, 17)
+(2, 10)
+(2, 9)
+(2, 11)
+(2, 21)
+(2, 18)
+(2, 27)
+(2, 13)
+(2, 4)
+(2, 7)
+(2, 25)
+(2, 23)
+(2, 24)
+(2, 3)
+(2, 26)
+(2, 20)
+(2, 8)
+(2, 16)
+(2, 5)
+(2, 1)
+(2, 14)
+(22, 0)
+(22, 28)
+(22, 15)
+(22, 19)
+(22, 2)
+(22, 22)
+(22, 6)
+(22, 12)
+(22, 17)
+(22, 10)
+(22, 9)
+(22, 11)
+(22, 21)
+(22, 18)
+(22, 27)
+(22, 13)
+(22, 4)
+(22, 7)
+(22, 25)
+(22, 23)
+(22, 24)
+(22, 3)
+(22, 26)
+(22, 20)
+(22, 8)
+(22, 16)
+(22, 5)
+(22, 1)
+(22, 14)
+(6, 0)
+(6, 28)
+(6, 15)
+(6, 19)
+(6, 2)
+(6, 22)
+(6, 6)
+(6, 12)
+(6, 17)
+(6, 10)
+(6, 9)
+(6, 11)
+(6, 21)
+(6, 18)
+(6, 27)
+(6, 13)
+(6, 4)
+(6, 7)
+(6, 25)
+(6, 23)
+(6, 24)
+(6, 3)
+(6, 26)
+(6, 20)
+(6, 8)
+(6, 16)
+(6, 5)
+(6, 1)
+(6, 14)
+(12, 0)
+(12, 28)
+(12, 15)
+(12, 19)
+(12, 2)
+(12, 22)
+(12, 6)
+(12, 12)
+(12, 17)
+(12, 10)
+(12, 9)
+(12, 11)
+(12, 21)
+(12, 18)
+(12, 27)
+(12, 13)
+(12, 4)
+(12, 7)
+(12, 25)
+(12, 23)
+(12, 24)
+(12, 3)
+(12, 26)
+(12, 20)
+(12, 8)
+(12, 16)
+(12, 5)
+(12, 1)
+(12, 14)
+(17, 0)
+(17, 28)
+(17, 15)
+(17, 19)
+(17, 2)
+(17, 22)
+(17, 6)
+(17, 12)
+(17, 17)
+(17, 10)
+(17, 9)
+(17, 11)
+(17, 21)
+(17, 18)
+(17, 27)
+(17, 13)
+(17, 4)
+(17, 7)
+(17, 25)
+(17, 23)
+(17, 24)
+(17, 3)
+(17, 26)
+(17, 20)
+(17, 8)
+(17, 16)
+(17, 5)
+(17, 1)
+(17, 14)
+(10, 0)
+(10, 28)
+(10, 15)
+(10, 19)
+(10, 2)
+(10, 22)
+(10, 6)
+(10, 12)
+(10, 17)
+(10, 10)
+(10, 9)
+(10, 11)
+(10, 21)
+(10, 18)
+(10, 27)
+(10, 13)
+(10, 4)
+(10, 7)
+(10, 25)
+(10, 23)
+(10, 24)
+(10, 3)
+(10, 26)
+(10, 20)
+(10, 8)
+(10, 16)
+(10, 5)
+(10, 1)
+(10, 14)
+(9, 0)
+(9, 28)
+(9, 15)
+(9, 19)
+(9, 2)
+(9, 22)
+(9, 6)
+(9, 12)
+(9, 17)
+(9, 10)
+(9, 9)
+(9, 11)
+(9, 21)
+(9, 18)
+(9, 27)
+(9, 13)
+(9, 4)
+(9, 7)
+(9, 25)
+(9, 23)
+(9, 24)
+(9, 3)
+(9, 26)
+(9, 20)
+(9, 8)
+(9, 16)
+(9, 5)
+(9, 1)
+(9, 14)
+(11, 0)
+(11, 28)
+(11, 15)
+(11, 19)
+(11, 2)
+(11, 22)
+(11, 6)
+(11, 12)
+(11, 17)
+(11, 10)
+(11, 9)
+(11, 11)
+(11, 21)
+(11, 18)
+(11, 27)
+(11, 13)
+(11, 4)
+(11, 7)
+(11, 25)
+(11, 23)
+(11, 24)
+(11, 3)
+(11, 26)
+(11, 20)
+(11, 8)
+(11, 16)
+(11, 5)
+(11, 1)
+(11, 14)
+(21, 0)
+(21, 28)
+(21, 15)
+(21, 19)
+(21, 2)
+(21, 22)
+(21, 6)
+(21, 12)
+(21, 17)
+(21, 10)
+(21, 9)
+(21, 11)
+(21, 21)
+(21, 18)
+(21, 27)
+(21, 13)
+(21, 4)
+(21, 7)
+(21, 25)
+(21, 23)
+(21, 24)
+(21, 3)
+(21, 26)
+(21, 20)
+(21, 8)
+(21, 16)
+(21, 5)
+(21, 1)
+(21, 14)
+(18, 0)
+(18, 28)
+(18, 15)
+(18, 19)
+(18, 2)
+(18, 22)
+(18, 6)
+(18, 12)
+(18, 17)
+(18, 10)
+(18, 9)
+(18, 11)
+(18, 21)
+(18, 18)
+(18, 27)
+(18, 13)
+(18, 4)
+(18, 7)
+(18, 25)
+(18, 23)
+(18, 24)
+(18, 3)
+(18, 26)
+(18, 20)
+(18, 8)
+(18, 16)
+(18, 5)
+(18, 1)
+(18, 14)
+(27, 0)
+(27, 28)
+(27, 15)
+(27, 19)
+(27, 2)
+(27, 22)
+(27, 6)
+(27, 12)
+(27, 17)
+(27, 10)
+(27, 9)
+(27, 11)
+(27, 21)
+(27, 18)
+(27, 27)
+(27, 13)
+(27, 4)
+(27, 7)
+(27, 25)
+(27, 23)
+(27, 24)
+(27, 3)
+(27, 26)
+(27, 20)
+(27, 8)
+(27, 16)
+(27, 5)
+(27, 1)
+(27, 14)
+(13, 0)
+(13, 28)
+(13, 15)
+(13, 19)
+(13, 2)
+(13, 22)
+(13, 6)
+(13, 12)
+(13, 17)
+(13, 10)
+(13, 9)
+(13, 11)
+(13, 21)
+(13, 18)
+(13, 27)
+(13, 13)
+(13, 4)
+(13, 7)
+(13, 25)
+(13, 23)
+(13, 24)
+(13, 3)
+(13, 26)
+(13, 20)
+(13, 8)
+(13, 16)
+(13, 5)
+(13, 1)
+(13, 14)
+(4, 0)
+(4, 28)
+(4, 15)
+(4, 19)
+(4, 2)
+(4, 22)
+(4, 6)
+(4, 12)
+(4, 17)
+(4, 10)
+(4, 9)
+(4, 11)
+(4, 21)
+(4, 18)
+(4, 27)
+(4, 13)
+(4, 4)
+(4, 7)
+(4, 25)
+(4, 23)
+(4, 24)
+(4, 3)
+(4, 26)
+(4, 20)
+(4, 8)
+(4, 16)
+(4, 5)
+(4, 1)
+(4, 14)
+(7, 0)
+(7, 28)
+(7, 15)
+(7, 19)
+(7, 2)
+(7, 22)
+(7, 6)
+(7, 12)
+(7, 17)
+(7, 10)
+(7, 9)
+(7, 11)
+(7, 21)
+(7, 18)
+(7, 27)
+(7, 13)
+(7, 4)
+(7, 7)
+(7, 25)
+(7, 23)
+(7, 24)
+(7, 3)
+(7, 26)
+(7, 20)
+(7, 8)
+(7, 16)
+(7, 5)
+(7, 1)
+(7, 14)
+(25, 0)
+(25, 28)
+(25, 15)
+(25, 19)
+(25, 2)
+(25, 22)
+(25, 6)
+(25, 12)
+(25, 17)
+(25, 10)
+(25, 9)
+(25, 11)
+(25, 21)
+(25, 18)
+(25, 27)
+(25, 13)
+(25, 4)
+(25, 7)
+(25, 25)
+(25, 23)
+(25, 24)
+(25, 3)
+(25, 26)
+(25, 20)
+(25, 8)
+(25, 16)
+(25, 5)
+(25, 1)
+(25, 14)
+(23, 0)
+(23, 28)
+(23, 15)
+(23, 19)
+(23, 2)
+(23, 22)
+(23, 6)
+(23, 12)
+(23, 17)
+(23, 10)
+(23, 9)
+(23, 11)
+(23, 21)
+(23, 18)
+(23, 27)
+(23, 13)
+(23, 4)
+(23, 7)
+(23, 25)
+(23, 23)
+(23, 24)
+(23, 3)
+(23, 26)
+(23, 20)
+(23, 8)
+(23, 16)
+(23, 5)
+(23, 1)
+(23, 14)
+(24, 0)
+(24, 28)
+(24, 15)
+(24, 19)
+(24, 2)
+(24, 22)
+(24, 6)
+(24, 12)
+(24, 17)
+(24, 10)
+(24, 9)
+(24, 11)
+(24, 21)
+(24, 18)
+(24, 27)
+(24, 13)
+(24, 4)
+(24, 7)
+(24, 25)
+(24, 23)
+(24, 24)
+(24, 3)
+(24, 26)
+(24, 20)
+(24, 8)
+(24, 16)
+(24, 5)
+(24, 1)
+(24, 14)
+(3, 0)
+(3, 28)
+(3, 15)
+(3, 19)
+(3, 2)
+(3, 22)
+(3, 6)
+(3, 12)
+(3, 17)
+(3, 10)
+(3, 9)
+(3, 11)
+(3, 21)
+(3, 18)
+(3, 27)
+(3, 13)
+(3, 4)
+(3, 7)
+(3, 25)
+(3, 23)
+(3, 24)
+(3, 3)
+(3, 26)
+(3, 20)
+(3, 8)
+(3, 16)
+(3, 5)
+(3, 1)
+(3, 14)
+(26, 0)
+(26, 28)
+(26, 15)
+(26, 19)
+(26, 2)
+(26, 22)
+(26, 6)
+(26, 12)
+(26, 17)
+(26, 10)
+(26, 9)
+(26, 11)
+(26, 21)
+(26, 18)
+(26, 27)
+(26, 13)
+(26, 4)
+(26, 7)
+(26, 25)
+(26, 23)
+(26, 24)
+(26, 3)
+(26, 26)
+(26, 20)
+(26, 8)
+(26, 16)
+(26, 5)
+(26, 1)
+(26, 14)
+(20, 0)
+(20, 28)
+(20, 15)
+(20, 19)
+(20, 2)
+(20, 22)
+(20, 6)
+(20, 12)
+(20, 17)
+(20, 10)
+(20, 9)
+(20, 11)
+(20, 21)
+(20, 18)
+(20, 27)
+(20, 13)
+(20, 4)
+(20, 7)
+(20, 25)
+(20, 23)
+(20, 24)
+(20, 3)
+(20, 26)
+(20, 20)
+(20, 8)
+(20, 16)
+(20, 5)
+(20, 1)
+(20, 14)
+(8, 0)
+(8, 28)
+(8, 15)
+(8, 19)
+(8, 2)
+(8, 22)
+(8, 6)
+(8, 12)
+(8, 17)
+(8, 10)
+(8, 9)
+(8, 11)
+(8, 21)
+(8, 18)
+(8, 27)
+(8, 13)
+(8, 4)
+(8, 7)
+(8, 25)
+(8, 23)
+(8, 24)
+(8, 3)
+(8, 26)
+(8, 20)
+(8, 8)
+(8, 16)
+(8, 5)
+(8, 1)
+(8, 14)
+(16, 0)
+(16, 28)
+(16, 15)
+(16, 19)
+(16, 2)
+(16, 22)
+(16, 6)
+(16, 12)
+(16, 17)
+(16, 10)
+(16, 9)
+(16, 11)
+(16, 21)
+(16, 18)
+(16, 27)
+(16, 13)
+(16, 4)
+(16, 7)
+(16, 25)
+(16, 23)
+(16, 24)
+(16, 3)
+(16, 26)
+(16, 20)
+(16, 8)
+(16, 16)
+(16, 5)
+(16, 1)
+(16, 14)
+(5, 0)
+(5, 28)
+(5, 15)
+(5, 19)
+(5, 2)
+(5, 22)
+(5, 6)
+(5, 12)
+(5, 17)
+(5, 10)
+(5, 9)
+(5, 11)
+(5, 21)
+(5, 18)
+(5, 27)
+(5, 13)
+(5, 4)
+(5, 7)
+(5, 25)
+(5, 23)
+(5, 24)
+(5, 3)
+(5, 26)
+(5, 20)
+(5, 8)
+(5, 16)
+(5, 5)
+(5, 1)
+(5, 14)
+(1, 0)
+(1, 28)
+(1, 15)
+(1, 19)
+(1, 2)
+(1, 22)
+(1, 6)
+(1, 12)
+(1, 17)
+(1, 10)
+(1, 9)
+(1, 11)
+(1, 21)
+(1, 18)
+(1, 27)
+(1, 13)
+(1, 4)
+(1, 7)
+(1, 25)
+(1, 23)
+(1, 24)
+(1, 3)
+(1, 26)
+(1, 20)
+(1, 8)
+(1, 16)
+(1, 5)
+(1, 1)
+(1, 14)
+(14, 0)
+(14, 28)
+(14, 15)
+(14, 19)
+(14, 2)
+(14, 22)
+(14, 6)
+(14, 12)
+(14, 17)
+(14, 10)
+(14, 9)
+(14, 11)
+(14, 21)
+(14, 18)
+(14, 27)
+(14, 13)
+(14, 4)
+(14, 7)
+(14, 25)
+(14, 23)
+(14, 24)
+(14, 3)
+(14, 26)
+(14, 20)
+(14, 8)
+(14, 16)
+(14, 5)
+(14, 1)
+(14, 14)
+(b) layer 1, head 2
+0.06 0.04 0.02 0.00 0.02 0.04 0.06 0.08
+1st principle component
+0.06
+0.04
+0.02
+0.00
+0.02
+0.04
+0.06
+0.08
+2nd principle component
+(0, 0)
+(0, 28)
+(0, 15)
+(0, 19)
+(0, 2)
+(0, 22)
+(0, 6)
+(0, 12)
+(0, 17)
+(0, 10)
+(0, 9)
+(0, 11)
+(0, 21)
+(0, 18)
+(0, 27)
+(0, 13)
+(0, 4)
+(0, 7)
+(0, 25)
+(0, 23)
+(0, 24)
+(0, 3)
+(0, 26)
+(0, 20)
+(0, 8)
+(0, 16)
+(0, 5)
+(0, 1)
+(0, 14)
+(28, 0)
+(28, 28)
+(28, 15)
+(28, 19)
+(28, 2)
+(28, 22)
+(28, 6)
+(28, 12)
+(28, 17)
+(28, 10)
+(28, 9)
+(28, 11)
+(28, 21)
+(28, 18)
+(28, 27)
+(28, 13)
+(28, 4)
+(28, 7)
+(28, 25)
+(28, 23)
+(28, 24)
+(28, 3)
+(28, 26)
+(28, 20)
+(28, 8)
+(28, 16)
+(28, 5)
+(28, 1)
+(28, 14)
+(15, 0)
+(15, 28)
+(15, 15)
+(15, 19)
+(15, 2)
+(15, 22)
+(15, 6)
+(15, 12)
+(15, 17)
+(15, 10)
+(15, 9)
+(15, 11)
+(15, 21)
+(15, 18)
+(15, 27)
+(15, 13)
+(15, 4)
+(15, 7)
+(15, 25)
+(15, 23)
+(15, 24) (15, 3)
+(15, 26)
+(15, 20)
+(15, 8)
+(15, 16)
+(15, 5)
+(15, 1)
+(15, 14)
+(19, 0)
+(19, 28)
+(19, 15)
+(19, 19)
+(19, 2)
+(19, 22)
+(19, 6)
+(19, 12)
+(19, 17)
+(19, 10)
+(19, 9)
+(19, 11)
+(19, 21)
+(19, 18)
+(19, 27)
+(19, 13)
+(19, 4)
+(19, 7)
+(19, 25)
+(19, 23)
+(19, 24) (19, 3)
+(19, 26)
+(19, 20)
+(19, 8)
+(19, 16)
+(19, 5)
+(19, 1)
+(19, 14)
+(2, 0)
+(2, 28)
+(2, 15)
+(2, 19)
+(2, 2)
+(2, 22)
+(2, 6)
+(2, 12)
+(2, 17)
+(2, 10)
+(2, 9)
+(2, 11)
+(2, 21)
+(2, 18)
+(2, 27)
+(2, 13)
+(2, 4)
+(2, 7)
+(2, 25)
+(2, 23)
+(2, 24)
+(2, 3)
+(2, 26)
+(2, 20)
+(2, 8)
+(2, 16)
+(2, 5)
+(2, 1)
+(2, 14)
+(22, 0)
+(22, 28)
+(22, 15)
+(22, 19)
+(22, 2)
+(22, 22)
+(22, 6)
+(22, 12)
+(22, 17)
+(22, 10)
+(22, 9)
+(22, 11)
+(22, 21)
+(22, 18)
+(22, 27)
+(22, 13)
+(22, 4)
+(22, 7)
+(22, 25)
+(22, 23)
+(22, 24) (22, 3)
+(22, 26)
+(22, 20)
+(22, 8)
+(22, 16)
+(22, 5)
+(22, 1)
+(22, 14)
+(6, 0)
+(6, 28)
+(6, 15)
+(6, 19)
+(6, 2)
+(6, 22)
+(6, 6)
+(6, 12)
+(6, 17)
+(6, 10)
+(6, 9)
+(6, 11)
+(6, 21)
+(6, 18)
+(6, 27)
+(6, 13)
+(6, 4)
+(6, 7)
+(6, 25)
+(6, 23)
+(6, 24)
+(6, 3)
+(6, 26)
+(6, 20)
+(6, 8)
+(6, 16)
+(6, 5)
+(6, 1)
+(6, 14)
+(12, 0)
+(12, 28)
+(12, 15)
+(12, 19)
+(12, 2)
+(12, 22)
+(12, 6)
+(12, 12)
+(12, 17)
+(12, 10)
+(12, 9)
+(12, 11)
+(12, 21)
+(12, 18)
+(12, 27)
+(12, 13)
+(12, 4)
+(12, 7)
+(12, 25)
+(12, 23)
+(12, 24)
+(12, 3)
+(12, 26)
+(12, 20)
+(12, 8)
+(12, 16)
+(12, 5)
+(12, 1)
+(12, 14)
+(17, 0)
+(17, 28)
+(17, 15)
+(17, 19)
+(17, 2)
+(17, 22)
+(17, 6)
+(17, 12)
+(17, 17)
+(17, 10)
+(17, 9)
+(17, 11)
+(17, 21)
+(17, 18)
+(17, 27)
+(17, 13)
+(17, 4)
+(17, 7)
+(17, 25)
+(17, 23)
+(17, 24) (17, 3)
+(17, 26)
+(17, 20)
+(17, 8)
+(17, 16)
+(17, 5)
+(17, 1)
+(17, 14)
+(10, 0)
+(10, 28)
+(10, 15)
+(10, 19)
+(10, 2)
+(10, 22)
+(10, 6)
+(10, 12)
+(10, 17)
+(10, 10)
+(10, 9)
+(10, 11)
+(10, 21)
+(10, 18)
+(10, 27)
+(10, 13)
+(10, 4)
+(10, 7)
+(10, 25)
+(10, 23)
+(10, 24)
+(10, 3)
+(10, 26)
+(10, 20)
+(10, 8)
+(10, 16)
+(10, 5)
+(10, 1)
+(10, 14)
+(9, 0)
+(9, 28)
+(9, 15)
+(9, 19)
+(9, 2)
+(9, 22)
+(9, 6)
+(9, 12)
+(9, 17)
+(9, 10)
+(9, 9)
+(9, 11)
+(9, 21)
+(9, 18)
+(9, 27)
+(9, 13)
+(9, 4)
+(9, 7)
+(9, 25)
+(9, 23)
+(9, 24)
+(9, 3)
+(9, 26)
+(9, 20)
+(9, 8)
+(9, 16)
+(9, 5)
+(9, 1)
+(9, 14)
+(11, 0)
+(11, 28)
+(11, 15)
+(11, 19)
+(11, 2)
+(11, 22)
+(11, 6)
+(11, 12)
+(11, 17)
+(11, 10)
+(11, 9)
+(11, 11)
+(11, 21)
+(11, 18)
+(11, 27)
+(11, 13)
+(11, 4)
+(11, 7)
+(11, 25)
+(11, 23)
+(11, 24) (11, 3)
+(11, 26)
+(11, 20)
+(11, 8)
+(11, 16)
+(11, 5)
+(11, 1)
+(11, 14)
+(21, 0)
+(21, 28)
+(21, 15)
+(21, 19)
+(21, 2)
+(21, 22)
+(21, 6)
+(21, 12)
+(21, 17)
+(21, 10)
+(21, 9)
+(21, 11)
+(21, 21)
+(21, 18)
+(21, 27)
+(21, 13)
+(21, 4)
+(21, 7)
+(21, 25)
+(21, 23)
+(21, 24)
+(21, 3)
+(21, 26)
+(21, 20)
+(21, 8)
+(21, 16)
+(21, 5)
+(21, 1)
+(21, 14)
+(18, 0)
+(18, 28)
+(18, 15)
+(18, 19)
+(18, 2)
+(18, 22)
+(18, 6)
+(18, 12)
+(18, 17)
+(18, 10)
+(18, 9)
+(18, 11)
+(18, 21)
+(18, 18)
+(18, 27)
+(18, 13)
+(18, 4)
+(18, 7)
+(18, 25)
+(18, 23)
+(18, 24)
+(18, 3)
+(18, 26)
+(18, 20)
+(18, 8)
+(18, 16)
+(18, 5)
+(18, 1)
+(18, 14)
+(27, 0)
+(27, 28)
+(27, 15)
+(27, 19)
+(27, 2)
+(27, 22)
+(27, 6)
+(27, 12)
+(27, 17)
+(27, 10)
+(27, 9)
+(27, 11)
+(27, 21)
+(27, 18)
+(27, 27)
+(27, 13)
+(27, 4)
+(27, 7)
+(27, 25)
+(27, 23)
+(27, 24)
+(27, 3)
+(27, 26)
+(27, 20)
+(27, 8)
+(27, 16)
+(27, 5)
+(27, 1)
+(27, 14)
+(13, 0)
+(13, 28)
+(13, 15)
+(13, 19)
+(13, 2)
+(13, 22)
+(13, 6)
+(13, 12)
+(13, 17)
+(13, 10)
+(13, 9)
+(13, 11)
+(13, 21)
+(13, 18)
+(13, 27)
+(13, 13)
+(13, 4)
+(13, 7)
+(13, 25)
+(13, 23)
+(13, 24)
+(13, 3)
+(13, 26)
+(13, 20)
+(13, 8)
+(13, 16)
+(13, 5)
+(13, 1)
+(13, 14)
+(4, 0)
+(4, 28)
+(4, 15)
+(4, 19)
+(4, 2)
+(4, 22)
+(4, 6)
+(4, 12)
+(4, 17)
+(4, 10)
+(4, 9)
+(4, 11)
+(4, 21)
+(4, 18)
+(4, 27)
+(4, 13)
+(4, 4)
+(4, 7)
+(4, 25)
+(4, 23)
+(4, 24)
+(4, 3)
+(4, 26)
+(4, 20)
+(4, 8)
+(4, 16)
+(4, 5)
+(4, 1)
+(4, 14)
+(7, 0)
+(7, 28)
+(7, 15)
+(7, 19)
+(7, 2)
+(7, 22)
+(7, 6)
+(7, 12)
+(7, 17)
+(7, 10)
+(7, 9)
+(7, 11)
+(7, 21)
+(7, 18)
+(7, 27)
+(7, 13)
+(7, 4)
+(7, 7)
+(7, 25)
+(7, 23)
+(7, 24)
+(7, 3)
+(7, 26)
+(7, 20)
+(7, 8)
+(7, 16)
+(7, 5)
+(7, 1)
+(7, 14)
+(25, 0)
+(25, 28)
+(25, 15)
+(25, 19)
+(25, 2)
+(25, 22)
+(25, 6)
+(25, 12)
+(25, 17)
+(25, 10)
+(25, 9)
+(25, 11)
+(25, 21)
+(25, 18)
+(25, 27)
+(25, 13)
+(25, 4)
+(25, 7)
+(25, 25)
+(25, 23)
+(25, 24)
+(25, 3)
+(25, 26)
+(25, 20)
+(25, 8)
+(25, 16)
+(25, 5)
+(25, 1)
+(25, 14)
+(23, 0)
+(23, 28)
+(23, 15)
+(23, 19)
+(23, 2)
+(23, 22)
+(23, 6)
+(23, 12)
+(23, 17)
+(23, 10)
+(23, 9)
+(23, 11)
+(23, 21)
+(23, 18)
+(23, 27)
+(23, 13)
+(23, 4)
+(23, 7)
+(23, 25)
+(23, 23)
+(23, 24) (23, 3)
+(23, 26)
+(23, 20)
+(23, 8)
+(23, 16)
+(23, 5)
+(23, 1)
+(23, 14)
+(24, 0)
+(24, 28)
+(24, 15)
+(24, 19)
+(24, 2)
+(24, 22)
+(24, 6)
+(24, 12)
+(24, 17)
+(24, 10)
+(24, 9)
+(24, 11)
+(24, 21)
+(24, 18)
+(24, 27)
+(24, 13)
+(24, 4)
+(24, 7)
+(24, 25)
+(24, 23)
+(24, 24) (24, 3)
+(24, 26)
+(24, 20)
+(24, 8)
+(24, 16)
+(24, 5)
+(24, 1)
+(24, 14)
+(3, 0)
+(3, 28)
+(3, 15)
+(3, 19)
+(3, 2)
+(3, 22)
+(3, 6)
+(3, 12)
+(3, 17)
+(3, 10)
+(3, 9)
+(3, 11)
+(3, 21)
+(3, 18)
+(3, 27)
+(3, 13)
+(3, 4)
+(3, 7)
+(3, 25)
+(3, 23)
+(3, 24)
+(3, 3)
+(3, 26)
+(3, 20)
+(3, 8)
+(3, 16)
+(3, 5)
+(3, 1)
+(3, 14)
+(26, 0)
+(26, 28)
+(26, 15)
+(26, 19)
+(26, 2)
+(26, 22)
+(26, 6)
+(26, 12)
+(26, 17)
+(26, 10)
+(26, 9)
+(26, 11)
+(26, 21)
+(26, 18)
+(26, 27)
+(26, 13)
+(26, 4)
+(26, 7)
+(26, 25)
+(26, 23)
+(26, 24)
+(26, 3)
+(26, 26)
+(26, 20)
+(26, 8)
+(26, 16)
+(26, 5)
+(26, 1)
+(26, 14)
+(20, 0)
+(20, 28)
+(20, 15)
+(20, 19)
+(20, 2)
+(20, 22)
+(20, 6)
+(20, 12)
+(20, 17)
+(20, 10)
+(20, 9)
+(20, 11)
+(20, 21)
+(20, 18)
+(20, 27)
+(20, 13)
+(20, 4)
+(20, 7)
+(20, 25)
+(20, 23)
+(20, 24) (20, 3)
+(20, 26)
+(20, 20)
+(20, 8)
+(20, 16)
+(20, 5)
+(20, 1)
+(20, 14)
+(8, 0)
+(8, 28)
+(8, 15)
+(8, 19)
+(8, 2)
+(8, 22)
+(8, 6)
+(8, 12)
+(8, 17)
+(8, 10)
+(8, 9)
+(8, 11)
+(8, 21)
+(8, 18)
+(8, 27)
+(8, 13)
+(8, 4)
+(8, 7)
+(8, 25)
+(8, 23)
+(8, 24)
+(8, 3)
+(8, 26)
+(8, 20)
+(8, 8)
+(8, 16)
+(8, 5)
+(8, 1)
+(8, 14)
+(16, 0)
+(16, 28)
+(16, 15)
+(16, 19)
+(16, 2)
+(16, 22)
+(16, 6)
+(16, 12)
+(16, 17)
+(16, 10)
+(16, 9)
+(16, 11)
+(16, 21)
+(16, 18)
+(16, 27)
+(16, 13)
+(16, 4)
+(16, 7)
+(16, 25)
+(16, 23)
+(16, 24) (16, 3)
+(16, 26)
+(16, 20)
+(16, 8)
+(16, 16)
+(16, 5)
+(16, 1)
+(16, 14)
+(5, 0)
+(5, 28)
+(5, 15)
+(5, 19)
+(5, 2)
+(5, 22)
+(5, 6)
+(5, 12)
+(5, 17)
+(5, 10)
+(5, 9)
+(5, 11)
+(5, 21)
+(5, 18)
+(5, 27)
+(5, 13)
+(5, 4)
+(5, 7)
+(5, 25)
+(5, 23)
+(5, 24)
+(5, 3)
+(5, 26)
+(5, 20)
+(5, 8)
+(5, 16)
+(5, 5)
+(5, 1)
+(5, 14)
+(1, 0)
+(1, 28)
+(1, 15)
+(1, 19)
+(1, 2)
+(1, 22)
+(1, 6)
+(1, 12)
+(1, 17)
+(1, 10)
+(1, 9)
+(1, 11)
+(1, 21)
+(1, 18)
+(1, 27)
+(1, 13)
+(1, 4)
+(1, 7)
+(1, 25)
+(1, 23)
+(1, 24)
+(1, 3)
+(1, 26)
+(1, 20)
+(1, 8)
+(1, 16)
+(1, 5)
+(1, 1)
+(1, 14)
+(14, 0)
+(14, 28)
+(14, 15)
+(14, 19)
+(14, 2)
+(14, 22)
+(14, 6)
+(14, 12)
+(14, 17)
+(14, 10)
+(14, 9)
+(14, 11)
+(14, 21)
+(14, 18)
+(14, 27)
+(14, 13)
+(14, 4)
+(14, 7)
+(14, 25)
+(14, 23)
+(14, 24) (14, 3)
+(14, 26)
+(14, 20)
+(14, 8)
+(14, 16)
+(14, 5)
+(14, 1)
+(14, 14)
+(c) layer 1, head 3
+0.04
+0.02
+0.00
+0.02
+0.04
+0.06
+1st principle component
+0.04
+0.02
+0.00
+0.02
+0.04
+0.06
+2nd principle component
+(0, 0)
+(0, 6)(0, 21)
+(0, 25)
+(0, 8)
+(0, 28)
+(0, 12)
+(0, 18)
+(0, 23)
+(0, 16)
+(0, 15)
+(0, 17)
+(0, 27)
+(0, 24)
+(0, 5)
+(0, 19)
+(0, 10)
+(0, 13)
+(0, 3)
+(0, 1)
+(0, 2)
+(0, 9)
+(0, 4)
+(0, 26)
+(0, 14)
+(0, 22)
+(0, 11)
+(0, 7)
+(0, 20)
+(28, 6)
+(28, 21)
+(28, 25)
+(28, 8)
+(28, 28)
+(28, 12)
+(28, 18)
+(28, 23)
+(28, 16)
+(28, 15)
+(28, 17)
+(28, 27)
+(28, 24)
+(28, 5)
+(28, 19)
+(28, 10)
+(28, 13)
+(28, 3)
+(28, 1)
+(28, 2)
+(28, 9)
+(28, 4)
+(28, 26)
+(28, 14)
+(28, 22)
+(28, 11)
+(28, 7)
+(28, 20)
+(28, 0)
+(15, 21)
+(15, 25)
+(15, 8)
+(15, 28)
+(15, 12)
+(15, 18)
+(15, 23)
+(15, 16)
+(15, 15)
+(15, 17)
+(15, 27)
+(15, 24)
+(15, 5)
+(15, 19)
+(15, 10)
+(15, 13)
+(15, 3)
+(15, 1)
+(15, 2)
+(15, 9)
+(15, 4)
+(15, 26)
+(15, 14)
+(15, 22)
+(15, 11)
+(15, 7)
+(15, 20)
+(15, 0)
+(15, 6)
+(19, 25)
+(19, 8) (19, 28)
+(19, 12)
+(19, 18)
+(19, 23)
+(19, 16)
+(19, 15)
+(19, 17)
+(19, 27)
+(19, 24)
+(19, 5)
+(19, 19)
+(19, 10)
+(19, 13)
+(19, 3)
+(19, 1)
+(19, 2)
+(19, 9)
+(19, 4)
+(19, 26)
+(19, 14)
+(19, 22)
+(19, 11)
+(19, 7)
+(19, 20)
+(19, 0)
+(19, 6)
+(19, 21)
+(2, 8)
+(2, 28)
+(2, 12)
+(2, 18)
+(2, 23)
+(2, 16)
+(2, 15)
+(2, 17)
+(2, 27)
+(2, 24)
+(2, 5)
+(2, 19)
+(2, 10)
+(2, 13)
+(2, 3)
+(2, 1)
+(2, 2)
+(2, 9)
+(2, 4)
+(2, 26)
+(2, 14)
+(2, 22)
+(2, 11)
+(2, 7)
+(2, 20)
+(2, 0)
+(2, 6)
+(2, 21)(2, 25)
+(22, 28)
+(22, 12)
+(22, 18)
+(22, 23)
+(22, 16)
+(22, 15)
+(22, 17)
+(22, 27)
+(22, 24)
+(22, 5)
+(22, 19)
+(22, 10)
+(22, 13)
+(22, 3)
+(22, 1)
+(22, 2)
+(22, 9)
+(22, 4)
+(22, 26)
+(22, 14)
+(22, 22)
+(22, 11)
+(22, 7)
+(22, 20)
+(22, 0)
+(22, 6)
+(22, 21)
+(22, 25)
+(22, 8)
+(6, 12)
+(6, 18)
+(6, 23)
+(6, 16)
+(6, 15)
+(6, 17)
+(6, 27)
+(6, 24)
+(6, 5)
+(6, 19)
+(6, 10)
+(6, 13)
+(6, 3)
+(6, 1)
+(6, 2)
+(6, 9)
+(6, 4)
+(6, 26)
+(6, 14)
+(6, 22)
+(6, 11)
+(6, 7)
+(6, 20)
+(6, 0)
+(6, 6)
+(6, 21)
+(6, 25)
+(6, 8) (6, 28)
+(12, 18)
+(12, 23)
+(12, 16)
+(12, 15)
+(12, 17)
+(12, 27)
+(12, 24)
+(12, 5)
+(12, 19)
+(12, 10)
+(12, 13)
+(12, 3)
+(12, 1)
+(12, 2)
+(12, 9)
+(12, 4)
+(12, 26)
+(12, 14)
+(12, 22)
+(12, 11)
+(12, 7)
+(12, 20)
+(12, 0)
+(12, 6)
+(12, 21)
+(12, 25)
+(12, 8)
+(12, 28)
+(12, 12)
+(17, 23)
+(17, 16)(17, 15)
+(17, 17)
+(17, 27)
+(17, 24)
+(17, 5)
+(17, 19)
+(17, 10)
+(17, 13)
+(17, 3)
+(17, 1)
+(17, 2)
+(17, 9)
+(17, 4)
+(17, 26)
+(17, 14)
+(17, 22)
+(17, 11)
+(17, 7)
+(17, 20)
+(17, 0)
+(17, 6)
+(17, 21)
+(17, 25)
+(17, 8)
+(17, 28)
+(17, 12)
+(17, 18)
+(10, 16)
+(10, 15)
+(10, 17)
+(10, 27)
+(10, 24)
+(10, 5)
+(10, 19)
+(10, 10)
+(10, 13)
+(10, 3)
+(10, 1)
+(10, 2)
+(10, 9)
+(10, 4)
+(10, 26)
+(10, 14)
+(10, 22)
+(10, 11)
+(10, 7)
+(10, 20)
+(10, 0)
+(10, 6)
+(10, 21)
+(10, 25)
+(10, 8)
+(10, 28)
+(10, 12)
+(10, 18)(10, 23)
+(9, 15)
+(9, 17)
+(9, 27)
+(9, 24)
+(9, 5)
+(9, 19)
+(9, 10)
+(9, 13)
+(9, 3)
+(9, 1)
+(9, 2)
+(9, 9)
+(9, 4)
+(9, 26)
+(9, 14)
+(9, 22)
+(9, 11)
+(9, 7)
+(9, 20)
+(9, 0)
+(9, 6)
+(9, 21)
+(9, 25)
+(9, 8)
+(9, 28)
+(9, 12)
+(9, 18)
+(9, 23)(9, 16)
+(11, 17)
+(11, 27)
+(11, 24)
+(11, 5)
+(11, 19)
+(11, 10)
+(11, 13)
+(11, 3)
+(11, 1)
+(11, 2)
+(11, 9)
+(11, 4)
+(11, 26)
+(11, 14)
+(11, 22)
+(11, 11)
+(11, 7)
+(11, 20)
+(11, 0)
+(11, 6)
+(11, 21)
+(11, 25)
+(11, 8)
+(11, 28)
+(11, 12)
+(11, 18)
+(11, 23)
+(11, 16)
+(11, 15)
+(21, 27)
+(21, 24)(21, 5)
+(21, 19)
+(21, 10)
+(21, 13)
+(21, 3)
+(21, 1)
+(21, 2)
+(21, 9)
+(21, 4)
+(21, 26)
+(21, 14)
+(21, 22)
+(21, 11)
+(21, 7)
+(21, 20)
+(21, 0)
+(21, 6)
+(21, 21)
+(21, 25)
+(21, 8)
+(21, 28)
+(21, 12)
+(21, 18)
+(21, 23)
+(21, 16)
+(21, 15)
+(21, 17)
+(18, 24)
+(18, 5)
+(18, 19)
+(18, 10)
+(18, 13)
+(18, 3)
+(18, 1)
+(18, 2)
+(18, 9)
+(18, 4)
+(18, 26)
+(18, 14)
+(18, 22)
+(18, 11)
+(18, 7)
+(18, 20)
+(18, 0)
+(18, 6)
+(18, 21)
+(18, 25)
+(18, 8)
+(18, 28)
+(18, 12)
+(18, 18)
+(18, 23)
+(18, 16)
+(18, 15)
+(18, 17)
+(18, 27)
+(27, 5)
+(27, 19)(27, 10)
+(27, 13)
+(27, 3)
+(27, 1)
+(27, 2)
+(27, 9)
+(27, 4)
+(27, 26)
+(27, 14)
+(27, 22)
+(27, 11)
+(27, 7)
+(27, 20)
+(27, 0)
+(27, 6)
+(27, 21)
+(27, 25)
+(27, 8)
+(27, 28)
+(27, 12)
+(27, 18)
+(27, 23)
+(27, 16)
+(27, 15)
+(27, 17)
+(27, 27)
+(27, 24)
+(13, 19)
+(13, 10)
+(13, 13)
+(13, 3)
+(13, 1)
+(13, 2)
+(13, 9)
+(13, 4)
+(13, 26)
+(13, 14)
+(13, 22)
+(13, 11)
+(13, 7)
+(13, 20)
+(13, 0)
+(13, 6)
+(13, 21)
+(13, 25)
+(13, 8)
+(13, 28)
+(13, 12)
+(13, 18)
+(13, 23)
+(13, 16)
+(13, 15)
+(13, 17)
+(13, 27)
+(13, 24)
+(13, 5)
+(4, 10)
+(4, 13)
+(4, 3)
+(4, 1)
+(4, 2)
+(4, 9)
+(4, 4)(4, 26)
+(4, 14)
+(4, 22)
+(4, 11)
+(4, 7)
+(4, 20)
+(4, 0)
+(4, 6)
+(4, 21)
+(4, 25)
+(4, 8)
+(4, 28)
+(4, 12)
+(4, 18)
+(4, 23)
+(4, 16)
+(4, 15)
+(4, 17)
+(4, 27)
+(4, 24)
+(4, 5) (4, 19)
+(7, 13)
+(7, 3)
+(7, 1)
+(7, 2)
+(7, 9)
+(7, 4)
+(7, 26)
+(7, 14)
+(7, 22)
+(7, 11)
+(7, 7)
+(7, 20)
+(7, 0)
+(7, 6)
+(7, 21)
+(7, 25)
+(7, 8)
+(7, 28)
+(7, 12)
+(7, 18)
+(7, 23)
+(7, 16)
+(7, 15)
+(7, 17)
+(7, 27)
+(7, 24)
+(7, 5)
+(7, 19)(7, 10)
+(25, 3)
+(25, 1)(25, 2)
+(25, 9)
+(25, 4)
+(25, 26)
+(25, 14)
+(25, 22)
+(25, 11)
+(25, 7)
+(25, 20)
+(25, 0)
+(25, 6)
+(25, 21)
+(25, 25)
+(25, 8)
+(25, 28)
+(25, 12)
+(25, 18)
+(25, 23)
+(25, 16)
+(25, 15)
+(25, 17)
+(25, 27)
+(25, 24)
+(25, 5)
+(25, 19)
+(25, 10)
+(25, 13)
+(23, 1)
+(23, 2)(23, 9)
+(23, 4)
+(23, 26)
+(23, 14)
+(23, 22)
+(23, 11)
+(23, 7)
+(23, 20)
+(23, 0)
+(23, 6)
+(23, 21)
+(23, 25)
+(23, 8)
+(23, 28)
+(23, 12)
+(23, 18)
+(23, 23)
+(23, 16)
+(23, 15)
+(23, 17)
+(23, 27)
+(23, 24)
+(23, 5)
+(23, 19)
+(23, 10)
+(23, 13)
+(23, 3)
+(24, 2)
+(24, 9)(24, 4)
+(24, 26)
+(24, 14)
+(24, 22)
+(24, 11)
+(24, 7)
+(24, 20)
+(24, 0)
+(24, 6)
+(24, 21)
+(24, 25)
+(24, 8)
+(24, 28)
+(24, 12)
+(24, 18)
+(24, 23)
+(24, 16)
+(24, 15)
+(24, 17)
+(24, 27)
+(24, 24)
+(24, 5)
+(24, 19)
+(24, 10)
+(24, 13)
+(24, 3)
+(24, 1)
+(3, 9)
+(3, 4)
+(3, 26)
+(3, 14)
+(3, 22)
+(3, 11)
+(3, 7)(3, 20)
+(3, 0)
+(3, 6)
+(3, 21)
+(3, 25)
+(3, 8)
+(3, 28)
+(3, 12)
+(3, 18)
+(3, 23)
+(3, 16)
+(3, 15)
+(3, 17)
+(3, 27)
+(3, 24)
+(3, 5)(3, 19)
+(3, 10)
+(3, 13)
+(3, 3)
+(3, 1)
+(3, 2)
+(26, 4)
+(26, 26)
+(26, 14)
+(26, 22)
+(26, 11)
+(26, 7)
+(26, 20)
+(26, 0)
+(26, 6)
+(26, 21)
+(26, 25)
+(26, 8)
+(26, 28)
+(26, 12)
+(26, 18)
+(26, 23)
+(26, 16)
+(26, 15)
+(26, 17)
+(26, 27)
+(26, 24)
+(26, 5)
+(26, 19)
+(26, 10)
+(26, 13)
+(26, 3)
+(26, 1)
+(26, 2)
+(26, 9)
+(20, 26)
+(20, 14)
+(20, 22)
+(20, 11)
+(20, 7)
+(20, 20)
+(20, 0)
+(20, 6)
+(20, 21)
+(20, 25)
+(20, 8)
+(20, 28)
+(20, 12)
+(20, 18)
+(20, 23)
+(20, 16)
+(20, 15)
+(20, 17)
+(20, 27)
+(20, 24)
+(20, 5)
+(20, 19)
+(20, 10)
+(20, 13)
+(20, 3)
+(20, 1)
+(20, 2)
+(20, 9)
+(20, 4)
+(8, 14)
+(8, 22)
+(8, 11)
+(8, 7)
+(8, 20)
+(8, 0)
+(8, 6)(8, 21)
+(8, 25)
+(8, 8)
+(8, 28)
+(8, 12)
+(8, 18)
+(8, 23)
+(8, 16)
+(8, 15)
+(8, 17)
+(8, 27)
+(8, 24)
+(8, 5)
+(8, 19)
+(8, 10)
+(8, 13)(8, 3)
+(8, 1)
+(8, 2)
+(8, 9)
+(8, 4) (8, 26)
+(16, 22)
+(16, 11)(16, 7)
+(16, 20)
+(16, 0)
+(16, 6)
+(16, 21)
+(16, 25)
+(16, 8)
+(16, 28)
+(16, 12)
+(16, 18)
+(16, 23)
+(16, 16)
+(16, 15)
+(16, 17)
+(16, 27)
+(16, 24)
+(16, 5)
+(16, 19)
+(16, 10)
+(16, 13)
+(16, 3)
+(16, 1)
+(16, 2)
+(16, 9)
+(16, 4)
+(16, 26)
+(16, 14)
+(5, 11)
+(5, 7)
+(5, 20)
+(5, 0)
+(5, 6)
+(5, 21)
+(5, 25)
+(5, 8)
+(5, 28)
+(5, 12)
+(5, 18)
+(5, 23)
+(5, 16)
+(5, 15)
+(5, 17)
+(5, 27)
+(5, 24)
+(5, 5)
+(5, 19)
+(5, 10)
+(5, 13)
+(5, 3)
+(5, 1)(5, 2)
+(5, 9)
+(5, 4)
+(5, 26)
+(5, 14)(5, 22)
+(1, 7)
+(1, 20)
+(1, 0)
+(1, 6)
+(1, 21)
+(1, 25)
+(1, 8)(1, 28)
+(1, 12)
+(1, 18)
+(1, 23)
+(1, 16)
+(1, 15)
+(1, 17)
+(1, 27)
+(1, 24)
+(1, 5)
+(1, 19)
+(1, 10)
+(1, 13)
+(1, 3)
+(1, 1)
+(1, 2) (1, 9)
+(1, 4)
+(1, 26)
+(1, 14)
+(1, 22)
+(1, 11)
+(14, 20)
+(14, 0)
+(14, 6)
+(14, 21)
+(14, 25)
+(14, 8)
+(14, 28)
+(14, 12)
+(14, 18)
+(14, 23)
+(14, 16)
+(14, 15)
+(14, 17)
+(14, 27)
+(14, 24)
+(14, 5)
+(14, 19)
+(14, 10)
+(14, 13)
+(14, 3)
+(14, 1)
+(14, 2)
+(14, 9)
+(14, 4)
+(14, 26)
+(14, 14)
+(14, 22)
+(14, 11)
+(14, 7)
+(d) layer 1, head 4, (x, z)
+0.05
+0.00
+0.05
+0.10
+0.15
+1st principle component
+0.05
+0.00
+0.05
+0.10
+0.15
+2nd principle component
+(0, 0)
+(0, 28)
+(0, 15) (0, 19)
+(0, 2)(0, 22)
+(0, 6)
+(0, 12)
+(0, 17)
+(0, 10)
+(0, 9)(0, 11)
+(0, 21)
+(0, 18)
+(0, 27)
+(0, 13)
+(0, 4)
+(0, 7)
+(0, 25)
+(0, 23)
+(0, 24)
+(0, 3)(0, 26)
+(0, 20)
+(0, 8)(0, 16)
+(0, 5)
+(0, 1)
+(0, 14)
+(28, 0)
+(28, 28)
+(28, 15)
+(28, 19)
+(28, 2)
+(28, 22)
+(28, 6)
+(28, 12)
+(28, 17)
+(28, 10)
+(28, 9)
+(28, 11)
+(28, 21)
+(28, 18)
+(28, 27)
+(28, 13)
+(28, 4)
+(28, 7)
+(28, 25)
+(28, 23)
+(28, 24)
+(28, 3)
+(28, 26)
+(28, 20)
+(28, 8)
+(28, 16)
+(28, 5)
+(28, 1)
+(28, 14)
+(15, 0)
+(15, 28)
+(15, 15)
+(15, 19)
+(15, 2)
+(15, 22)
+(15, 6)
+(15, 12)
+(15, 17)
+(15, 10)
+(15, 9)
+(15, 11)
+(15, 21)
+(15, 18)
+(15, 27)
+(15, 13)
+(15, 4)
+(15, 7)
+(15, 25)
+(15, 23)
+(15, 24)
+(15, 3)
+(15, 26) (15, 20)
+(15, 8)
+(15, 16)
+(15, 5)
+(15, 1)
+(15, 14)
+(19, 0)
+(19, 28)
+(19, 15)
+(19, 19)
+(19, 2)
+(19, 22)(19, 6)
+(19, 12)
+(19, 17)
+(19, 10)
+(19, 9)
+(19, 11)
+(19, 21)
+(19, 18)
+(19, 27)
+(19, 13)
+(19, 4)
+(19, 7)
+(19, 25)
+(19, 23)
+(19, 24)
+(19, 3)
+(19, 26)
+(19, 20)
+(19, 8)
+(19, 16)
+(19, 5)
+(19, 1)
+(19, 14)
+(2, 0)
+(2, 28)
+(2, 15)
+(2, 19)
+(2, 2)
+(2, 22)
+(2, 6)
+(2, 12)
+(2, 17)
+(2, 10)
+(2, 9)
+(2, 11)
+(2, 21)
+(2, 18)
+(2, 27)
+(2, 13)
+(2, 4)
+(2, 7)
+(2, 25)
+(2, 23)
+(2, 24)
+(2, 3)
+(2, 26)
+(2, 20)
+(2, 8)
+(2, 16)
+(2, 5)
+(2, 1)
+(2, 14)
+(22, 0)
+(22, 28)
+(22, 15)
+(22, 19)
+(22, 2)
+(22, 22)
+(22, 6)
+(22, 12)
+(22, 17)
+(22, 10)
+(22, 9)
+(22, 11)
+(22, 21)
+(22, 18)
+(22, 27)
+(22, 13)
+(22, 4)
+(22, 7)
+(22, 25)
+(22, 23)
+(22, 24)
+(22, 3)
+(22, 26)
+(22, 20)
+(22, 8)
+(22, 16)
+(22, 5)
+(22, 1)
+(22, 14)
+(6, 0)
+(6, 28)
+(6, 15)
+(6, 19)
+(6, 2)
+(6, 22)
+(6, 6)
+(6, 12)
+(6, 17)
+(6, 10)
+(6, 9) (6, 11)
+(6, 21)
+(6, 18)
+(6, 27)
+(6, 13)
+(6, 4)
+(6, 7)
+(6, 25)
+(6, 23)
+(6, 24)
+(6, 3)
+(6, 26)
+(6, 20)
+(6, 8)
+(6, 16)
+(6, 5)
+(6, 1)
+(6, 14)
+(12, 0)
+(12, 28)
+(12, 15)
+(12, 19)
+(12, 2)
+(12, 22)
+(12, 6)
+(12, 12)
+(12, 17)
+(12, 10)
+(12, 9)
+(12, 11)
+(12, 21)
+(12, 18)
+(12, 27)
+(12, 13)
+(12, 4)
+(12, 7)
+(12, 25)
+(12, 23)
+(12, 24)
+(12, 3)
+(12, 26)
+(12, 20)
+(12, 8)
+(12, 16)
+(12, 5)
+(12, 1)
+(12, 14)
+(17, 0)
+(17, 28)
+(17, 15)
+(17, 19)
+(17, 2)(17, 22)
+(17, 6)
+(17, 12)
+(17, 17)
+(17, 10)
+(17, 9)
+(17, 11)
+(17, 21)
+(17, 18)
+(17, 27)
+(17, 13)
+(17, 4)
+(17, 7)
+(17, 25)
+(17, 23)
+(17, 24)
+(17, 3)
+(17, 26)
+(17, 20)
+(17, 8)
+(17, 16)
+(17, 5)
+(17, 1)
+(17, 14)
+(10, 0)
+(10, 28)
+(10, 15)
+(10, 19)
+(10, 2)
+(10, 22)
+(10, 6)
+(10, 12)
+(10, 17)
+(10, 10)
+(10, 9)
+(10, 11)
+(10, 21)
+(10, 18)
+(10, 27)
+(10, 13)
+(10, 4)
+(10, 7)
+(10, 25)
+(10, 23)
+(10, 24)
+(10, 3)
+(10, 26)
+(10, 20)
+(10, 8)
+(10, 16)
+(10, 5)
+(10, 1)
+(10, 14)
+(9, 0)
+(9, 28)
+(9, 15)
+(9, 19)
+(9, 2)
+(9, 22)
+(9, 6)
+(9, 12)
+(9, 17)
+(9, 10)
+(9, 9)
+(9, 11)
+(9, 21)
+(9, 18)
+(9, 27)
+(9, 13)
+(9, 4)
+(9, 7)
+(9, 25)
+(9, 23)
+(9, 24)
+(9, 3)
+(9, 26)
+(9, 20)
+(9, 8)
+(9, 16)
+(9, 5)
+(9, 1)
+(9, 14)
+(11, 0)
+(11, 28)(11, 15)
+(11, 19)
+(11, 2)
+(11, 22)
+(11, 6)
+(11, 12)
+(11, 17)
+(11, 10)
+(11, 9)
+(11, 11)
+(11, 21)
+(11, 18)
+(11, 27)
+(11, 13)
+(11, 4)
+(11, 7)
+(11, 25)
+(11, 23)
+(11, 24)
+(11, 3)
+(11, 26)
+(11, 20)
+(11, 8)
+(11, 16)
+(11, 5)
+(11, 1)
+(11, 14)
+(21, 0)
+(21, 28)
+(21, 15)
+(21, 19)
+(21, 2)
+(21, 22)
+(21, 6)
+(21, 12)
+(21, 17)
+(21, 10)
+(21, 9)
+(21, 11)
+(21, 21)
+(21, 18)
+(21, 27)
+(21, 13)
+(21, 4)
+(21, 7)
+(21, 25)
+(21, 23)
+(21, 24)(21, 3)
+(21, 26)
+(21, 20)
+(21, 8)
+(21, 16)
+(21, 5)
+(21, 1)
+(21, 14)
+(18, 0)
+(18, 28)
+(18, 15)
+(18, 19)
+(18, 2)
+(18, 22)
+(18, 6)
+(18, 12)
+(18, 17)
+(18, 10)
+(18, 9)
+(18, 11)
+(18, 21)
+(18, 18)
+(18, 27)
+(18, 13)
+(18, 4)
+(18, 7)
+(18, 25) (18, 23)
+(18, 24)
+(18, 3)
+(18, 26)
+(18, 20)
+(18, 8)
+(18, 16)
+(18, 5)
+(18, 1)
+(18, 14)
+(27, 0)
+(27, 28)
+(27, 15)
+(27, 19)
+(27, 2)
+(27, 22)
+(27, 6)
+(27, 12)
+(27, 17)
+(27, 10)
+(27, 9)
+(27, 11)
+(27, 21)
+(27, 18)
+(27, 27)
+(27, 13)
+(27, 4)
+(27, 7)
+(27, 25)
+(27, 23)
+(27, 24)
+(27, 3)
+(27, 26)
+(27, 20)
+(27, 8)
+(27, 16)
+(27, 5)
+(27, 1)
+(27, 14)
+(13, 0)
+(13, 28)
+(13, 15)
+(13, 19)
+(13, 2)
+(13, 22)
+(13, 6)
+(13, 12)
+(13, 17)
+(13, 10)
+(13, 9)
+(13, 11)
+(13, 21)
+(13, 18)
+(13, 27)
+(13, 13)
+(13, 4)
+(13, 7)
+(13, 25)(13, 23)
+(13, 24)
+(13, 3)
+(13, 26)
+(13, 20)
+(13, 8)
+(13, 16)
+(13, 5)
+(13, 1)
+(13, 14)
+(4, 0)
+(4, 28)
+(4, 15)
+(4, 19)
+(4, 2)
+(4, 22)
+(4, 6)
+(4, 12)
+(4, 17)
+(4, 10)
+(4, 9)
+(4, 11)
+(4, 21)
+(4, 18)
+(4, 27)
+(4, 13)
+(4, 4)
+(4, 7)
+(4, 25)
+(4, 23)
+(4, 24)
+(4, 3)
+(4, 26)
+(4, 20)
+(4, 8)
+(4, 16)
+(4, 5)
+(4, 1)
+(4, 14)
+(7, 0)
+(7, 28)
+(7, 15)
+(7, 19)
+(7, 2)
+(7, 22)
+(7, 6)
+(7, 12)
+(7, 17)
+(7, 10)
+(7, 9)
+(7, 11)(7, 21)
+(7, 18)
+(7, 27)
+(7, 13)
+(7, 4)
+(7, 7)
+(7, 25)
+(7, 23)
+(7, 24)
+(7, 3)
+(7, 26)
+(7, 20)
+(7, 8)
+(7, 16)
+(7, 5)(7, 1)
+(7, 14)
+(25, 0)
+(25, 28)
+(25, 15)
+(25, 19)
+(25, 2)
+(25, 22)
+(25, 6)
+(25, 12)
+(25, 17)
+(25, 10)
+(25, 9)
+(25, 11)
+(25, 21)
+(25, 18)
+(25, 27)
+(25, 13)
+(25, 4)
+(25, 7)
+(25, 25)
+(25, 23)
+(25, 24)
+(25, 3)
+(25, 26)
+(25, 20)
+(25, 8)
+(25, 16)
+(25, 5)
+(25, 1)
+(25, 14)
+(23, 0)
+(23, 28)
+(23, 15)
+(23, 19)
+(23, 2)
+(23, 22)
+(23, 6)
+(23, 12)
+(23, 17)
+(23, 10)(23, 9)(23, 11)
+(23, 21)
+(23, 18)
+(23, 27)
+(23, 13)
+(23, 4)
+(23, 7)
+(23, 25)
+(23, 23)
+(23, 24)
+(23, 3)
+(23, 26)
+(23, 20)
+(23, 8)
+(23, 16)
+(23, 5)(23, 1)
+(23, 14)
+(24, 0)
+(24, 28)
+(24, 15)
+(24, 19)
+(24, 2)
+(24, 22)
+(24, 6)
+(24, 12)
+(24, 17)
+(24, 10)
+(24, 9) (24, 11)
+(24, 21)
+(24, 18)
+(24, 27)
+(24, 13)
+(24, 4)
+(24, 7)
+(24, 25)
+(24, 23)
+(24, 24)
+(24, 3)
+(24, 26)
+(24, 20)
+(24, 8)
+(24, 16)
+(24, 5)(24, 1)
+(24, 14)
+(3, 0)
+(3, 28)
+(3, 15)
+(3, 19) (3, 2)
+(3, 22)
+(3, 6)
+(3, 12)
+(3, 17)
+(3, 10)
+(3, 9)
+(3, 11)
+(3, 21)
+(3, 18)
+(3, 27)
+(3, 13)
+(3, 4)
+(3, 7)
+(3, 25)
+(3, 23)
+(3, 24)
+(3, 3)
+(3, 26)
+(3, 20)
+(3, 8)
+(3, 16)
+(3, 5)
+(3, 1)
+(3, 14)
+(26, 0)
+(26, 28)
+(26, 15)
+(26, 19)
+(26, 2)
+(26, 22)
+(26, 6)
+(26, 12)
+(26, 17)
+(26, 10)
+(26, 9)
+(26, 11)
+(26, 21)
+(26, 18)
+(26, 27)
+(26, 13)
+(26, 4)
+(26, 7)
+(26, 25)
+(26, 23)
+(26, 24)
+(26, 3)
+(26, 26)
+(26, 20)
+(26, 8)
+(26, 16)
+(26, 5)
+(26, 1)
+(26, 14)
+(20, 0)
+(20, 28)
+(20, 15)
+(20, 19)
+(20, 2)
+(20, 22)
+(20, 6)
+(20, 12)
+(20, 17)
+(20, 10)
+(20, 9)
+(20, 11)
+(20, 21)
+(20, 18)
+(20, 27)
+(20, 13)
+(20, 4)
+(20, 7)
+(20, 25)
+(20, 23)
+(20, 24)
+(20, 3)
+(20, 26)
+(20, 20)
+(20, 8)
+(20, 16)
+(20, 5)
+(20, 1)
+(20, 14)
+(8, 0)
+(8, 28)
+(8, 15)
+(8, 19)
+(8, 2)
+(8, 22)
+(8, 6)
+(8, 12)
+(8, 17)
+(8, 10)
+(8, 9)
+(8, 11)
+(8, 21)(8, 18)
+(8, 27)
+(8, 13)
+(8, 4)
+(8, 7)
+(8, 25) (8, 23)(8, 24)
+(8, 3)
+(8, 26)
+(8, 20)
+(8, 8)
+(8, 16)
+(8, 5)
+(8, 1)
+(8, 14)
+(16, 0)
+(16, 28)
+(16, 15)
+(16, 19)
+(16, 2)
+(16, 22)
+(16, 6)
+(16, 12)
+(16, 17)(16, 10)
+(16, 9)
+(16, 11)
+(16, 21)
+(16, 18)
+(16, 27)
+(16, 13)
+(16, 4)
+(16, 7)
+(16, 25)
+(16, 23)
+(16, 24) (16, 3)
+(16, 26)
+(16, 20)
+(16, 8)
+(16, 16)
+(16, 5)
+(16, 1)
+(16, 14)
+(5, 0)
+(5, 28)
+(5, 15)
+(5, 19)
+(5, 2)
+(5, 22)
+(5, 6)
+(5, 12)
+(5, 17)
+(5, 10)(5, 9)
+(5, 11)
+(5, 21)
+(5, 18)
+(5, 27)
+(5, 13)
+(5, 4)(5, 7)
+(5, 25)
+(5, 23)
+(5, 24)
+(5, 3)
+(5, 26)
+(5, 20)
+(5, 8)
+(5, 16)
+(5, 5)
+(5, 1)
+(5, 14)
+(1, 0)
+(1, 28)
+(1, 15)
+(1, 19)
+(1, 2)
+(1, 22)
+(1, 6)
+(1, 12)
+(1, 17)
+(1, 10)
+(1, 9)
+(1, 11)
+(1, 21)
+(1, 18)
+(1, 27)
+(1, 13)
+(1, 4)
+(1, 7)
+(1, 25)
+(1, 23)
+(1, 24)
+(1, 3)
+(1, 26)
+(1, 20)
+(1, 8)
+(1, 16)
+(1, 5)
+(1, 1)
+(1, 14)
+(14, 0)
+(14, 28)
+(14, 15)
+(14, 19)
+(14, 2)
+(14, 22)
+(14, 6)
+(14, 12)
+(14, 17)
+(14, 10)
+(14, 9)
+(14, 11)
+(14, 21)
+(14, 18)
+(14, 27)
+(14, 13)
+(14, 4)
+(14, 7)
+(14, 25)
+(14, 23)(14, 24)
+(14, 3)
+(14, 26)
+(14, 20)
+(14, 8)
+(14, 16)
+(14, 5)
+(14, 1)
+(14, 14)
+(e) layer 2, head 1
+0.02
+0.01
+0.00
+0.01
+0.02
+0.03
+1st principle component
+0.04
+0.03
+0.02
+0.01
+0.00
+0.01
+2nd principle component
+(0, 0)
+(0, 28)
+(0, 15)
+(0, 19)
+(0, 2)
+(0, 22)
+(0, 6)
+(0, 12)
+(0, 17)
+(0, 10)
+(0, 9)
+(0, 11)
+(0, 21)
+(0, 18)
+(0, 27)
+(0, 13)
+(0, 4)
+(0, 7)
+(0, 25)
+(0, 23)
+(0, 24)
+(0, 3)
+(0, 26)
+(0, 20)
+(0, 8)
+(0, 16)
+(0, 5)
+(0, 1)
+(0, 14)
+(28, 0)
+(28, 28)
+(28, 15)
+(28, 19)
+(28, 2)
+(28, 22)
+(28, 6)
+(28, 12)
+(28, 17)
+(28, 10)
+(28, 9)
+(28, 11)
+(28, 21)
+(28, 18)
+(28, 27)
+(28, 13)
+(28, 4)
+(28, 7)
+(28, 25)
+(28, 23)
+(28, 24)
+(28, 3)
+(28, 26)
+(28, 20)
+(28, 8)
+(28, 16)
+(28, 5)
+(28, 1)
+(28, 14)
+(15, 0)
+(15, 28)
+(15, 15)
+(15, 19)
+(15, 2)
+(15, 22)
+(15, 6)
+(15, 12)
+(15, 17)
+(15, 10)
+(15, 9)
+(15, 11)
+(15, 21)
+(15, 18)
+(15, 27)
+(15, 13)
+(15, 4)
+(15, 7)
+(15, 25)
+(15, 23)
+(15, 24)
+(15, 3)
+(15, 26)
+(15, 20)
+(15, 8)
+(15, 16)
+(15, 5)
+(15, 1)
+(15, 14)
+(19, 0)
+(19, 28)
+(19, 15)
+(19, 19)
+(19, 2)
+(19, 22)
+(19, 6)
+(19, 12)
+(19, 17)
+(19, 10)
+(19, 9)
+(19, 11)
+(19, 21)
+(19, 18)
+(19, 27)
+(19, 13)
+(19, 4)
+(19, 7)
+(19, 25)
+(19, 23)
+(19, 24)
+(19, 3)
+(19, 26)
+(19, 20)
+(19, 8)
+(19, 16)
+(19, 5)
+(19, 1)
+(19, 14)
+(2, 0)
+(2, 28)
+(2, 15)
+(2, 19)
+(2, 2)
+(2, 22)
+(2, 6)
+(2, 12)
+(2, 17)
+(2, 10)
+(2, 9)
+(2, 11)
+(2, 21)
+(2, 18)
+(2, 27)
+(2, 13)
+(2, 4)
+(2, 7)
+(2, 25)
+(2, 23)
+(2, 24)
+(2, 3)
+(2, 26)
+(2, 20)
+(2, 8)
+(2, 16)
+(2, 5)
+(2, 1)
+(2, 14)
+(22, 0)
+(22, 28)
+(22, 15)
+(22, 19)
+(22, 2)
+(22, 22)
+(22, 6)
+(22, 12)
+(22, 17)
+(22, 10)
+(22, 9)
+(22, 11)
+(22, 21)
+(22, 18)
+(22, 27)
+(22, 13)
+(22, 4)
+(22, 7)
+(22, 25)
+(22, 23)
+(22, 24)
+(22, 3)
+(22, 26)
+(22, 20)
+(22, 8)
+(22, 16)
+(22, 5)
+(22, 1)
+(22, 14)
+(6, 0)
+(6, 28)
+(6, 15)
+(6, 19)
+(6, 2)
+(6, 22)
+(6, 6)
+(6, 12)
+(6, 17)
+(6, 10)
+(6, 9)
+(6, 11)
+(6, 21)
+(6, 18)
+(6, 27)
+(6, 13)
+(6, 4) (6, 7)
+(6, 25)
+(6, 23)
+(6, 24)
+(6, 3)
+(6, 26)
+(6, 20)
+(6, 8)
+(6, 16)
+(6, 5)
+(6, 1)
+(6, 14)
+(12, 0)
+(12, 28)
+(12, 15)
+(12, 19)
+(12, 2)
+(12, 22)
+(12, 6)
+(12, 12)
+(12, 17)
+(12, 10)
+(12, 9)
+(12, 11)
+(12, 21)
+(12, 18)
+(12, 27)
+(12, 13)
+(12, 4)
+(12, 7)
+(12, 25)
+(12, 23)
+(12, 24)
+(12, 3)
+(12, 26)
+(12, 20)
+(12, 8)
+(12, 16)
+(12, 5)
+(12, 1)
+(12, 14)
+(17, 0)
+(17, 28)
+(17, 15)
+(17, 19)
+(17, 2)
+(17, 22)
+(17, 6)
+(17, 12)
+(17, 17)
+(17, 10)
+(17, 9)
+(17, 11)
+(17, 21)
+(17, 18)
+(17, 27)
+(17, 13)
+(17, 4)
+(17, 7)
+(17, 25)
+(17, 23)
+(17, 24)
+(17, 3)
+(17, 26)
+(17, 20)
+(17, 8)
+(17, 16)
+(17, 5)
+(17, 1)
+(17, 14)
+(10, 0)
+(10, 28)
+(10, 15)
+(10, 19)
+(10, 2)
+(10, 22)
+(10, 6)
+(10, 12)
+(10, 17)
+(10, 10)
+(10, 9)
+(10, 11)
+(10, 21)
+(10, 18)
+(10, 27)
+(10, 13)
+(10, 4)
+(10, 7)
+(10, 25)
+(10, 23)
+(10, 24)
+(10, 3)
+(10, 26)
+(10, 20)
+(10, 8)
+(10, 16)
+(10, 5)
+(10, 1)
+(10, 14)
+(9, 0)
+(9, 28)
+(9, 15)
+(9, 19)
+(9, 2)
+(9, 22)
+(9, 6)
+(9, 12)
+(9, 17)
+(9, 10)
+(9, 9)
+(9, 11)
+(9, 21)
+(9, 18)
+(9, 27)
+(9, 13)
+(9, 4)
+(9, 7)
+(9, 25)
+(9, 23)
+(9, 24)
+(9, 3)
+(9, 26)
+(9, 20)
+(9, 8)
+(9, 16)
+(9, 5)
+(9, 1)
+(9, 14)
+(11, 0)
+(11, 28)
+(11, 15)
+(11, 19)
+(11, 2)
+(11, 22)
+(11, 6)
+(11, 12)
+(11, 17)
+(11, 10)
+(11, 9)
+(11, 11)
+(11, 21)
+(11, 18)
+(11, 27)
+(11, 13)
+(11, 4)
+(11, 7)
+(11, 25)
+(11, 23)
+(11, 24)
+(11, 3)
+(11, 26)
+(11, 20)
+(11, 8)
+(11, 16)
+(11, 5)
+(11, 1)
+(11, 14)
+(21, 0)
+(21, 28)
+(21, 15)
+(21, 19)
+(21, 2)
+(21, 22)
+(21, 6)
+(21, 12)
+(21, 17)
+(21, 10)
+(21, 9)
+(21, 11)
+(21, 21)
+(21, 18)
+(21, 27)
+(21, 13)
+(21, 4)
+(21, 7)
+(21, 25)
+(21, 23)
+(21, 24)
+(21, 3)
+(21, 26)
+(21, 20)
+(21, 8)
+(21, 16)
+(21, 5)
+(21, 1)
+(21, 14)
+(18, 0)
+(18, 28)
+(18, 15)
+(18, 19)
+(18, 2)
+(18, 22)
+(18, 6)
+(18, 12)
+(18, 17)
+(18, 10)
+(18, 9)
+(18, 11)
+(18, 21)
+(18, 18)
+(18, 27)
+(18, 13)
+(18, 4)
+(18, 7)
+(18, 25)
+(18, 23)
+(18, 24)
+(18, 3)
+(18, 26)
+(18, 20)
+(18, 8)
+(18, 16)
+(18, 5)
+(18, 1)
+(18, 14)
+(27, 0)
+(27, 28)
+(27, 15)
+(27, 19)
+(27, 2)
+(27, 22)
+(27, 6)
+(27, 12)
+(27, 17)
+(27, 10)
+(27, 9)
+(27, 11)
+(27, 21)
+(27, 18)
+(27, 27)
+(27, 13)
+(27, 4)
+(27, 7)
+(27, 25)
+(27, 23) (27, 24)
+(27, 3)
+(27, 26)
+(27, 20)
+(27, 8)
+(27, 16)
+(27, 5)
+(27, 1)
+(27, 14)
+(13, 0)
+(13, 28)
+(13, 15)
+(13, 19)
+(13, 2)
+(13, 22)
+(13, 6)
+(13, 12)
+(13, 17)
+(13, 10)
+(13, 9)
+(13, 11)
+(13, 21)
+(13, 18)
+(13, 27)
+(13, 13)
+(13, 4)
+(13, 7)
+(13, 25)
+(13, 23)
+(13, 24)
+(13, 3)
+(13, 26)
+(13, 20)
+(13, 8)
+(13, 16)
+(13, 5)
+(13, 1)
+(13, 14)
+(4, 0)
+(4, 28)
+(4, 15)
+(4, 19)
+(4, 2)
+(4, 22)
+(4, 6)
+(4, 12)
+(4, 17)
+(4, 10)
+(4, 9)
+(4, 11)
+(4, 21)
+(4, 18)
+(4, 27)
+(4, 13)
+(4, 4)
+(4, 7)
+(4, 25)
+(4, 23)(4, 24)
+(4, 3)
+(4, 26)
+(4, 20)
+(4, 8)
+(4, 16)
+(4, 5)
+(4, 1)
+(4, 14)
+(7, 0)
+(7, 28)
+(7, 15)
+(7, 19)
+(7, 2)
+(7, 22)
+(7, 6)
+(7, 12)
+(7, 17)
+(7, 10)
+(7, 9)
+(7, 11)
+(7, 21)
+(7, 18)
+(7, 27)
+(7, 13)
+(7, 4)
+(7, 7)
+(7, 25)
+(7, 23)
+(7, 24)
+(7, 3)
+(7, 26)
+(7, 20)
+(7, 8)
+(7, 16)
+(7, 5)
+(7, 1)
+(7, 14)
+(25, 0)
+(25, 28)
+(25, 15)
+(25, 19)
+(25, 2)
+(25, 22)
+(25, 6)
+(25, 12)
+(25, 17)
+(25, 10)
+(25, 9)
+(25, 11)
+(25, 21)
+(25, 18)
+(25, 27)
+(25, 13)
+(25, 4)
+(25, 7)
+(25, 25)
+(25, 23)
+(25, 24)
+(25, 3)
+(25, 26)
+(25, 20)
+(25, 8)
+(25, 16)
+(25, 5)
+(25, 1)
+(25, 14)
+(23, 0)
+(23, 28)
+(23, 15)
+(23, 19)
+(23, 2)
+(23, 22)
+(23, 6)
+(23, 12)
+(23, 17)
+(23, 10)
+(23, 9)
+(23, 11)
+(23, 21)
+(23, 18)
+(23, 27)
+(23, 13)
+(23, 4)
+(23, 7)
+(23, 25)
+(23, 23)
+(23, 24)
+(23, 3)
+(23, 26)
+(23, 20)
+(23, 8)
+(23, 16)
+(23, 5)
+(23, 1)
+(23, 14)
+(24, 0)
+(24, 28)
+(24, 15)
+(24, 19)
+(24, 2)
+(24, 22)
+(24, 6)
+(24, 12)
+(24, 17)
+(24, 10)
+(24, 9)
+(24, 11)
+(24, 21)
+(24, 18)
+(24, 27)
+(24, 13)
+(24, 4)
+(24, 7)
+(24, 25)
+(24, 23)
+(24, 24)
+(24, 3)
+(24, 26)
+(24, 20)
+(24, 8)
+(24, 16)
+(24, 5)
+(24, 1)
+(24, 14)
+(3, 0)
+(3, 28)
+(3, 15)
+(3, 19)
+(3, 2)
+(3, 22)
+(3, 6)
+(3, 12)
+(3, 17)
+(3, 10)
+(3, 9)
+(3, 11)
+(3, 21)
+(3, 18)
+(3, 27)
+(3, 13)
+(3, 4)
+(3, 7)
+(3, 25)
+(3, 23)
+(3, 24)
+(3, 3)
+(3, 26)
+(3, 20)
+(3, 8)
+(3, 16)
+(3, 5)
+(3, 1)
+(3, 14)
+(26, 0)
+(26, 28)
+(26, 15)
+(26, 19)
+(26, 2)
+(26, 22)
+(26, 6)
+(26, 12)
+(26, 17)
+(26, 10)
+(26, 9)
+(26, 11)
+(26, 21)
+(26, 18)
+(26, 27)
+(26, 13)
+(26, 4)
+(26, 7)
+(26, 25)
+(26, 23)
+(26, 24)
+(26, 3)
+(26, 26)
+(26, 20)
+(26, 8)
+(26, 16)
+(26, 5)
+(26, 1)
+(26, 14)
+(20, 0)
+(20, 28)
+(20, 15)
+(20, 19)
+(20, 2)
+(20, 22)
+(20, 6)
+(20, 12)
+(20, 17)
+(20, 10)
+(20, 9)
+(20, 11)
+(20, 21)
+(20, 18)
+(20, 27)
+(20, 13)
+(20, 4)
+(20, 7)
+(20, 25)
+(20, 23)
+(20, 24)
+(20, 3)
+(20, 26)
+(20, 20)
+(20, 8)
+(20, 16)
+(20, 5)
+(20, 1)
+(20, 14)
+(8, 0)
+(8, 28)
+(8, 15)
+(8, 19)
+(8, 2)
+(8, 22)
+(8, 6)
+(8, 12)
+(8, 17)
+(8, 10)
+(8, 9)
+(8, 11)
+(8, 21)
+(8, 18)
+(8, 27)
+(8, 13)
+(8, 4)
+(8, 7)
+(8, 25)
+(8, 23)
+(8, 24)
+(8, 3)
+(8, 26)
+(8, 20)
+(8, 8)
+(8, 16)
+(8, 5)
+(8, 1)
+(8, 14)
+(16, 0)
+(16, 28)
+(16, 15)
+(16, 19)
+(16, 2)
+(16, 22)
+(16, 6)
+(16, 12)
+(16, 17)
+(16, 10)
+(16, 9)
+(16, 11)
+(16, 21)
+(16, 18)
+(16, 27)
+(16, 13)
+(16, 4)
+(16, 7)
+(16, 25)
+(16, 23)
+(16, 24)
+(16, 3)
+(16, 26)
+(16, 20)
+(16, 8)
+(16, 16)
+(16, 5)
+(16, 1)
+(16, 14)
+(5, 0)
+(5, 28)
+(5, 15)
+(5, 19)
+(5, 2)
+(5, 22)
+(5, 6)
+(5, 12)
+(5, 17)
+(5, 10)
+(5, 9)
+(5, 11)
+(5, 21)
+(5, 18)
+(5, 27)
+(5, 13)
+(5, 4)
+(5, 7)
+(5, 25)
+(5, 23)
+(5, 24)
+(5, 3)
+(5, 26)
+(5, 20)
+(5, 8)
+(5, 16)
+(5, 5)
+(5, 1)
+(5, 14)
+(1, 0)
+(1, 28)
+(1, 15)
+(1, 19)
+(1, 2)
+(1, 22)
+(1, 6)
+(1, 12)
+(1, 17)
+(1, 10)(1, 9)
+(1, 11)
+(1, 21)
+(1, 18)
+(1, 27)
+(1, 13)
+(1, 4)
+(1, 7)
+(1, 25)
+(1, 23)
+(1, 24)
+(1, 3)
+(1, 26)
+(1, 20)
+(1, 8)
+(1, 16)
+(1, 5)
+(1, 1)
+(1, 14)
+(14, 0)
+(14, 28)
+(14, 15)
+(14, 19)
+(14, 2)
+(14, 22)
+(14, 6)
+(14, 12)
+(14, 17)
+(14, 10)
+(14, 9)
+(14, 11)
+(14, 21)
+(14, 18)
+(14, 27)
+(14, 13)
+(14, 4)
+(14, 7)
+(14, 25)
+(14, 23)
+(14, 24)
+(14, 3)
+(14, 26)
+(14, 20)
+(14, 8)
+(14, 16)
+(14, 5)
+(14, 1)
+(14, 14)
+(f) layer 2, head 2
+0.02 0.00
+0.02
+0.04
+0.06
+0.08
+0.10
+0.12
+1st principle component
+0.02
+0.00
+0.02
+0.04
+0.06
+0.08
+0.10
+2nd principle component
+(0, 0)
+(0, 28)
+(0, 15)
+(0, 19)
+(0, 2)(0, 22)
+(0, 6)(0, 12)
+(0, 17)
+(0, 10)
+(0, 9)
+(0, 11)
+(0, 21)(0, 18)
+(0, 27)
+(0, 13)
+(0, 4)
+(0, 7)(0, 25)
+(0, 23)
+(0, 24)
+(0, 3)
+(0, 26)
+(0, 20)
+(0, 8)
+(0, 16)
+(0, 5)
+(0, 1)(0, 14)
+(28, 0)
+(28, 28)
+(28, 15)
+(28, 19)
+(28, 2)
+(28, 22)
+(28, 6)
+(28, 12)
+(28, 17)
+(28, 10)
+(28, 9)
+(28, 11)
+(28, 21)
+(28, 18)
+(28, 27)
+(28, 13)
+(28, 4)
+(28, 7)
+(28, 25)
+(28, 23)
+(28, 24)
+(28, 3)
+(28, 26)
+(28, 20)
+(28, 8)
+(28, 16)
+(28, 5) (28, 1)
+(28, 14)
+(15, 0)
+(15, 28)
+(15, 15)
+(15, 19)
+(15, 2)
+(15, 22)
+(15, 6)
+(15, 12)
+(15, 17)
+(15, 10)
+(15, 9)
+(15, 11)
+(15, 21)
+(15, 18)
+(15, 27)
+(15, 13)
+(15, 4)
+(15, 7)
+(15, 25)
+(15, 23)
+(15, 24)
+(15, 3)
+(15, 26)
+(15, 20)
+(15, 8)
+(15, 16)
+(15, 5)
+(15, 1)
+(15, 14)
+(19, 0)
+(19, 28)
+(19, 15)
+(19, 19)
+(19, 2)
+(19, 22)
+(19, 6)
+(19, 12)
+(19, 17)
+(19, 10)
+(19, 9)
+(19, 11)
+(19, 21)
+(19, 18)
+(19, 27)
+(19, 13)
+(19, 4)
+(19, 7)
+(19, 25)
+(19, 23)
+(19, 24)
+(19, 3)
+(19, 26)
+(19, 20)
+(19, 8)
+(19, 16)
+(19, 5)
+(19, 1)
+(19, 14)
+(2, 0)
+(2, 28)
+(2, 15)
+(2, 19)
+(2, 2)
+(2, 22)
+(2, 6)
+(2, 12)
+(2, 17)
+(2, 10)
+(2, 9)
+(2, 11)
+(2, 21)
+(2, 18)
+(2, 27)
+(2, 13)
+(2, 4)
+(2, 7)
+(2, 25)(2, 23)
+(2, 24)
+(2, 3)
+(2, 26)
+(2, 20)
+(2, 8)
+(2, 16)
+(2, 5)
+(2, 1)
+(2, 14)
+(22, 0)
+(22, 28)
+(22, 15)
+(22, 19)
+(22, 2)
+(22, 22)
+(22, 6)
+(22, 12)
+(22, 17)
+(22, 10)
+(22, 9)
+(22, 11)
+(22, 21)
+(22, 18)
+(22, 27)
+(22, 13)
+(22, 4)
+(22, 7)
+(22, 25)
+(22, 23)
+(22, 24)
+(22, 3)
+(22, 26)
+(22, 20)
+(22, 8)
+(22, 16)
+(22, 5)
+(22, 1)
+(22, 14)
+(6, 0)
+(6, 28)
+(6, 15)
+(6, 19)
+(6, 2)
+(6, 22)
+(6, 6)
+(6, 12)
+(6, 17)
+(6, 10)
+(6, 9)
+(6, 11)
+(6, 21)
+(6, 18)
+(6, 27)
+(6, 13)
+(6, 4)
+(6, 7)
+(6, 25)
+(6, 23)
+(6, 24)
+(6, 3)
+(6, 26)
+(6, 20)
+(6, 8)
+(6, 16)
+(6, 5)
+(6, 1)
+(6, 14)
+(12, 0)
+(12, 28)
+(12, 15)
+(12, 19)
+(12, 2)
+(12, 22)
+(12, 6)
+(12, 12)
+(12, 17)
+(12, 10)
+(12, 9)
+(12, 11)
+(12, 21)
+(12, 18)
+(12, 27)
+(12, 13)
+(12, 4)
+(12, 7)
+(12, 25)
+(12, 23)
+(12, 24)
+(12, 3)
+(12, 26)
+(12, 20)
+(12, 8)
+(12, 16)
+(12, 5)
+(12, 1)
+(12, 14)
+(17, 0)
+(17, 28)
+(17, 15)
+(17, 19)
+(17, 2)
+(17, 22)
+(17, 6)(17, 12)
+(17, 17)
+(17, 10)
+(17, 9)
+(17, 11)
+(17, 21)
+(17, 18)
+(17, 27)
+(17, 13)
+(17, 4)
+(17, 7)
+(17, 25)
+(17, 23)
+(17, 24)
+(17, 3)
+(17, 26)
+(17, 20)
+(17, 8)(17, 16)
+(17, 5) (17, 1)
+(17, 14)
+(10, 0)
+(10, 28)
+(10, 15)
+(10, 19)
+(10, 2)
+(10, 22)
+(10, 6)
+(10, 12)
+(10, 17)
+(10, 10)
+(10, 9)
+(10, 11)
+(10, 21)
+(10, 18)
+(10, 27)
+(10, 13)
+(10, 4)
+(10, 7)
+(10, 25)
+(10, 23)
+(10, 24)
+(10, 3)
+(10, 26)
+(10, 20)
+(10, 8)
+(10, 16)
+(10, 5)
+(10, 1)
+(10, 14)
+(9, 0)
+(9, 28)
+(9, 15)
+(9, 19)
+(9, 2)
+(9, 22)
+(9, 6)
+(9, 12)(9, 17)
+(9, 10)
+(9, 9)
+(9, 11)
+(9, 21)
+(9, 18)
+(9, 27)
+(9, 13)
+(9, 4)
+(9, 7)
+(9, 25)
+(9, 23)
+(9, 24)
+(9, 3)
+(9, 26)
+(9, 20)
+(9, 8)
+(9, 16)
+(9, 5)
+(9, 1)
+(9, 14)
+(11, 0)
+(11, 28)
+(11, 15)
+(11, 19)
+(11, 2)
+(11, 22)
+(11, 6)
+(11, 12)
+(11, 17)
+(11, 10)
+(11, 9)
+(11, 11)
+(11, 21)
+(11, 18)
+(11, 27)
+(11, 13)
+(11, 4)
+(11, 7)
+(11, 25)
+(11, 23)
+(11, 24)
+(11, 3)
+(11, 26) (11, 20)
+(11, 8)
+(11, 16)
+(11, 5)
+(11, 1)
+(11, 14)
+(21, 0)
+(21, 28)
+(21, 15)
+(21, 19)
+(21, 2)
+(21, 22)
+(21, 6)
+(21, 12)
+(21, 17)
+(21, 10)
+(21, 9)
+(21, 11)
+(21, 21)
+(21, 18)
+(21, 27)
+(21, 13)
+(21, 4)
+(21, 7)
+(21, 25)
+(21, 23)
+(21, 24)
+(21, 3)
+(21, 26)
+(21, 20)
+(21, 8)
+(21, 16)
+(21, 5)
+(21, 1)
+(21, 14)
+(18, 0)
+(18, 28)
+(18, 15)
+(18, 19)
+(18, 2)
+(18, 22)
+(18, 6)
+(18, 12) (18, 17)
+(18, 10)
+(18, 9)
+(18, 11)
+(18, 21)
+(18, 18)
+(18, 27)
+(18, 13)
+(18, 4)
+(18, 7)
+(18, 25)
+(18, 23)
+(18, 24)
+(18, 3)
+(18, 26)
+(18, 20)
+(18, 8)
+(18, 16)
+(18, 5)
+(18, 1)
+(18, 14)
+(27, 0)
+(27, 28)
+(27, 15)
+(27, 19)
+(27, 2)
+(27, 22)
+(27, 6)
+(27, 12)
+(27, 17)
+(27, 10)
+(27, 9)
+(27, 11)
+(27, 21)
+(27, 18)
+(27, 27)
+(27, 13)
+(27, 4)
+(27, 7)
+(27, 25)
+(27, 23)
+(27, 24)
+(27, 3)
+(27, 26)
+(27, 20)
+(27, 8)
+(27, 16)
+(27, 5)
+(27, 1)
+(27, 14)
+(13, 0)
+(13, 28)
+(13, 15)
+(13, 19)
+(13, 2)
+(13, 22)
+(13, 6)
+(13, 12)
+(13, 17)
+(13, 10)
+(13, 9)
+(13, 11)
+(13, 21)
+(13, 18)
+(13, 27)
+(13, 13)
+(13, 4)
+(13, 7)
+(13, 25)
+(13, 23)
+(13, 24)
+(13, 3) (13, 26)
+(13, 20)
+(13, 8)
+(13, 16)
+(13, 5)
+(13, 1)
+(13, 14)
+(4, 0)
+(4, 28)
+(4, 15)
+(4, 19)
+(4, 2)
+(4, 22)
+(4, 6)
+(4, 12)
+(4, 17)
+(4, 10)
+(4, 9)
+(4, 11)
+(4, 21)
+(4, 18)
+(4, 27)
+(4, 13)
+(4, 4)
+(4, 7)
+(4, 25)
+(4, 23)
+(4, 24)
+(4, 3)
+(4, 26)
+(4, 20)
+(4, 8)
+(4, 16)
+(4, 5)
+(4, 1)
+(4, 14)
+(7, 0)
+(7, 28)
+(7, 15)
+(7, 19)
+(7, 2)
+(7, 22)
+(7, 6)
+(7, 12)
+(7, 17)
+(7, 10)
+(7, 9)
+(7, 11)
+(7, 21)
+(7, 18)
+(7, 27)
+(7, 13)
+(7, 4)
+(7, 7)
+(7, 25)
+(7, 23)
+(7, 24)
+(7, 3)
+(7, 26)
+(7, 20)
+(7, 8)
+(7, 16)
+(7, 5)
+(7, 1)
+(7, 14)
+(25, 0)
+(25, 28)
+(25, 15)
+(25, 19)
+(25, 2)
+(25, 22)
+(25, 6)
+(25, 12)
+(25, 17)
+(25, 10)
+(25, 9)
+(25, 11)
+(25, 21)
+(25, 18)
+(25, 27)
+(25, 13)
+(25, 4)
+(25, 7)
+(25, 25)
+(25, 23)
+(25, 24)
+(25, 3)
+(25, 26)
+(25, 20)
+(25, 8)
+(25, 16)
+(25, 5)
+(25, 1)
+(25, 14)
+(23, 0)
+(23, 28)
+(23, 15) (23, 19)
+(23, 2)
+(23, 22)
+(23, 6)
+(23, 12)
+(23, 17)
+(23, 10)
+(23, 9)
+(23, 11)
+(23, 21)
+(23, 18)
+(23, 27)
+(23, 13)
+(23, 4)
+(23, 7)
+(23, 25)
+(23, 23)
+(23, 24)
+(23, 3)
+(23, 26)
+(23, 20)
+(23, 8)
+(23, 16)
+(23, 5)
+(23, 1)
+(23, 14)
+(24, 0)
+(24, 28)
+(24, 15)
+(24, 19)
+(24, 2)
+(24, 22)
+(24, 6)
+(24, 12)
+(24, 17)
+(24, 10)
+(24, 9)
+(24, 11)
+(24, 21)
+(24, 18)
+(24, 27)
+(24, 13)
+(24, 4)
+(24, 7)
+(24, 25)
+(24, 23)
+(24, 24)
+(24, 3)
+(24, 26)
+(24, 20)
+(24, 8)
+(24, 16) (24, 5)
+(24, 1)
+(24, 14)
+(3, 0)
+(3, 28)
+(3, 15)
+(3, 19)
+(3, 2)
+(3, 22)
+(3, 6)
+(3, 12)
+(3, 17)
+(3, 10)
+(3, 9)
+(3, 11)
+(3, 21)
+(3, 18)
+(3, 27)
+(3, 13)
+(3, 4)
+(3, 7)
+(3, 25)
+(3, 23)
+(3, 24)
+(3, 3)
+(3, 26)
+(3, 20)
+(3, 8)
+(3, 16)
+(3, 5)
+(3, 1)
+(3, 14)
+(26, 0)
+(26, 28)
+(26, 15)
+(26, 19)
+(26, 2)
+(26, 22)
+(26, 6)
+(26, 12)
+(26, 17)
+(26, 10)
+(26, 9)
+(26, 11)
+(26, 21)
+(26, 18)
+(26, 27)
+(26, 13)
+(26, 4)
+(26, 7)
+(26, 25)
+(26, 23)
+(26, 24)
+(26, 3)
+(26, 26)
+(26, 20)
+(26, 8)
+(26, 16)
+(26, 5)
+(26, 1)
+(26, 14)
+(20, 0)
+(20, 28)
+(20, 15)
+(20, 19)
+(20, 2)
+(20, 22)
+(20, 6)
+(20, 12)
+(20, 17)
+(20, 10)
+(20, 9)(20, 11)
+(20, 21)
+(20, 18)
+(20, 27)
+(20, 13)
+(20, 4)
+(20, 7)
+(20, 25)
+(20, 23)
+(20, 24)(20, 3)
+(20, 26)
+(20, 20)
+(20, 8)(20, 16)
+(20, 5)
+(20, 1)
+(20, 14)
+(8, 0)
+(8, 28)
+(8, 15)
+(8, 19)
+(8, 2)
+(8, 22)
+(8, 6)
+(8, 12)
+(8, 17)
+(8, 10)
+(8, 9)
+(8, 11)
+(8, 21)
+(8, 18)
+(8, 27)
+(8, 13)
+(8, 4)
+(8, 7)
+(8, 25)
+(8, 23)
+(8, 24)
+(8, 3)
+(8, 26)
+(8, 20)(8, 8)
+(8, 16)
+(8, 5)
+(8, 1)
+(8, 14)
+(16, 0)
+(16, 28)
+(16, 15)
+(16, 19)
+(16, 2)
+(16, 22)
+(16, 6)
+(16, 12)
+(16, 17)
+(16, 10) (16, 9)
+(16, 11)
+(16, 21)
+(16, 18)
+(16, 27)
+(16, 13)
+(16, 4)
+(16, 7)
+(16, 25)
+(16, 23)
+(16, 24)
+(16, 3)
+(16, 26)
+(16, 20)
+(16, 8)
+(16, 16)
+(16, 5)
+(16, 1)
+(16, 14)
+(5, 0)
+(5, 28)
+(5, 15)
+(5, 19)
+(5, 2)
+(5, 22)
+(5, 6)
+(5, 12)
+(5, 17)
+(5, 10)
+(5, 9)
+(5, 11)
+(5, 21)
+(5, 18)
+(5, 27)
+(5, 13)
+(5, 4)
+(5, 7)
+(5, 25)
+(5, 23)
+(5, 24)
+(5, 3)
+(5, 26)
+(5, 20)
+(5, 8)
+(5, 16)
+(5, 5)
+(5, 1)
+(5, 14)
+(1, 0)
+(1, 28)
+(1, 15)
+(1, 19)
+(1, 2)
+(1, 22)
+(1, 6)(1, 12)
+(1, 17)
+(1, 10)
+(1, 9)
+(1, 11)
+(1, 21)
+(1, 18)
+(1, 27)
+(1, 13)
+(1, 4)
+(1, 7)
+(1, 25)
+(1, 23)
+(1, 24)
+(1, 3)
+(1, 26)
+(1, 20)
+(1, 8)
+(1, 16)
+(1, 5)
+(1, 1)
+(1, 14)
+(14, 0)
+(14, 28)
+(14, 15)
+(14, 19)
+(14, 2)
+(14, 22)
+(14, 6)
+(14, 12)(14, 17)
+(14, 10)
+(14, 9)
+(14, 11)
+(14, 21)
+(14, 18)
+(14, 27)
+(14, 13)
+(14, 4) (14, 7)
+(14, 25)
+(14, 23)
+(14, 24)
+(14, 3)
+(14, 26)
+(14, 20)
+(14, 8)
+(14, 16)
+(14, 5)
+(14, 1)
+(14, 14)
+(g) layer 2, head 3
+0.05
+0.00
+0.05
+0.10
+0.15
+1st principle component
+0.050
+0.025
+0.000
+0.025
+0.050
+0.075
+0.100
+0.125
+2nd principle component
+(0, 0)
+(0, 28)
+(0, 15)
+(0, 19)
+(0, 2)
+(0, 22)
+(0, 6)
+(0, 12)
+(0, 17)
+(0, 10)
+(0, 9)
+(0, 11)
+(0, 21)
+(0, 18)
+(0, 27)
+(0, 13)
+(0, 4)
+(0, 7) (0, 25)
+(0, 23)
+(0, 24)
+(0, 3)
+(0, 26)
+(0, 20)
+(0, 8)
+(0, 16)
+(0, 5)
+(0, 1)
+(0, 14)
+(28, 0)
+(28, 28)
+(28, 15) (28, 19)
+(28, 2)
+(28, 22)
+(28, 6)
+(28, 12)(28, 17)
+(28, 10)
+(28, 9)
+(28, 11)
+(28, 21)
+(28, 18)
+(28, 27)
+(28, 13)
+(28, 4)
+(28, 7)
+(28, 25)
+(28, 23)
+(28, 24)
+(28, 3)
+(28, 26)
+(28, 20)
+(28, 8)
+(28, 16)
+(28, 5)
+(28, 1)
+(28, 14)
+(15, 0)
+(15, 28)
+(15, 15)
+(15, 19)
+(15, 2)
+(15, 22)
+(15, 6)
+(15, 12)
+(15, 17)
+(15, 10)
+(15, 9)
+(15, 11)
+(15, 21)
+(15, 18)
+(15, 27)
+(15, 13)
+(15, 4)
+(15, 7)
+(15, 25)
+(15, 23)
+(15, 24)
+(15, 3)
+(15, 26)
+(15, 20)
+(15, 8)
+(15, 16)
+(15, 5)
+(15, 1)
+(15, 14)
+(19, 0)
+(19, 28)
+(19, 15)
+(19, 19)
+(19, 2)
+(19, 22)
+(19, 6)
+(19, 12)
+(19, 17)
+(19, 10)
+(19, 9)
+(19, 11)
+(19, 21)
+(19, 18)
+(19, 27)
+(19, 13)
+(19, 4)
+(19, 7)
+(19, 25)
+(19, 23)
+(19, 24)
+(19, 3) (19, 26)
+(19, 20)
+(19, 8)
+(19, 16)
+(19, 5)
+(19, 1)
+(19, 14)
+(2, 0)
+(2, 28)
+(2, 15)(2, 19)
+(2, 2)
+(2, 22)
+(2, 6)
+(2, 12)
+(2, 17)
+(2, 10)
+(2, 9)
+(2, 11) (2, 21)
+(2, 18)
+(2, 27)
+(2, 13)
+(2, 4)
+(2, 7)
+(2, 25)
+(2, 23) (2, 24)
+(2, 3)
+(2, 26)
+(2, 20)
+(2, 8)
+(2, 16)
+(2, 5)
+(2, 1)
+(2, 14)
+(22, 0)
+(22, 28)
+(22, 15)
+(22, 19)
+(22, 2)
+(22, 22)
+(22, 6) (22, 12)
+(22, 17)
+(22, 10)
+(22, 9)(22, 11)
+(22, 21)
+(22, 18)
+(22, 27)
+(22, 13)
+(22, 4)
+(22, 7)
+(22, 25)
+(22, 23)
+(22, 24)
+(22, 3)
+(22, 26)
+(22, 20)
+(22, 8)
+(22, 16)
+(22, 5)(22, 1)
+(22, 14)
+(6, 0)
+(6, 28)
+(6, 15)
+(6, 19)
+(6, 2)
+(6, 22)
+(6, 6)
+(6, 12)
+(6, 17)
+(6, 10)
+(6, 9)
+(6, 11)
+(6, 21)
+(6, 18)
+(6, 27)
+(6, 13)
+(6, 4)
+(6, 7)
+(6, 25)
+(6, 23)
+(6, 24)
+(6, 3)
+(6, 26)
+(6, 20)
+(6, 8)
+(6, 16)
+(6, 5)
+(6, 1)
+(6, 14)
+(12, 0)
+(12, 28)
+(12, 15)
+(12, 19)
+(12, 2)
+(12, 22)
+(12, 6)
+(12, 12)
+(12, 17)
+(12, 10)
+(12, 9)
+(12, 11)
+(12, 21)
+(12, 18)
+(12, 27)
+(12, 13)
+(12, 4)
+(12, 7)
+(12, 25)
+(12, 23)
+(12, 24)
+(12, 3)
+(12, 26)
+(12, 20)
+(12, 8)
+(12, 16)
+(12, 5)
+(12, 1)
+(12, 14)
+(17, 0)
+(17, 28)
+(17, 15)
+(17, 19)
+(17, 2)
+(17, 22)
+(17, 6)
+(17, 12)
+(17, 17)
+(17, 10)
+(17, 9)
+(17, 11)
+(17, 21)
+(17, 18)
+(17, 27)
+(17, 13)
+(17, 4)
+(17, 7)
+(17, 25)
+(17, 23)
+(17, 24)
+(17, 3)(17, 26)
+(17, 20)
+(17, 8)
+(17, 16)
+(17, 5)
+(17, 1)
+(17, 14)
+(10, 0)
+(10, 28)
+(10, 15)
+(10, 19) (10, 2)
+(10, 22)
+(10, 6)
+(10, 12)
+(10, 17)
+(10, 10)
+(10, 9)
+(10, 11)
+(10, 21)
+(10, 18)
+(10, 27)
+(10, 13)
+(10, 4)
+(10, 7)
+(10, 25)
+(10, 23)
+(10, 24)
+(10, 3)
+(10, 26)
+(10, 20)
+(10, 8)
+(10, 16)
+(10, 5)
+(10, 1)
+(10, 14)
+(9, 0)
+(9, 28)
+(9, 15)
+(9, 19)
+(9, 2)
+(9, 22)
+(9, 6)
+(9, 12)
+(9, 17)
+(9, 10)
+(9, 9)
+(9, 11)
+(9, 21)
+(9, 18)
+(9, 27)
+(9, 13)
+(9, 4)
+(9, 7)
+(9, 25)
+(9, 23)
+(9, 24)
+(9, 3)
+(9, 26)
+(9, 20)
+(9, 8)
+(9, 16)
+(9, 5)
+(9, 1)(9, 14)
+(11, 0)
+(11, 28)
+(11, 15)
+(11, 19) (11, 2)
+(11, 22)
+(11, 6)
+(11, 12)
+(11, 17)
+(11, 10)
+(11, 9)
+(11, 11)
+(11, 21)(11, 18)
+(11, 27)
+(11, 13)
+(11, 4)
+(11, 7)
+(11, 25)
+(11, 23)
+(11, 24)(11, 3)
+(11, 26)
+(11, 20)
+(11, 8)
+(11, 16)
+(11, 5)
+(11, 1)
+(11, 14)
+(21, 0)
+(21, 28)
+(21, 15)
+(21, 19)
+(21, 2)
+(21, 22)
+(21, 6) (21, 12)
+(21, 17)
+(21, 10)
+(21, 9)
+(21, 11)
+(21, 21)(21, 18)
+(21, 27)(21, 13)
+(21, 4)
+(21, 7)
+(21, 25)
+(21, 23)
+(21, 24)
+(21, 3)
+(21, 26)
+(21, 20)
+(21, 8)
+(21, 16)
+(21, 5)
+(21, 1)
+(21, 14)
+(18, 0)
+(18, 28)
+(18, 15)
+(18, 19)
+(18, 2)
+(18, 22)
+(18, 6)
+(18, 12)
+(18, 17)
+(18, 10)
+(18, 9)
+(18, 11)
+(18, 21)
+(18, 18)
+(18, 27)
+(18, 13)
+(18, 4) (18, 7)
+(18, 25)
+(18, 23)
+(18, 24)
+(18, 3)
+(18, 26)
+(18, 20)
+(18, 8)
+(18, 16)
+(18, 5)
+(18, 1)
+(18, 14)
+(27, 0)
+(27, 28)
+(27, 15)(27, 19)
+(27, 2)
+(27, 22)
+(27, 6)
+(27, 12)
+(27, 17)
+(27, 10)
+(27, 9)
+(27, 11)
+(27, 21)
+(27, 18)
+(27, 27)
+(27, 13)
+(27, 4)
+(27, 7)
+(27, 25)
+(27, 23)
+(27, 24)
+(27, 3)
+(27, 26)
+(27, 20)
+(27, 8)
+(27, 16)
+(27, 5)
+(27, 1)
+(27, 14)
+(13, 0)
+(13, 28)
+(13, 15)
+(13, 19)
+(13, 2)
+(13, 22)
+(13, 6)
+(13, 12)
+(13, 17)
+(13, 10)
+(13, 9)
+(13, 11)
+(13, 21)
+(13, 18)
+(13, 27)
+(13, 13)
+(13, 4)
+(13, 7)
+(13, 25)
+(13, 23)
+(13, 24)
+(13, 3)
+(13, 26)
+(13, 20)
+(13, 8)
+(13, 16)
+(13, 5)
+(13, 1)
+(13, 14)
+(4, 0)
+(4, 28)
+(4, 15)
+(4, 19)
+(4, 2)
+(4, 22)
+(4, 6)
+(4, 12)
+(4, 17)
+(4, 10)
+(4, 9)
+(4, 11)
+(4, 21)
+(4, 18)
+(4, 27)
+(4, 13)
+(4, 4)
+(4, 7)
+(4, 25)
+(4, 23)
+(4, 24)
+(4, 3)
+(4, 26)
+(4, 20)
+(4, 8)
+(4, 16)
+(4, 5)(4, 1)
+(4, 14)
+(7, 0)
+(7, 28)
+(7, 15)
+(7, 19)
+(7, 2)
+(7, 22)
+(7, 6)
+(7, 12)
+(7, 17)
+(7, 10)
+(7, 9)
+(7, 11)
+(7, 21)
+(7, 18)
+(7, 27)
+(7, 13)
+(7, 4)
+(7, 7)
+(7, 25)
+(7, 23)
+(7, 24)
+(7, 3)
+(7, 26)
+(7, 20)
+(7, 8)
+(7, 16)
+(7, 5)
+(7, 1)
+(7, 14)
+(25, 0)
+(25, 28)
+(25, 15)
+(25, 19)
+(25, 2)
+(25, 22)
+(25, 6)
+(25, 12)
+(25, 17)
+(25, 10)
+(25, 9)
+(25, 11)
+(25, 21)
+(25, 18)
+(25, 27)
+(25, 13)
+(25, 4)
+(25, 7)
+(25, 25) (25, 23)
+(25, 24)
+(25, 3)
+(25, 26)
+(25, 20)
+(25, 8)
+(25, 16)
+(25, 5)
+(25, 1)
+(25, 14)
+(23, 0)
+(23, 28)
+(23, 15)
+(23, 19)
+(23, 2)
+(23, 22)
+(23, 6) (23, 12)
+(23, 17)
+(23, 10)
+(23, 9)
+(23, 11)
+(23, 21)
+(23, 18)
+(23, 27)
+(23, 13)
+(23, 4)
+(23, 7)
+(23, 25)
+(23, 23)
+(23, 24)
+(23, 3)
+(23, 26)
+(23, 20)
+(23, 8)
+(23, 16)
+(23, 5)
+(23, 1) (23, 14)
+(24, 0)
+(24, 28)
+(24, 15)
+(24, 19)
+(24, 2)
+(24, 22)
+(24, 6)
+(24, 12)
+(24, 17)
+(24, 10)
+(24, 9)
+(24, 11)
+(24, 21)
+(24, 18)
+(24, 27)
+(24, 13)
+(24, 4)
+(24, 7)
+(24, 25)
+(24, 23)
+(24, 24)
+(24, 3)
+(24, 26)(24, 20)
+(24, 8)
+(24, 16)
+(24, 5)
+(24, 1)
+(24, 14)
+(3, 0)
+(3, 28)
+(3, 15)
+(3, 19)
+(3, 2)
+(3, 22)
+(3, 6)
+(3, 12)
+(3, 17)
+(3, 10)
+(3, 9)
+(3, 11)
+(3, 21)
+(3, 18)
+(3, 27)
+(3, 13)
+(3, 4)
+(3, 7)
+(3, 25)
+(3, 23)
+(3, 24)
+(3, 3)
+(3, 26)
+(3, 20)
+(3, 8)
+(3, 16)
+(3, 5)
+(3, 1)
+(3, 14)
+(26, 0)
+(26, 28)
+(26, 15)
+(26, 19)
+(26, 2)
+(26, 22)
+(26, 6)
+(26, 12)
+(26, 17)
+(26, 10)
+(26, 9)
+(26, 11)
+(26, 21)
+(26, 18)
+(26, 27)
+(26, 13)
+(26, 4)
+(26, 7)
+(26, 25)
+(26, 23)
+(26, 24)
+(26, 3)
+(26, 26)
+(26, 20)
+(26, 8)(26, 16)
+(26, 5)
+(26, 1)
+(26, 14)
+(20, 0)
+(20, 28)
+(20, 15)
+(20, 19)
+(20, 2)
+(20, 22)
+(20, 6)
+(20, 12)
+(20, 17)
+(20, 10)
+(20, 9)
+(20, 11)
+(20, 21)
+(20, 18)
+(20, 27)
+(20, 13)
+(20, 4)
+(20, 7)
+(20, 25)
+(20, 23)
+(20, 24)
+(20, 3)
+(20, 26)
+(20, 20)
+(20, 8)
+(20, 16)
+(20, 5)
+(20, 1)
+(20, 14)
+(8, 0)
+(8, 28)
+(8, 15)
+(8, 19)
+(8, 2)
+(8, 22)
+(8, 6)
+(8, 12)
+(8, 17)
+(8, 10)
+(8, 9)
+(8, 11)
+(8, 21)
+(8, 18)
+(8, 27)
+(8, 13)
+(8, 4)
+(8, 7)
+(8, 25)
+(8, 23)
+(8, 24)
+(8, 3)
+(8, 26)
+(8, 20)
+(8, 8)
+(8, 16)
+(8, 5)
+(8, 1)
+(8, 14)
+(16, 0)
+(16, 28)
+(16, 15)
+(16, 19)
+(16, 2)
+(16, 22)
+(16, 6)
+(16, 12)
+(16, 17)
+(16, 10)
+(16, 9)
+(16, 11)
+(16, 21)
+(16, 18)
+(16, 27)
+(16, 13)
+(16, 4) (16, 7)
+(16, 25)
+(16, 23)
+(16, 24)
+(16, 3)
+(16, 26)
+(16, 20)
+(16, 8)
+(16, 16)
+(16, 5)
+(16, 1)
+(16, 14)
+(5, 0)
+(5, 28)
+(5, 15)
+(5, 19)
+(5, 2)
+(5, 22)
+(5, 6)
+(5, 12)
+(5, 17)
+(5, 10)
+(5, 9)
+(5, 11)
+(5, 21)
+(5, 18)
+(5, 27)
+(5, 13)
+(5, 4)
+(5, 7)
+(5, 25)
+(5, 23)
+(5, 24)
+(5, 3)
+(5, 26)
+(5, 20)
+(5, 8)
+(5, 16)
+(5, 5)
+(5, 1)
+(5, 14)
+(1, 0)
+(1, 28)
+(1, 15)(1, 19)
+(1, 2)
+(1, 22)
+(1, 6)
+(1, 12)
+(1, 17)
+(1, 10)
+(1, 9)
+(1, 11)
+(1, 21)
+(1, 18)
+(1, 27)
+(1, 13)
+(1, 4)
+(1, 7)
+(1, 25)
+(1, 23)
+(1, 24)
+(1, 3)
+(1, 26)
+(1, 20)
+(1, 8)
+(1, 16)
+(1, 5)
+(1, 1)
+(1, 14)
+(14, 0)
+(14, 28)
+(14, 15)
+(14, 19)
+(14, 2)
+(14, 22)
+(14, 6)
+(14, 12)
+(14, 17)
+(14, 10)
+(14, 9)
+(14, 11)
+(14, 21)
+(14, 18)
+(14, 27)
+(14, 13)
+(14, 4)
+(14, 7)
+(14, 25)
+(14, 23)
+(14, 24)(14, 3)
+(14, 26)
+(14, 20)
+(14, 8)
+(14, 16)
+(14, 5)
+(14, 1)
+(14, 14)
+(h) layer 2, head 4
+Figure 16: PCA for concatenated (x, y)/(x, z) features for all heads in d = 2 model.
+E.4
+Cosine-similarity analysis for MLPs
+As we mentioned in Section 5.2, Skills II and III are likely implemented within the MLP layer. While
+we provided extensive details on how the signature of Skill II was observed in MLP, we could not
+find clear signals similar to those in Nanda et al. [20], Gromov [11] from MLP layers on Skill III.
+E.4.1
+d = 4 model
+Here, we show an extended version of Figure 7 for all layers from the d = 4 model. We plot for
+2-shot (Figure 20) and 16-shot (Figure 21), the task vector used is (a, b) = (2, 6).
+18
+
+1st
+3rd
+3rd
+4th
+1st
+3rd
+4th
+3rd
+1st
+3rd
+3rd
+4th
+1st
+3rd
+4th
+3rd
+(a, b) = (6, 6)
+(a, b) = (1, 16)
+layer 1, head 3
+layer 2, head 2
+Figure 17: More PCA analysis similar to Figure 6. Top-2 components of PCA contribute ∼40%
+variance of the layer 1 head and ∼20% variance of the layer 2 head, while the top-4 components
+contribute ∼60% and ∼40% accordingly.
+1st
+3rd
+3rd
+4th
+1st
+3rd
+4th
+3rd
+1st
+3rd
+3rd
+4th
+3rd
+3rd
+4th
+layer 1
+layer 2
+Attention
+MLP
+Attention
+MLP
+Figure 18: PCA analysis of Attention and MLP outputs. Attention modules contribute ∼50% and
+∼30% to top-4 components of PCA of layer 1 and layer 2. MLP modules contribute ∼10% and
+∼12% accordingly.
+Layer 1
+Layer 2
+Layer 3
+Layer 1
+Layer 2
+d = 4
+d = 2
+y
+x
+x
+x
+x
+y
+x
+x
+x
+x
+y
+x
+x
+x
+x
+y
+x
+x
+x
+x
+y
+x
+x
+x
+x
+2-shot : (4  21  5) (2  6  9)  (x  y  ?)
+Figure 19: MLP (hidden) activations as a function of inputs (x, y) for d = 2, 4 models.
+E.4.2
+d = 2 model
+Here, we show an extended version of Figure 7 for all layers from the d = 2 model. We plot for
+2-shot (Figure 22) and 10-shot (Figure 23), the task vector used is (a, b) = (2, 6).
+19
+
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(a) y, layer 1
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(b) y, layer 2
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(c) y, layer 3
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(d) y, layer 4
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(e) z, layer 1
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(f) z, layer 2
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(g) z, layer 3
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(h) z, layer 4
+Figure 20: Cosine-similarity of d = 4 model for every block, measured at 2-shot.
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(a) y, layer 1
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(b) y, layer 2
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(c) y, layer 3
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(d) y, layer 4
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(e) z, layer 1
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(f) z, layer 2
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(g) z, layer 3
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(h) z, layer 4
+Figure 21: Cosine-similarity of d = 4 model for every block, measured at 16-shot.
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(a) y, layer 1
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(b) y, layer 2
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(c) z, layer 1
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(d) z, layer 2
+Figure 22: Cosine-similarity of d = 2 model for every block, measured at 2-shot.
+20
+
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(a) y, layer 1
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(b) y, layer 2
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(c) z, layer 1
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+(x = 1, y)
+(x = 2, y)
+(x = 3, y)
+(x = 4, y)
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+(d) z, layer 2
+Figure 23: Cosine-similarity of d = 2 model for every block, measured at 10-shot.
+0
+4
+8
+12
+16
+20
+24
+28
+k-shot
+0
+4
+8
+12
+16
+20
+24
+28
+position of corrupted label
+i.d. train
+0
+4
+8
+12
+16
+20
+24
+28
+k-shot
+0
+4
+8
+12
+16
+20
+24
+28
+o.o.d. train
+0
+4
+8
+12
+16
+20
+24
+28
+k-shot
+0
+4
+8
+12
+16
+20
+24
+28
+i.d. test
+0
+4
+8
+12
+16
+20
+24
+28
+k-shot
+0
+4
+8
+12
+16
+20
+24
+28
+o.o.d. test
+incorrect
+correct
+(a) single label corruption, d = 4
+0
+4
+8
+12
+16
+20
+24
+28
+k-shot
+0
+4
+8
+12
+16
+20
+24
+28
+# of wrong labels
+0
+4
+8
+12
+16
+20
+24
+28
+k-shot
+0
+4
+8
+12
+16
+20
+24
+28
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Acc
+2.75
+3.00
+3.25
+3.50
+3.75
+4.00
+Loss
+(b) multiple label corruption, d = 4
+0
+4
+8
+12
+16
+20
+24
+28
+k-shot
+0
+4
+8
+12
+16
+20
+24
+28
+# of wrong labels
+0
+4
+8
+12
+16
+20
+24
+28
+k-shot
+0
+4
+8
+12
+16
+20
+24
+28
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Acc
+3.2
+3.4
+3.6
+3.8
+4.0
+Loss
+(c) multiple label corruption, d = 2
+Figure 24: (a) Single label corruption : Performance of last token prediction as a function of changing
+position for a single label corruption. The x-axis shows different shots presented to the model, while
+the y-axis shows the position j where the label is corrupted zj →z′
+j. The d = 4 model is remarkably
+robust for long sequences, indicating the use of an algorithm which is not sensitive to the position of
+preceding examples. Qualitatively similar plots hold for other task vectors as well. (b, c) Multiple
+label corruption, at random locations for d = 4 and d = 2 models respectively. The d = 4 model
+is more resilient to label corruption than the d = 2 model, implying that the algorithm the latter
+employs is imperfect due to limited capacity.
+E.5
+Label Noise
+To gain insight into how the model combines the in-context examples, we introduce label-corruption
+in the in-context examples. In particular, we note the effect of (i) amount and (ii) position of label
+corruption on the model’s performance. When we corrupt a single in-context example for d = 4
+model, the model performance remains unaffected for longer sequences. This hints at that weighted
+average of the in-context inputs being used in model prediction. The d = 2 model, however, did not
+show such resilience.
+Next, we corrupt multiple in-context examples in random locations. We study the effect on model per-
+formance as the amount of corrupted labels increases. While the d = 2 model is easily overwhelmed,
+the d = 4 model is able to offer strong resistance even at ∼40% label corruption, for long sequences.
+This behavior remains invariant with the change in task vector for the particular sequence, indicating
+the universality of the underlying algorithm necessary for o.o.d. generalization.
+21
+
+F
+Additional Training Curves
+We plot some selected training curves for d = 4 (Figure 25) and d = 2 (Figure 26) from Figure 4
+phase diagrams. We see that even for d = 4, ICL can be a transient. With increased α or ni.d., the
+transient nature goes away.
+0
+50k
+100k
+150k
+200k
+step
+0.0
+1.0
+2.0
+3.0
+4.0
+5.0
+6.0
+7.0
+8.0
+loss
+ni. d.
+23
+24
+25
+26
+27
+28
+29
+0
+50k
+100k
+150k
+200k
+step
+0
+25
+50
+75
+100
+accuracy (%)
+(a) d = 4, α = 0.7
+0
+50k
+100k
+150k
+200k
+step
+0.0
+1.0
+2.0
+3.0
+4.0
+5.0
+6.0
+7.0
+loss
+ni. d.
+23
+24
+25
+26
+27
+28
+29
+0
+50k
+100k
+150k
+200k
+step
+0
+25
+50
+75
+100
+accuracy (%)
+(b) d = 4, α = 0.6
+Figure 25: Training curves for d = 4, averaged over three random seeds.
+0
+50k
+100k
+150k
+200k
+step
+0.0
+1.0
+2.0
+3.0
+4.0
+5.0
+6.0
+7.0
+loss
+ni. d.
+23
+24
+25
+26
+27
+28
+29
+0
+50k
+100k
+150k
+200k
+step
+0
+25
+50
+75
+100
+accuracy (%)
+(a) d = 2, α = 0.7
+0
+50k
+100k
+150k
+200k
+step
+0.0
+1.0
+2.0
+3.0
+4.0
+5.0
+6.0
+loss
+ni. d.
+23
+24
+25
+26
+27
+28
+29
+0
+50k
+100k
+150k
+200k
+step
+0
+25
+50
+75
+100
+accuracy (%)
+(b) d = 2, α = 0.6
+Figure 26: Training curves for d = 2, averaged over three random seeds.
+22
+
+G
+Additional Phase Diagrams
+In Figure 27, we plotted detailed/extended versions of the phase diagrams shown in Figure 1/Figure 4.
+The four phases story we have shown in Figure 1 still hold for other depths.
+23
+24
+25
+26
+27
+28
+29
+# of pre-training tasks (ni. d. )
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+pre-training inputs fraction ( )
+i.d. train
+23
+24
+25
+26
+27
+28
+29
+# of pre-training tasks (ni. d. )
+i.d. test
+23
+24
+25
+26
+27
+28
+29
+# of pre-training tasks (ni. d. )
+o.o.d. train
+23
+24
+25
+26
+27
+28
+29
+# of pre-training tasks (ni. d. )
+o.o.d. test
+0
+20
+40
+60
+80
+100
+(a) d = 6, last shot
+23
+24
+25
+26
+27
+28
+29
+# of pre-training tasks (ni. d. )
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+pre-training inputs fraction ( )
+i.d. train
+23
+24
+25
+26
+27
+28
+29
+# of pre-training tasks (ni. d. )
+i.d. test
+23
+24
+25
+26
+27
+28
+29
+# of pre-training tasks (ni. d. )
+o.o.d. train
+23
+24
+25
+26
+27
+28
+29
+# of pre-training tasks (ni. d. )
+o.o.d. test
+0
+20
+40
+60
+80
+100
+(b) d = 4
+23
+24
+25
+26
+27
+28
+29
+# of pre-training tasks (ni. d. )
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+pre-training inputs fraction ( )
+i.d. train
+23
+24
+25
+26
+27
+28
+29
+# of pre-training tasks (ni. d. )
+i.d. test
+23
+24
+25
+26
+27
+28
+29
+# of pre-training tasks (ni. d. )
+o.o.d. train
+23
+24
+25
+26
+27
+28
+29
+# of pre-training tasks (ni. d. )
+o.o.d. test
+0
+20
+40
+60
+80
+100
+(c) d = 2
+Figure 27: Phase diagrams on all four sets for d = 4 and d = 2.
+23
+
+H
+Different Choice of p
+In this section, we check the effect of varying task difficulties, i.e. the value of p. In Figure 28, we
+plotted o.o.d. generalization accuracy. Clearly as the task gets harder, the model needs to see more
+tasks to generalize out-of-distribution.
+2
+5
+2
+6
+2
+7
+2
+8
+2
+9
+2
+10
+# of pre-training tasks (ni. d. )
+0.5
+1.0
+1.5
+2.0
+2.5
+3.0
+3.5
+4.0
+loss
+ni. d.
+29
+37
+47
+2
+5
+2
+6
+2
+7
+2
+8
+2
+9
+2
+10
+# of pre-training tasks (ni. d. )
+0
+25
+50
+75
+100
+accuracy (%)
+p
+29
+37
+47
+(a)
+Figure 28: We compare the best performance for d = 6 models with different ni.d. values, averaged
+over three seeds. We use learning rate η = 10−4 for p = 37 and p = 47, while keeping other
+hyperparameters the same as p = 29.
+24
+
+NeurIPS Paper Checklist
+1. Claims
+Question: Do the main claims made in the abstract and introduction accurately reflect the
+paper’s contributions and scope?
+Answer: [Yes]
+Justification: Our main claim are summarized in Figure 1, Section 4 and Section 5 offer
+detailed explainations.
+Guidelines:
+• The answer NA means that the abstract and introduction do not include the claims
+made in the paper.
+• The abstract and/or introduction should clearly state the claims made, including the
+contributions made in the paper and important assumptions and limitations. A No or
+NA answer to this question will not be perceived well by the reviewers.
+• The claims made should match theoretical and experimental results, and reflect how
+much the results can be expected to generalize to other settings.
+• It is fine to include aspirational goals as motivation as long as it is clear that these goals
+are not attained by the paper.
+2. Limitations
+Question: Does the paper discuss the limitations of the work performed by the authors?
+Answer: [Yes]
+Justification: We include the limitations of our work in Section 6.
+Guidelines:
+• The answer NA means that the paper has no limitation while the answer No means that
+the paper has limitations, but those are not discussed in the paper.
+• The authors are encouraged to create a separate ”Limitations” section in their paper.
+• The paper should point out any strong assumptions and how robust the results are to
+violations of these assumptions (e.g., independence assumptions, noiseless settings,
+model well-specification, asymptotic approximations only holding locally). The authors
+should reflect on how these assumptions might be violated in practice and what the
+implications would be.
+• The authors should reflect on the scope of the claims made, e.g., if the approach was
+only tested on a few datasets or with a few runs. In general, empirical results often
+depend on implicit assumptions, which should be articulated.
+• The authors should reflect on the factors that influence the performance of the approach.
+For example, a facial recognition algorithm may perform poorly when image resolution
+is low or images are taken in low lighting. Or a speech-to-text system might not be
+used reliably to provide closed captions for online lectures because it fails to handle
+technical jargon.
+• The authors should discuss the computational efficiency of the proposed algorithms
+and how they scale with dataset size.
+• If applicable, the authors should discuss possible limitations of their approach to
+address problems of privacy and fairness.
+• While the authors might fear that complete honesty about limitations might be used by
+reviewers as grounds for rejection, a worse outcome might be that reviewers discover
+limitations that aren’t acknowledged in the paper. The authors should use their best
+judgment and recognize that individual actions in favor of transparency play an impor-
+tant role in developing norms that preserve the integrity of the community. Reviewers
+will be specifically instructed to not penalize honesty concerning limitations.
+3. Theory Assumptions and Proofs
+Question: For each theoretical result, does the paper provide the full set of assumptions and
+a complete (and correct) proof?
+Answer: [NA]
+25
+
+Justification: This is not a theoretical paper.
+Guidelines:
+• The answer NA means that the paper does not include theoretical results.
+• All the theorems, formulas, and proofs in the paper should be numbered and cross-
+referenced.
+• All assumptions should be clearly stated or referenced in the statement of any theorems.
+• The proofs can either appear in the main paper or the supplemental material, but if
+they appear in the supplemental material, the authors are encouraged to provide a short
+proof sketch to provide intuition.
+• Inversely, any informal proof provided in the core of the paper should be complemented
+by formal proofs provided in appendix or supplemental material.
+• Theorems and Lemmas that the proof relies upon should be properly referenced.
+4. Experimental Result Reproducibility
+Question: Does the paper fully disclose all the information needed to reproduce the main ex-
+perimental results of the paper to the extent that it affects the main claims and/or conclusions
+of the paper (regardless of whether the code and data are provided or not)?
+Answer: [Yes]
+Justification: We explained our settings in Section 3 and hyperparameters in Appendix A.
+Guidelines:
+• The answer NA means that the paper does not include experiments.
+• If the paper includes experiments, a No answer to this question will not be perceived
+well by the reviewers: Making the paper reproducible is important, regardless of
+whether the code and data are provided or not.
+• If the contribution is a dataset and/or model, the authors should describe the steps taken
+to make their results reproducible or verifiable.
+• Depending on the contribution, reproducibility can be accomplished in various ways.
+For example, if the contribution is a novel architecture, describing the architecture fully
+might suffice, or if the contribution is a specific model and empirical evaluation, it may
+be necessary to either make it possible for others to replicate the model with the same
+dataset, or provide access to the model. In general. releasing code and data is often
+one good way to accomplish this, but reproducibility can also be provided via detailed
+instructions for how to replicate the results, access to a hosted model (e.g., in the case
+of a large language model), releasing of a model checkpoint, or other means that are
+appropriate to the research performed.
+• While NeurIPS does not require releasing code, the conference does require all submis-
+sions to provide some reasonable avenue for reproducibility, which may depend on the
+nature of the contribution. For example
+(a) If the contribution is primarily a new algorithm, the paper should make it clear how
+to reproduce that algorithm.
+(b) If the contribution is primarily a new model architecture, the paper should describe
+the architecture clearly and fully.
+(c) If the contribution is a new model (e.g., a large language model), then there should
+either be a way to access this model for reproducing the results or a way to reproduce
+the model (e.g., with an open-source dataset or instructions for how to construct
+the dataset).
+(d) We recognize that reproducibility may be tricky in some cases, in which case
+authors are welcome to describe the particular way they provide for reproducibility.
+In the case of closed-source models, it may be that access to the model is limited in
+some way (e.g., to registered users), but it should be possible for other researchers
+to have some path to reproducing or verifying the results.
+5. Open access to data and code
+Question: Does the paper provide open access to the data and code, with sufficient instruc-
+tions to faithfully reproduce the main experimental results, as described in supplemental
+material?
+26
+
+Answer: [Yes]
+Justification: GitHub link offered.
+Guidelines:
+• The answer NA means that paper does not include experiments requiring code.
+• Please see the NeurIPS code and data submission guidelines (https://nips.cc/
+public/guides/CodeSubmissionPolicy) for more details.
+• While we encourage the release of code and data, we understand that this might not be
+possible, so “No” is an acceptable answer. Papers cannot be rejected simply for not
+including code, unless this is central to the contribution (e.g., for a new open-source
+benchmark).
+• The instructions should contain the exact command and environment needed to run to
+reproduce the results. See the NeurIPS code and data submission guidelines (https:
+//nips.cc/public/guides/CodeSubmissionPolicy) for more details.
+• The authors should provide instructions on data access and preparation, including how
+to access the raw data, preprocessed data, intermediate data, and generated data, etc.
+• The authors should provide scripts to reproduce all experimental results for the new
+proposed method and baselines. If only a subset of experiments are reproducible, they
+should state which ones are omitted from the script and why.
+• At submission time, to preserve anonymity, the authors should release anonymized
+versions (if applicable).
+• Providing as much information as possible in supplemental material (appended to the
+paper) is recommended, but including URLs to data and code is permitted.
+6. Experimental Setting/Details
+Question: Does the paper specify all the training and test details (e.g., data splits, hyper-
+parameters, how they were chosen, type of optimizer, etc.) necessary to understand the
+results?
+Answer: [Yes]
+Justification: Details are summarized in Appendix A, with explanations on data split in
+Section 3. We also provide code in supplementary material.
+Guidelines:
+• The answer NA means that the paper does not include experiments.
+• The experimental setting should be presented in the core of the paper to a level of detail
+that is necessary to appreciate the results and make sense of them.
+• The full details can be provided either with the code, in appendix, or as supplemental
+material.
+7. Experiment Statistical Significance
+Question: Does the paper report error bars suitably and correctly defined or other appropriate
+information about the statistical significance of the experiments?
+Answer: [Yes]
+Justification: We show the standard error in most training curves, with an average of over
+three random seeds.
+Guidelines:
+• The answer NA means that the paper does not include experiments.
+• The authors should answer ”Yes” if the results are accompanied by error bars, confi-
+dence intervals, or statistical significance tests, at least for the experiments that support
+the main claims of the paper.
+• The factors of variability that the error bars are capturing should be clearly stated (for
+example, train/test split, initialization, random drawing of some parameter, or overall
+run with given experimental conditions).
+• The method for calculating the error bars should be explained (closed form formula,
+call to a library function, bootstrap, etc.)
+• The assumptions made should be given (e.g., Normally distributed errors).
+27
+
+• It should be clear whether the error bar is the standard deviation or the standard error
+of the mean.
+• It is OK to report 1-sigma error bars, but one should state it. The authors should
+preferably report a 2-sigma error bar than state that they have a 96% CI, if the hypothesis
+of Normality of errors is not verified.
+• For asymmetric distributions, the authors should be careful not to show in tables or
+figures symmetric error bars that would yield results that are out of range (e.g. negative
+error rates).
+• If error bars are reported in tables or plots, The authors should explain in the text how
+they were calculated and reference the corresponding figures or tables in the text.
+8. Experiments Compute Resources
+Question: For each experiment, does the paper provide sufficient information on the com-
+puter resources (type of compute workers, memory, time of execution) needed to reproduce
+the experiments?
+Answer: [Yes]
+Justification: We have a Appendix B on this.
+Guidelines:
+• The answer NA means that the paper does not include experiments.
+• The paper should indicate the type of compute workers CPU or GPU, internal cluster,
+or cloud provider, including relevant memory and storage.
+• The paper should provide the amount of compute required for each of the individual
+experimental runs as well as estimate the total compute.
+• The paper should disclose whether the full research project required more compute
+than the experiments reported in the paper (e.g., preliminary or failed experiments that
+didn’t make it into the paper).
+9. Code Of Ethics
+Question: Does the research conducted in the paper conform, in every respect, with the
+NeurIPS Code of Ethics https://neurips.cc/public/EthicsGuidelines?
+Answer: [Yes]
+Justification: We have read and understood the code of ethics; and have done our best to
+conform.
+Guidelines:
+• The answer NA means that the authors have not reviewed the NeurIPS Code of Ethics.
+• If the authors answer No, they should explain the special circumstances that require a
+deviation from the Code of Ethics.
+• The authors should make sure to preserve anonymity (e.g., if there is a special consid-
+eration due to laws or regulations in their jurisdiction).
+10. Broader Impacts
+Question: Does the paper discuss both potential positive societal impacts and negative
+societal impacts of the work performed?
+Answer: [NA]
+Justification: Our work involves small models and toy datasets. It does no impact the society
+at large, beyond improving our understanding of certain aspects of deep learning.
+Guidelines:
+• The answer NA means that there is no societal impact of the work performed.
+• If the authors answer NA or No, they should explain why their work has no societal
+impact or why the paper does not address societal impact.
+• Examples of negative societal impacts include potential malicious or unintended uses
+(e.g., disinformation, generating fake profiles, surveillance), fairness considerations
+(e.g., deployment of technologies that could make decisions that unfairly impact specific
+groups), privacy considerations, and security considerations.
+28
+
+• The conference expects that many papers will be foundational research and not tied
+to particular applications, let alone deployments. However, if there is a direct path to
+any negative applications, the authors should point it out. For example, it is legitimate
+to point out that an improvement in the quality of generative models could be used to
+generate deepfakes for disinformation. On the other hand, it is not needed to point out
+that a generic algorithm for optimizing neural networks could enable people to train
+models that generate Deepfakes faster.
+• The authors should consider possible harms that could arise when the technology is
+being used as intended and functioning correctly, harms that could arise when the
+technology is being used as intended but gives incorrect results, and harms following
+from (intentional or unintentional) misuse of the technology.
+• If there are negative societal impacts, the authors could also discuss possible mitigation
+strategies (e.g., gated release of models, providing defenses in addition to attacks,
+mechanisms for monitoring misuse, mechanisms to monitor how a system learns from
+feedback over time, improving the efficiency and accessibility of ML).
+11. Safeguards
+Question: Does the paper describe safeguards that have been put in place for responsible
+release of data or models that have a high risk for misuse (e.g., pretrained language models,
+image generators, or scraped datasets)?
+Answer: [NA]
+Justification: Since we train small models on toy-datasets, our work poses no risk of misuse.
+Guidelines:
+• The answer NA means that the paper poses no such risks.
+• Released models that have a high risk for misuse or dual-use should be released with
+necessary safeguards to allow for controlled use of the model, for example by requiring
+that users adhere to usage guidelines or restrictions to access the model or implementing
+safety filters.
+• Datasets that have been scraped from the Internet could pose safety risks. The authors
+should describe how they avoided releasing unsafe images.
+• We recognize that providing effective safeguards is challenging, and many papers do
+not require this, but we encourage authors to take this into account and make a best
+faith effort.
+12. Licenses for existing assets
+Question: Are the creators or original owners of assets (e.g., code, data, models), used in
+the paper, properly credited and are the license and terms of use explicitly mentioned and
+properly respected?
+Answer: [Yes]
+Justification: We are not shipping our code with any source code or binary files from any
+other existing libraries, so there are no concerns over getting permission or including a
+license. We did cite open-sourced libraries, e.g. PyTorch, in our paper.
+Guidelines:
+• The answer NA means that the paper does not use existing assets.
+• The authors should cite the original paper that produced the code package or dataset.
+• The authors should state which version of the asset is used and, if possible, include a
+URL.
+• The name of the license (e.g., CC-BY 4.0) should be included for each asset.
+• For scraped data from a particular source (e.g., website), the copyright and terms of
+service of that source should be provided.
+• If assets are released, the license, copyright information, and terms of use in the
+package should be provided. For popular datasets, paperswithcode.com/datasets
+has curated licenses for some datasets. Their licensing guide can help determine the
+license of a dataset.
+29
+
+• For existing datasets that are re-packaged, both the original license and the license of
+the derived asset (if it has changed) should be provided.
+• If this information is not available online, the authors are encouraged to reach out to
+the asset’s creators.
+13. New Assets
+Question: Are new assets introduced in the paper well documented and is the documentation
+provided alongside the assets?
+Answer: [Yes]
+Justification: We will release our code base with included readme files. We do not ship any
+source code or binary files from any other existing libraries.
+Guidelines:
+• The answer NA means that the paper does not release new assets.
+• Researchers should communicate the details of the dataset/code/model as part of their
+submissions via structured templates. This includes details about training, license,
+limitations, etc.
+• The paper should discuss whether and how consent was obtained from people whose
+asset is used.
+• At submission time, remember to anonymize your assets (if applicable). You can either
+create an anonymized URL or include an anonymized zip file.
+14. Crowdsourcing and Research with Human Subjects
+Question: For crowdsourcing experiments and research with human subjects, does the paper
+include the full text of instructions given to participants and screenshots, if applicable, as
+well as details about compensation (if any)?
+Answer: [NA]
+Justification: This work does not involve crowdsourcing nor research with human subjects.
+Guidelines:
+• The answer NA means that the paper does not involve crowdsourcing nor research with
+human subjects.
+• Including this information in the supplemental material is fine, but if the main contribu-
+tion of the paper involves human subjects, then as much detail as possible should be
+included in the main paper.
+• According to the NeurIPS Code of Ethics, workers involved in data collection, curation,
+or other labor should be paid at least the minimum wage in the country of the data
+collector.
+15. Institutional Review Board (IRB) Approvals or Equivalent for Research with Human
+Subjects
+Question: Does the paper describe potential risks incurred by study participants, whether
+such risks were disclosed to the subjects, and whether Institutional Review Board (IRB)
+approvals (or an equivalent approval/review based on the requirements of your country or
+institution) were obtained?
+Answer: [NA]
+Justification: This work does not involve crowdsourcing nor research with human subjects.
+Guidelines:
+• The answer NA means that the paper does not involve crowdsourcing nor research with
+human subjects.
+• Depending on the country in which research is conducted, IRB approval (or equivalent)
+may be required for any human subjects research. If you obtained IRB approval, you
+should clearly state this in the paper.
+• We recognize that the procedures for this may vary significantly between institutions
+and locations, and we expect authors to adhere to the NeurIPS Code of Ethics and the
+guidelines for their institution.
+• For initial submissions, do not include any information that would break anonymity (if
+applicable), such as the institution conducting the review.
+30
+

@@ -1,0 +1,2691 @@
+Published as a conference paper at ICLR 2021
+CONTRASTIVE BEHAVIORAL SIMILARITY
+EMBEDDINGS FOR GENERALIZATION IN
+REINFORCEMENT LEARNING
+Rishabh Agarwal∗
+Marlos C. Machado‡
+Pablo Samuel Castro
+Marc G. Bellemare
+Google Research, Brain Team
+{rishabhagarwal, marlosm, psc, bellemare}@google.com
+ABSTRACT
+Reinforcement learning methods trained on few environments rarely learn policies
+that generalize to unseen environments. To improve generalization, we incorporate
+the inherent sequential structure in reinforcement learning into the representation
+learning process. This approach is orthogonal to recent approaches, which rarely
+exploit this structure explicitly. Speciﬁcally, we introduce a theoretically motivated
+policy similarity metric (PSM) for measuring behavioral similarity between states.
+PSM assigns high similarity to states for which the optimal policies in those states
+as well as in future states are similar. We also present a contrastive representation
+learning procedure to embed any state similarity metric, which we instantiate
+with PSM to obtain policy similarity embeddings (PSEs1). We demonstrate that
+PSEs improve generalization on diverse benchmarks, including LQR with spurious
+correlations, a jumping task from pixels, and Distracting DM Control Suite.
+1
+INTRODUCTION
+Train Env
+Train Env
+Test Env
+Figure 1: Jumping task: The agent (white block),
+learning from pixels, needs to jump over an obsta-
+cle (grey square). The challenge is to generalize to
+unseen obstacle positions and ﬂoor heights in test
+tasks using a small number of training tasks. We
+show the agent’s trajectories using faded blocks.
+Current reinforcement learning (RL) approaches of-
+ten learn policies that do not generalize to environ-
+ments different than those the agent was trained on,
+even when these environments are semantically equiv-
+alent (Tachet des Combes et al., 2018; Song et al.,
+2019; Cobbe et al., 2019). For example, consider a
+jumping task where an agent, learning from pixels,
+needs to jump over an obstacle (Figure 1). Deep RL
+agents trained on a few of these tasks with different
+obstacle positions struggle to solve test tasks where
+obstacles are at previously unseen locations.
+Recent solutions to circumvent poor generalization in RL are adapted from supervised learning,
+and, as such, largely ignore the sequential aspect of RL. Most of these solutions revolve around
+enhancing the learning process, including data augmentation (e.g., Kostrikov et al., 2020; Lee et al.,
+2020a), regularization (Cobbe et al., 2019; Farebrother et al., 2018), noise injection (Igl et al., 2019),
+and diverse training conditions (Tobin et al., 2017); they rarely exploit properties of the sequential
+decision making problem such as similarity in actions across temporal observations.
+Instead, we tackle generalization by incorporating properties of the RL problem into the representation
+learning process. Our approach exploits the fact that an agent, when operating in environments with
+similar underlying mechanics, exhibits at least short sequences of behaviors that are similar across
+these environments. Concretely, the agent is optimized to learn an embedding in which states are
+close when the agent’s optimal policies in these states and future states are similar. This notion of
+proximity is general and it is applicable to observations from different environments.
+Speciﬁcally, inspired by bisimulation metrics (Castro, 2020; Ferns et al., 2004), we propose a
+novel policy similarity metric (PSM). PSM (Section 3) deﬁnes a notion of similarity between states
+originated from different environments by the proximity of the long-term optimal behavior from these
+states. PSM is reward-agnostic, making it more robust for generalization compared to approaches that
+∗Also at Mila, Université de Montréal. ‡Now at DeepMind.
+1Pronounce ‘pisces’.
+1
+
+Published as a conference paper at ICLR 2021
+rely on reward information. We prove that PSM yields an upper bound on suboptimality of policies
+transferred from one environment to another (Theorem 1), which is not attainable with bisimulation.
+We employ PSM for representation learning and introduce policy similarity embeddings (PSEs) for
+deep RL. To do so, we present a general contrastive procedure (Section 4) to learn an embedding
+based on any state similarity metric. PSEs are the instantiation of this procedure with PSM. PSEs
+are appealing for generalization as they encode task-relevant invariances by putting behaviorally
+equivalent states together. This is unlike prior approaches, which rely on capturing such invariances
+without being explicitly trained to do so, for example, through value function similarities across
+states (e.g., Castro & Precup, 2010), or being robust to ﬁxed transformations of the observation
+space (e.g., Kostrikov et al., 2020; Laskin et al., 2020a).
+PSEs lead to better generalization while being orthogonal to how most of the ﬁeld has been tackling
+generalization. We illustrate the efﬁcacy and broad applicability of our approach on three existing
+benchmarks speciﬁcally designed to test generalization: (i) jumping task from pixels (Tachet des
+Combes et al., 2018) (Section 5), (ii) LQR with spurious correlations (Song et al., 2019) (Section 6.1),
+and (iii) Distracting DM Control Suite (Stone et al., 2021; Zhang et al., 2018b) (Section 6.2). Our
+approach improves generalization compared to a wide variety of approaches including standard
+regularization (Farebrother et al., 2018; Cobbe et al., 2019), bisimulation (Castro & Precup, 2010;
+Castro, 2020; Zhang et al., 2021), out-of-distribution generalization (Arjovsky et al., 2019) and
+state-of-the-art data augmentation (Kostrikov et al., 2020; Lee et al., 2020a).
+2
+PRELIMINARIES
+We describe an environment as a Markov decision process (MDP) (Puterman, 1994) M =
+(X, A, R, P, γ), with a state space X, an action space A, a reward function R, transition dynamics
+P, and a discount factor γ ∈[0, 1). A policy π(· | x) maps states x ∈X to distributions over actions.
+Whenever convenient, we abuse notation and write π(x) to describe the probability distribution
+π(· | x), treating π(x) as a vector. In RL, the goal is to ﬁnd an optimal policy π∗that maximizes the
+cumulative expected return Eat∼π(· | xt)[P
+t γtR(xt, at)] starting from an initial state x0.
+We are interested in learning a policy that generalizes across related environments. We formalize this
+by considering a collection ρ of MDPs, sharing an action space A but with disjoint state spaces. We
+use X and Y to denote the state spaces of speciﬁc environments, and write RX , PX for the reward
+and transition functions of the MDP whose state space is X, and π∗
+X for its optimal policy, which we
+assume unique without loss of generality. For a given policy π, we further specialize these into Rπ
+X
+and P π
+X , the reward and state-to-state transition dynamics arising from following π in that MDP.
+We write S for the union of the state spaces of the MDPs in ρ. Concretely, different MDPs correspond
+to speciﬁc scenarios in a problem class (Figure 1), and S is the space of all possible conﬁgurations.
+Used without subscripts, R, P, and π refer to the reward and transition function of this “union MDP”,
+and a policy deﬁned over S; this notation simpliﬁes the exposition. We measure distances between
+states across environments using pseudometrics2 on S; the set of all such pseudometrics is M, and
+Mp is the set of metrics on probability distributions over S.
+In our setting, the learner has access to a collection of training MDPs {Mi}N
+i=1, drawn from ρ. After
+interacting with these environments, the learner must produce a policy π over the entire state space S,
+which is then evaluated on unseen MDPs from ρ. Similar in spirit to the setting of transfer learning
+(Taylor & Stone, 2009), here we evaluate the policy’s zero-shot performance on ρ.
+Our policy similarity metric (Section 3) builds on the concept of π-bisimulation (Castro, 2020).
+Under the π-bisimulation metric, the distance between two states, x and y, is deﬁned in terms of
+the difference between the expected rewards obtained when following policy π. The π-bisimulation
+metric dπ satisﬁes a recursive equation based on the 1-Wasserstein metric W1 : M →Mp, where
+W1(d)(A, B) is the minimal cost of transporting probability mass from A to B (two probability
+distributions on S) under the base metric d (Villani, 2008). The recursion is
+dπ(x, y) = |Rπ(x) −Rπ(y)| + γW1(dπ)
+ P π(· | x), P π(· | y)
+
+,
+x, y ∈S.
+(1)
+To achieve good generalization properties, we learn an embedding function zθ : S →Rk that
+reﬂects the information encoded in the policy similarity metric; this yields a policy similarity
+2Pseudometrics are generalization of metrics where the distance between two distinct states can be zero.
+2
+
+Published as a conference paper at ICLR 2021
+embedding (Section 4). We use contrastive methods (Hadsell et al., 2006; Oord et al., 2018) whose
+track record for representation learning is well-established. We adapt SimCLR (Chen et al., 2020),
+a popular contrastive method for learning embeddings of image inputs. Given two inputs x and y,
+their embedding similarity is sθ(x, y) = sim(zθ(x), zθ(y)), where sim(u, v) =
+uT v
+∥u∥∥v∥denotes the
+cosine similarity function. SimCLR aims to maximize similarity between augmented versions of an
+image (e.g., crops, colour changes) while minimizing its similarity to other images. The loss used by
+SimCLR for two versions x, y of an image, and a set X ′ containing other images is:
+ℓθ(x, y; X ′) = −log
+exp(λsθ(x, y))
+exp(λsθ(x, y)) + P
+x′∈X ′\{x} exp(λsθ(x′, y))
+(2)
+where λ is an inverse temperature hyperparameter. The overall SimCLR loss is then the expected
+value of ℓθ(x, y; S), when x, y, and X ′ are drawn from some augmented training distribution.
+3
+POLICY SIMILARITY METRIC
+A useful tool in learning a policy that generalizes is to understand which states result in similar
+behavior, and which do not. To be maximally effective, this similarity should go beyond the
+immediately chosen action and consider long-term behavior. In this regards, the π-bisimulation
+metrics are interesting as they are based on the full sequence of future rewards received from different
+states. However, considering rewards can be both too restrictive (when the policies are the same, but
+the obtained rewards are not; see Figure D.1) or too permissive (when the policies are different, but
+the obtained rewards are not; see Figure 3a). In fact, π-bisimulation metrics actually lead to poor
+generalization in our experiments (Sections 5.1 and 5.2).
+To address this issue, we instead consider the similarity between policies themselves. We replace
+the absolute reward difference by a probability pseudometric between policies, denoted DIST. Addi-
+tionally, since we would like to perform well in unseen environments, we are interested in similarity
+in optimal behavior. We thus use π∗as the grounding policy. This yields the policy similarity
+metric (PSM), for which states are close when the optimal policies in these states and future states
+are similar. For a given DIST, the PSM d∗: S × S →R satisﬁes the recursive equation
+d∗(x, y) = DIST
+ π∗(x), π∗(y)
+
+|
+{z
+}
+(A)
++ γW1(d∗)
+ P π∗(· | x), P π∗(· | y)
+
+|
+{z
+}
+(B)
+.
+(3)
+The DIST term captures the difference in local optimal behavior (A) while W1 captures long-term
+optimal behavior difference (B); the exact weights assigned to the two are given by the discount
+factor. Furthermore, when DIST is bounded, d∗is guaranteed to be ﬁnite. While there are technically
+multiple PSMs (one for each DIST), we omit this distinction whenever clear from context. A proof of
+the uniqueness of d∗is given in Proposition B.1.
+Our main use of PSM will be to compare states across environments. In this context, we identify the
+terms in Equation 3 with speciﬁc environments for clarity and write (despite its technical inaccuracy)
+d∗(x, y) = DIST
+ π∗
+X (x), π∗
+Y(y)
+
++ γW1
+ d∗)(P π∗
+X (· | x), P π∗
+Y (· | y)
+
+.
+PSM is applicable to both discrete and continuous action spaces. In our experiments, DIST is the
+total variation distance (TV ) when A is discrete, and we use the ℓ1 distance between the mean
+actions of the two policies when A is continuous. PSM can be computed iteratively using dynamic
+programming (Ferns et al., 2011) (more details in Section D.1). Furthermore, when π∗is unavailable
+on training environments, we replace it by an approximation ˆπ∗to obtain an approximate PSM, which
+is close to the exact PSM depending on the suboptimality of ˆπ∗(Proposition D.3).
+Despite resembling π-bisimulation metrics in form, the PSM possesses different characteristics which
+are better suited to the problem of generalizing a learned policy. To illustrate this point, consider the
+following simple nearest-neighbour scheme: Given a state y ∈Y, denote its closest match in X by
+˜xy := arg minx∈X d∗(x, y). Suppose that we use this scheme to transfer π∗
+X to MY, in the sense
+that we behave according to the policy ˜π(y) = π∗
+X (˜xy). We can then bound the difference between ˜π
+and π∗
+Y, something that is not possible if d∗is replaced by a π-bisimulation metric.
+Theorem 1. [Bound on policy transfer] For any y ∈Y, let Y t
+y ∼P ˜π(· | Y t−1
+y
+) deﬁne the sequence
+of random states encountered starting in Y 0
+y = y and following policy ˜π. We have:
+3
+
+Published as a conference paper at ICLR 2021
+EY t
+y
+
+X
+t≥0
+γtTV
+ ˜π(Y t
+y ), π∗(Y t
+y )
+
+
+≤1 + γ
+1 −γ d∗(˜xy, y) .
+The proof is in the Appendix (Section B). Theorem 1 is non-vacuous whenever d∗(˜xy, y) < 1/(1+γ).
+In particular, d∗(˜xy, y) = 0 implies that the transferred policy is optimal. Although this scheme is not
+practical (computing d∗requires knowledge of π∗
+Y), it shows that meaningful policy generalization
+can be obtained if we can ﬁnd a mapping that generalizes across S. Put another way, PSM gives us a
+principled way of lifting generalization across inputs (a supervised learning problem) to generalization
+across environments. We now describe how to employ PSM for learning representations that put
+together states in which the agent’s long-term optimal behavior is similar.
+4
+LEARNING CONTRASTIVE METRIC EMBEDDINGS
+Algorithm 1 Contrastive Metric Embeddings (CMEs)
+1: Given: State embedding zθ(·), Metric d(·, ·) Train-
+ing environments {Mi}N
+i=1. Hyperparameters:
+Temperature 1/λ, Scale β, Total training steps K
+2: for each step k = 1, . . . , K do
+3:
+Sample a pair of training MDPs MX , MY
+4:
+Update θ to minimize LCME where
+LCME = EMX ,MY ∼ρ [Lθ(MX , MY)]
+5: end for
+To generalize a learned policy to new envi-
+ronments, we build on the success of con-
+trastive representations (Section 2). Given
+a state similarity metric d, we develop a
+general procedure (Algorithm 1) to learn
+contrastive metric embeddings (CMEs) for
+d. We utilize the metric d for deﬁning the
+set of positive and negative pairs, as well
+as assigning importance weights to these
+pairs in the contrastive loss (Equation 4).
+We ﬁrst apply a transformation to convert d to a similarity measure Γ, bounded in [0, 1] for “soft”
+similarities. In this work, we transform d using the Gaussian kernel with a positive scale parameter β,
+that is, Γ(x, y) = exp(−d(x, y)/β). β controls the sensitivity of the similarity measure to d.
+Second, we select the positive and negative pairs given a set of states X ′ ⊆X and Y from MDPs
+MX , MY respectively. For each anchor state y ∈Y, we use its nearest neighbor in X ′ based on
+the similarity measure Γ to deﬁne the positive pairs {(˜xy, y)}, where ˜xy = argmax
+x∈X ′
+Γ(x, y). The
+remaining states in X ′, paired with y, are used as negative pairs. This choice of pairs is motivated
+by Theorem 1, which shows that if we transfer the optimal policy in MX to the nearest neighbors
+deﬁned using PSM, its performance in MY has suboptimality bounded by PSM.
+Next, we deﬁne a soft version of the SimCLR contrastive loss (Equation 2) for learning the function
+zθ, which maps states (usually high-dimensional) to embeddings. Given a positive state pair (˜xy, y),
+the set X ′, and the similarity measure Γ, the loss (pseudocode provided in Section J.2) is given by
+ℓθ(˜xy, y; X ′) = −log
+Γ(˜xy, y) exp(λsθ(˜xy, y))
+Γ(˜xy, y) exp(λsθ(˜xy, y)) + P
+x′∈X ′\{˜xy}(1 −Γ(x′, y)) exp(λsθ(x′, y)) (4),
+where we use the same notation as in Equation 2. Following SimCLR, we use a non-linear projection
+of the representation as zθ (Figure A.1). The agent’s policy is an afﬁne function of the representation.
+The total contrastive loss for MX and MY utilizes the optimal trajectories τ ∗
+X = {xt}N
+t=1 and
+τ ∗
+Y = {yt}N
+t=1, where xt+1 ∼P π∗
+X (· | xt) and yt+1 ∼P π∗
+Y (· | yt). We set X ′ = τ ∗
+X and deﬁne
+Lθ(MX , MY) = Ey ∼τ ∗
+Y [ℓθ(˜xy, y; τ ∗
+X )]
+where ˜xy = argmax
+x∈τ ∗
+X
+Γ(x, y).
+We refer to CMEs learned with policy similarity metric as policy similarity embeddings (PSEs). PSEs
+can trivially be combined with data augmentation by using augmented states when computing state
+embeddings. We simultaneously learn PSEs with the RL agent by adding LCME (Algorithm 1) as an
+auxiliary objective during training. Next, we illustrate the beneﬁts from this auxiliary objective.
+5
+JUMPING TASK FROM PIXELS: A CASE STUDY
+Task Description. The jumping task (Tachet des Combes et al., 2018) (Figure 1) captures, using
+well-deﬁned factors of variations, whether agents can learn the correct invariances required for
+generalization, directly from image inputs. The task consists of an agent trying to jump over an
+obstacle. The agent has access to two actions: right and jump. The agent needs to time the jump
+4
+
+Published as a conference paper at ICLR 2021
+Table 1: Percentage (%) of test tasks solved by different methods without and with data augmentation. The
+“wide”, “narrow”, and random grids are described in Figure 2. We report average performance across 100 runs
+with different random initializations, with standard deviation between parentheses.
+Data
+Augmentation
+Method
+Grid Conﬁguration (%)
+“Wide”
+“Narrow”
+Random
+
+Dropout and ℓ2 reg.
+17.8 (2.2)
+10.2 (4.6)
+9.3 (5.4)
+Bisimulation Transfer4
+17.9 (0.0)
+17.9 (0.0)
+30.9 (4.2)
+PSEs
+33.6 (10.0)
+9.3 (5.3)
+37.7 (10.4)
+
+RandConv
+50.7 (24.2)
+33.7 (11.8)
+71.3 (15.6)
+RandConv + Bisimulation
+41.4 (17.6)
+17.4 (6.7)
+33.4 (15.6)
+RandConv + PSEs
+87.0 (10.1)
+52.4 (5.8)
+83.4 (10.1)
+Obstacle Position
+Floor 
+Height
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+(a) “Wide” grid
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+(b) “Narrow” grid
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+(c) Random grid
+Figure 2: Jumping Task: Visualization of average performance of PSEs with data augmentation across different
+conﬁgurations. We plot the median performance across 100 runs. Each tile in the grid represents a different task
+(obstacle position/ﬂoor height combination). For each grid conﬁguration, the height varies along the y-axis (11
+heights) while the obstacle position varies along the x-axis (26 locations). The red letter ⊤indicates the training
+tasks. Random grid depicts only one instance, each run consisted of a different test/train split. Beige tiles are
+tasks PSEs solved while black tiles are tasks PSEs did not solve when used with data augmentation. These
+results were chosen across all the 100 runs to demonstrate what the average reported performance looks like.
+precisely, at a speciﬁc distance from the obstacle, otherwise it will eventually hit the obstacle.
+Different tasks consist in shifting the ﬂoor height and/or the obstacle position. To generalize, the
+agent needs to be invariant to the ﬂoor height while jump based on the obstacle position. The obstacle
+can be in 26 different locations while the ﬂoor has 11 different heights, totaling 286 tasks.
+Problem Setup. We split the problem into 18 seen (training) and 268 unseen (test) tasks to stress test
+generalization using a few changes in the underlying factors of variations seen during training. The
+small number of positive examples3 results in a highly unbalanced classiﬁcation problem with low
+amounts of data, making it challenging without additional inductive biases. Thus, we evaluate gener-
+alization in regimes with and without data augmentation. The different grids conﬁgurations (Figure 2)
+capture different types of generalization: the “wide” grid tests generalization via “interpolation”,
+the “narrow” grid tests out-of-distribution generalization via “extrapolation”, and the random grid
+instances evaluate generalization similar to supervised learning where train and test samples are
+drawn i.i.d. from the same distribution.
+We used RandConv (Lee et al., 2020a), a state-of-the-art data augmentation for generalization. For
+hyperparameter selection, we evaluate all agents on a validation set containing 54 unseen tasks in the
+“wide” grid (Figure 2a) and pick the parameters with the best validation performance. We use these
+ﬁxed parameters for all grid conﬁgurations to show the robustness of PSEs to hyperparameter tuning.
+We ﬁrst compute the optimal trajectories in the training tasks. Using these trajectories, we compute
+PSM using dynamic programming (Section D.1). We train the agent by imitation learning, combined
+with an auxiliary loss for PSEs (Section 4). More details are in Section G.
+5.1
+EVALUATING GENERALIZATION ON JUMPING TASK
+We show the efﬁcacy of PSEs compared to common generalization approaches such as regulariza-
+tion (e.g., Cobbe et al., 2019; Farebrother et al., 2018), and data augmentation (e.g., Lee et al., 2020a;
+Laskin et al., 2020a), which are quite effective on pixel-based RL tasks. We also contrast PSEs with
+bisimulation transfer (Castro & Precup, 2010), a tabular state-based transfer approach based on bisim-
+ulation metrics which does not do any learning and bisimulation preserving representations (Zhang
+et al., 2021), showing the advantages of PSM over a prevalent state similarity metric.
+3We have 18 different trajectories with several examples for the action right, but only one instance of jump
+action per trajectory, leading to just 18 total instances of the action jump.
+5
+
+Published as a conference paper at ICLR 2021
+0
+1
+2
+0
+1
+2
+0
+1
+2
+0
+1
+2
+(a) Optimal Trajectories
+01
+2
+0
+1
+2
+0
+1
+2
+0
+1
+2
+(b) PSEs
+0
+1
+2
+0
+1
+2
+0
+1
+2
+0
+1
+2
+(c) PSM + ℓ2 embed-
+dings
+0 1
+2
+0 1
+2
+0
+1
+2
+0
+1 2
+(d) π∗-bisim. + CMEs
+Figure 3: Embedding visualization. (a) Optimal trajectories on original jumping task (visualized as coloured
+blocks) with different obstacle positions. We visualize the hidden representations using UMAP, where the color
+of points indicate the tasks of the corresponding observations. Points with the same number label correspond to
+same distance of the agent from the obstacle, the underlying optimal invariant feature across tasks.
+We ﬁrst investigated how well PSEs generalize over existing methods without incorporating additional
+domain knowledge during training. Table 1 summarizes, in the setting without data augmentation,
+the performance of these methods in different train/test splits (c.f. Figure 2 for a detailed description).
+PSEs, with only 18 examples, already leads to better performance than standard regularization.
+PSEs also outperform bisimulation transfer in the “wide” and random grids. Although bisimulation
+transfer is impractical4 when evaluating zero-shot generalization, we still performed this comparison,
+unfair to PSEs, to highlight their efﬁcacy. PSEs perform better because, in contrast to bisimulation,
+PSM is reward agnostic (c.f. Proposition D.1) – the expected return of the jump action is quite
+different depending on the obstacle position (c.f. Figure G.2 for a visual juxtaposition of PSM
+and bisimulation). Overall, these results are promising because they place PSEs as an effective
+generalization method that does not rely on data augmentation.
+Nevertheless, PSEs are complementary to data augmentation, which consistently improves gener-
+alization in deep RL. We compared RandConv combined with PSEs to simply using RandConv.
+Domain-speciﬁc augmentation also succeeds in the jumping task. Thus, it is not surprising that
+RandConv is so effective compared to techniques without augmentation. Table 1 (2nd row) shows
+that PSEs substantially improve the performance of RandConv across all grid conﬁgurations. More-
+over, Table 1 (2nd row) illustrates that when combined with RandConv, bisimulation preserving
+representations (Zhang et al., 2021) diminish generalization by 30 −50% relative to PSEs.
+Notably, Table 1 (1st row) indicates that learning-based methods are ineffective on the “narrow” grid
+without data augmentation. That said, PSEs do work quite well when combined with RandConv.
+However, even with data augmentation, generalization in “narrow” grid happens only around the
+vicinity of training tasks, exhibiting the challenge this grid poses for learning-based methods. We
+believe this is due to the poor extrapolation ability of neural networks (e.g., Haley & Soloway, 1992;
+Xu et al., 2020), which is more perceptible without prior inductive bias from data augmentation.
+5.2
+UNDERSTANDING GAINS FROM PSES: ABLATIONS AND VISUALIZATIONS
+Table 2: Ablating PSEs. Percentage (%) of test tasks solved when
+we ablate the similarity metric and learning procedure for metric
+embeddings in the data augmentation setting on wide grid. PSEs,
+which combine CMEs with PSM, considerably outperform other
+embeddings. We report the average performance across 100 runs with
+standard deviation between parentheses. All ablations except PSEs
+deteriorate performance compared to just using data augmentation
+(RandConv), as reported in Table 1.
+Metric / Embedding
+ℓ2-embeddings
+CMEs
+π∗-bisimulation
+41.4 (17.6)
+23.1 (7.6)
+PSM
+17.5 (8.4)
+87.0 (10.1)
+PSEs are contrastive metric embed-
+dings (CMEs) learned with PSM.
+We
+investigate
+the
+gains
+from
+CMEs (Section 4) and PSM (Sec-
+tion 3) by ablating them.
+CMEs
+can be learned with any state
+similarity metric – we use π∗-
+bisimulation (Castro, 2020) as an al-
+ternative.
+Similarly, PSM can be
+used with any metric embedding –
+we use ℓ2-embeddings (Section E)
+as an alternative, which Zhang et al.
+4Bisimulation transfer assumes oracle access to dynamics and rewards on unseen environments as well as
+tabular state space to compute the exact bisimulation metric (Section C).
+6
+
+Published as a conference paper at ICLR 2021
+(2021) employed with π∗-bisimulation for learning representations in a single task RL setting. For a
+fair comparison, we tune hyperparameters for 128 trials for each ablation entry in Table 2.
+Table 2 show that PSEs (= PSM + CMEs) generalize signiﬁcantly better than π∗-bisimulation
+with CMEs or ℓ2-embeddings, both of which signiﬁcantly degrade performance (−60% and −45%,
+respectively). This is expected, as π∗-bisimulation imposes the incorrect invariances for the jumping
+task (c.f. Figures G.2a and G.2d). Additionally, looking at the rows of Table 2, CMEs are superior
+than ℓ2-embeddings for PSM while inferior for π∗-bisimulation. This result is in line with the
+hypothesis that CMEs better enforce the invariances encoded by a similarity metric compared to
+ℓ2-embeddings (c.f. Figures 3b and 3c).
+Visualizing learned representations. We visualize the metric embeddings in the ablation above
+by projecting them to two dimensions with UMAP (McInnes et al., 2018), a popular visualization
+technique for high dimensional data which better preserves the data’s global structure compared to
+other methods such as t-SNE (Coenen & Pearce, 2019).
+Figure 3 shows that PSEs partition the states into two sets: (1) states where a single suboptimal
+action leads to failure (all states before jump) and (2) states where actions do not affect the ﬁnal
+outcome (states after jump). Additionally, PSEs align the labeled states in the ﬁrst set, which have a
+PSM distance of zero. These aligned states have the same distance from the obstacle, the invariant
+feature that generalizes across tasks. On the other hand, ℓ2-embeddings (Zhang et al., 2021) with
+PSM do not align states with zero PSM except the state with the jump action – poor generalization,
+as observed empirically, is likely due to states with the same optimal behavior ending up with distant
+embeddings. CMEs with π∗-bisimulation align states with π∗-bisimulation distance of zero – such
+states are equidistant from the start state and have different optimal behavior for any pair of tasks
+with different obstacle positions (Figure G.2c).
+5.3
+JUMPING TASK WITH COLORS: WHERE TASK-DEPENDENT INVARIANCE MATTERS
+0
+10
+20
+30
+40
+% Test tasks solved
+RandConv
+Dropout
+and l  reg.
+RandConv
+ + PSEs
+PSEs
+Method
+Figure 4: Percentage (%) of red obstacle test
+tasks solved when trained, jointly with red and
+green obstacles, on the “wide” grid. We report
+the mean across 100 runs. Error bars show 99%
+conﬁdence interval for the mean.
+PSEs capture invariances that are usually orthogonal to
+task-agnostic invariances from data augmentation. This
+difference is important because, for certain tasks, data
+augmentation can erroneously alias states with different
+optimal behavior. Domain knowledge is often required
+to select appropriate augmentations, otherwise augmen-
+tations can hurt generalization. In contrast, PSEs do
+not require any domain knowledge but instead exploit
+the inherent structure of the RL tasks.
+To demonstrate the difference between PSEs and data
+augmentation, we simply include colored obstacles in
+the jumping task (see Figure G.5). In this modiﬁed
+task, the optimal behavior of the agent depends on
+the obstacle color: the agent needs to jump over the
+red obstacle but strike the green obstacle to get a high
+return. The red obstacle task has the same difﬁculty as
+the original jumping task while the green obstacle task is easier. We jointly train the agent with 18
+training tasks each, for both obstacle colors, and evaluate generalization on unseen red tasks.
+Figure 4 shows the large performance gap between PSEs and data augmentation with RandConv. All
+methods solve the green obstacle tasks (Table G.1). As opposed to the original jumping task (c.f. Ta-
+ble 1), data augmentation inhibits generalization since RandConv forces the agent to ignore color,
+conﬂating the red and green tasks (Figure G.6). PSEs still outperform regularization and data aug-
+mentation. Furthermore, data augmentation performs better when combined with PSEs. Thus, PSEs
+are effective even when data augmentation hurts performance.
+5.4
+EFFECT OF POLICY SUBOPTIMALITY ON PSES
+To understand the sensitivity of learning effective PSEs to the quality of the policies, we compute
+PSEs using ϵ-suboptimal policies on the jumping task, which take the optimal action with probability
+1 −ϵ and the subopotimal action with probability ϵ. We evaluate the generalization performance of
+PSEs for increasingly suboptimal policies, ranging from the optimal policy (ϵ = 0) to the uniform
+random policy (ϵ = 0.5). To isolate the effect of suboptimality on PSEs, the agent still imitates the
+optimal actions during training for all ϵ.
+7
+
+Published as a conference paper at ICLR 2021
+0.0 0.1 0.2 0.3 0.4 0.5
+Suboptimality (ϵ)
+25
+50
+75
+100
+% Test tasks 
+ solved
+Figure 5: % of test tasks solved
+using PSEs computed using ϵ-
+suboptimal policies on the “wide”
+grid. We report the mean across 100
+runs. Error bars show one standard
+deviation.
+Figure 5 shows that PSEs show near-optimal generalization with
+ϵ ≤0.4 while degrade generalization with an uniform random pol-
+icy. This result is well-aligned with Proposition D.3, which shows
+that for policies with decreasing suboptimality, PSM approxima-
+tion becomes more accurate, resulting in improved PSEs. Overall,
+this study conﬁrms that the utility of PSEs for generalization is
+robust to suboptimality. One reason for this robustness is that
+PSEs are likely to align states with similar long-term greedy op-
+timal actions, resulting in good performance even with suboptimal
+policies that preserve these greedy actions.
+6
+ADDITIONAL EMPIRICAL EVALUATION
+In this section, we exhibit that PSM ignores spurious information
+for generalization using a LQR task (Song et al., 2019) with non-image inputs. Then, we demonstrate
+the scalability of PSEs without explicit access to optimal policies in an RL setting, with continuous
+actions, using Distracting DM Control Suite (Stone et al., 2021; Zhang et al., 2018b).
+6.1
+LQR WITH SPURIOUS CORRELATIONS
+Over-
+parameterization
+IPO Sparsity PSM
+Method
+0.01
+10
+20
+30
+LQR Cost relative 
+ to Oracle 
+Num Distractors
+nd = 500
+nd = 1000
+nd = 10000
+Figure 6: LQR generalization: Absolute test er-
+ror in LQR cost relative to the oracle (which has
+access to true state), of various methods trained
+with nd distractors on 2 training environments.
+Lower error is better. PSM achieves near-optimal
+performance. We report mean across 100 differ-
+ent seeds. Error bars (non-existent for most meth-
+ods) show 99% conﬁdence interval for mean.
+We show how representations learned using PSM,
+when faced with semantically equivalent environ-
+ments, can learn the main factors of variation and
+ignore spurious correlations that hinder generaliza-
+tion. We use LQR with distractors (Song et al., 2019;
+Sonar et al., 2020) to assess generalization in a feature-
+based RL setting with linear function approximation.
+The distractors are input features that are spuriously
+correlated with optimal actions and can be used for
+predicting these actions during training, but hurt gen-
+eralization. The agent learns a linear policy using 2
+environments with ﬁxed distractors. This policy is
+evaluated on environments with unseen distractors.
+We aggregate state pairs in training environments
+with near-zero PSM. We contrast this approach with
+(i) IPO (Sonar et al., 2020), a policy optimization
+method based on IRM (Arjovsky et al., 2019) for out-
+of-distribution generalization, (ii) overparametrization,
+which leads to better generalization via implicit regularization (Song et al., 2019), and (iii) weight
+sparsity using ℓ1-regularization since the policy weights which generalize in this task are sparse.
+All methods optimally solve the training environments; however, the baselines perform abysmally
+in terms of generalization compared to state aggregation with PSM (Figure 6), indicating their
+reliance on distractors. PSM obtains near-optimal generalization which we corroborate through this
+conjecture (Section H.1): Assuming zero state aggregation error with PSM, the policy learned using
+gradient descent is independent of the distractors. Refer to Section H for a detailed discussion.
+6.2
+DISTRACTING DM CONTROL SUITE
+Figure 7: Distracting Control Suite:
+Snapshots of training environments.
+Finally, we demonstrate scalability of PSEs on the Distract-
+ing DM Control Suite (DCS) (Stone et al., 2021), which tests
+whether agents can ignore high-dimensional visual distractors
+irrelevant to the RL task. Since we do not have access to opti-
+mal training policies, we use learned policies as proxy for π∗
+for computing PSM as well as collecting data for optimizing
+PSEs. Even with this approximation, PSEs outperform state-
+of-the-art data augmentation. DCS extends DM Control (Tassa
+et al., 2020) with visual distractions. We use the dynamic back-
+ground distractions (Stone et al., 2021; Zhang et al., 2018b)
+where a video is played in the background from a speciﬁc
+frame. The video and the frame are randomly sampled every new episode. We use 2 videos during
+training (Figure 7) and evaluate generalization on 30 unseen videos (Figure I.1).
+8
+
+Published as a conference paper at ICLR 2021
+Table 3: Generalization performance with unseen distractions in the Distracting Suite at 500K steps. We
+report the average scores across 5 seeds ± standard error. All methods are added to SAC (Haarnoja et al., 2018).
+Pretrained initialization uses DrQ trained for 500K steps. Figures I.2 and I.3 show generalization curves.
+Initialization
+Method
+BiC-catch
+C-swingup
+C-run
+F-spin
+R-easy
+W-walk
+Random
+DrQ
+747±28
+582±42
+220±12
+646±54
+931±14
+549±83
+DrQ + PSEs
+821±17
+749±19
+308±12
+779±49
+955±10
+789±28
+Pretrained
+DrQ
+748±30
+689±22
+219±10
+764±48
+943±10
+709±29
+DrQ + PSEs
+805±25
+753±13
+282±8
+803±19
+962±11
+829±21
+All agents are built on top of SAC (Haarnoja et al., 2018) combined with DrQ (Kostrikov et al., 2020),
+an augmentation method with state-of-the-art performance on DM control. Notably, DrQ outperforms
+CURL (Laskin et al., 2020b), a strong contrastive method for RL. Without data augmentation on DM
+control, SAC performs poorly, even during training (Kostrikov et al., 2020). We augment DrQ with
+an auxiliary loss for learning PSEs and compare it with DrQ (Table 3). Orthogonal to DrQ, PSEs
+align representations of different states across environments based on PSM (c.f. Figure A.1). All
+agents are trained for 500K environment steps with random crop augmentation. For computing PSM,
+we use policies learned by DrQ pretrained on training environments for 500K steps.
+First, we investigate how much better PSEs generalize relative to DrQ, assuming the agent is provided
+with PSM beforehand. The agent’s policy is randomly initialized so that additional gains over DrQ
+can be attributed to the auxiliary information from PSM. The substantial gains in Table 3 indicate
+that PSEs are more effective than DrQ for encoding invariance to distractors.
+Since PSEs utilize PSM approximated using pretrained policies, we also compare to a DrQ agent
+where we initialize it using these pretrained policies. This comparison provides the same auxiliary
+information to DrQ as available to PSEs, thus, the generalization difference stems from how they
+utilize this information. Table 3 demonstrates that PSEs outperform DrQ with pretrained initialization,
+indicating that the additional pretraining steps are more judiciously utilized for computing PSM as
+opposed to just longer training with DrQ. More details, including learning curves, are in Section I.
+7
+RELATED WORK
+PSM (Section 3) is inspired by bisimulation metrics (Section C). However, different than traditional
+bisimulation (e.g., Larsen & Skou, 1991; Givan et al., 2003; Ferns et al., 2011), PSM is more tractable
+as it deﬁned with respect to a single policy similar to the recently proposed π∗-bisimulation (Cas-
+tro, 2020; Zhang et al., 2021). However, in contrast to PSM, bisimulation metrics rely on reward
+information and may not provide a meaningful notion of behavioral similarity in certain environ-
+ments (Section 5). For example, states similar under PSM would have similar optimal policies, yet
+can have arbitrarily large π∗-bisimulation distance between them (Proposition D.1).
+PSEs (Section 4) use contrastive learning to encode behavior similarity (Section 3) across MDPs.
+Previously, contrastive learning has been applied for imposing state self-consistency (Laskin et al.,
+2020b), capturing predictive information (Oord et al., 2018; Mazoure et al., 2020; Lee et al., 2020b)
+or encoding transition dynamics (van der Pol et al., 2020; Stooke et al., 2020; Schwarzer et al.,
+2020) within an MDP. These methods can be integrated with PSEs to encode additional invariances.
+Interestingly, in a similar spirit to PSEs, Pacchiano et al. (2020); Moskovitz et al. (2021) explore
+comparing behavioral similarity between policies to guide policy optimization within an MDP.
+PSEs are complementary to data augmentation methods (Kostrikov et al., 2020; Lee et al., 2020a;
+Raileanu et al., 2020; Ye et al., 2020), which have recently been shown to signiﬁcantly improve
+agents’ generalization capabilities. In fact, we combine PSEs to state-of-the-art augmentation methods
+including random convolutions (Lee et al., 2020a; Laskin et al., 2020a) in the jumping task and
+DrQ (Kostrikov et al., 2020) on Distracting Control Suite, leading to performance improvement.
+8
+CONCLUSION
+This paper advances generalization in RL by two contributions: (1) the policy similarity metric (PSM)
+which provides a new notion of state similarity based on behavior proximity, and (2) contrastive
+metric embeddings, which harness the beneﬁts of contrastive learning for representations based on a
+similarity metric. PSEs combine these two ideas to improve generalization. Overall, this paper shows
+the beneﬁts of exploiting the inherent structure in RL for learning effective representations.
+9
+
+Published as a conference paper at ICLR 2021
+REFERENCES
+Rishabh Agarwal, Chen Liang, Dale Schuurmans, and Mohammad Norouzi. Learning to generalize from sparse
+and underspeciﬁed rewards. In ICML, 2019.
+Martín Arjovsky, Léon Bottou, Ishaan Gulrajani, and David Lopez-Paz. Invariant risk minimization. CoRR,
+abs/1907.02893, 2019.
+Sanjeev Arora, Nadav Cohen, Wei Hu, and Yuping Luo. Implicit regularization in deep matrix factorization. In
+Advances in Neural Information Processing Systems, pp. 7413–7424, 2019.
+Yogesh Balaji, Swami Sankaranarayanan, and Rama Chellappa. Metareg: Towards domain generalization using
+meta-regularization. In Advances in Neural Information Processing Systems, pp. 998–1008, 2018.
+Pablo Samuel Castro. Scalable methods for computing state similarity in deterministic Markov decision
+processes. In Proceedings of the AAAI Conference on Artiﬁcial Intelligence (AAAI), 2020.
+Pablo Samuel Castro and Doina Precup. Using bisimulation for policy transfer in MDPs. In Proceedings of the
+AAAI Conference on Artiﬁcial Intelligence (AAAI), 2010.
+Ting Chen, Simon Kornblith, Mohammad Norouzi, and Geoffrey E. Hinton. A simple framework for contrastive
+learning of visual representations. CoRR, abs/2002.05709, 2020.
+Karl Cobbe, Oleg Klimov, Christopher Hesse, Taehoon Kim, and John Schulman. Quantifying generalization in
+reinforcement learning. In Proceedings of the International Conference on Machine Learning (ICML), 2019.
+Andy Coenen and Adam Pearce. Understanding umap, 2019. URL https://pair-code.github.io/
+understanding-umap/.
+Jesse Farebrother, Marlos C. Machado, and Michael Bowling. Generalization and regularization in DQN. In
+NeurIPS Deep Reinforcement Learning Workshop, 2018.
+Norm Ferns, Prakash Panangaden, and Doina Precup. Metrics for ﬁnite Markov decision processes. In
+Proceedings of the Conference in Uncertainty in Artiﬁcial Intelligence (UAI), 2004.
+Norm Ferns, Pablo Samuel Castro, Doina Precup, and Prakash Panangaden. Methods for computing state
+similarity in Markov decision processes. In Proceedings of the 22nd Conference on Uncertainty in Artiﬁcial
+Intelligence, UAI ’06. AUAI Press, 2006.
+Norm Ferns, Prakash Panangaden, and Doina Precup. Bisimulation metrics for continuous markov decision
+processes. SIAM Journal on Computing, 40(6):1662–1714, 2011.
+Norman Ferns and Doina Precup. Bisimulation metrics are optimal value functions. In The 30th Conference on
+Uncertainty in Artiﬁcial Intelligence, pp. 10, 2014.
+Chelsea Finn, Pieter Abbeel, and Sergey Levine. Model-agnostic meta-learning for fast adaptation of deep
+networks. In Proceedings of the International Conference on Machine Learning (ICML), 2017.
+Robert Givan, Thomas Dean, and Matthew Greig. Equivalence notions and model minimization in markov
+decision processes. Artiﬁcial Intelligence, 147(1-2):163–223, 2003.
+Daniel Golovin, Benjamin Solnik, Subhodeep Moitra, Greg Kochanski, John Karro, and D Sculley. Google vizier:
+A service for black-box optimization. In Proceedings of the 23rd ACM SIGKDD international conference on
+knowledge discovery and data mining, pp. 1487–1495, 2017.
+Suriya Gunasekar, Blake E Woodworth, Srinadh Bhojanapalli, Behnam Neyshabur, and Nati Srebro. Implicit
+regularization in matrix factorization. In Advances in Neural Information Processing Systems, pp. 6151–6159,
+2017.
+Tuomas Haarnoja, Aurick Zhou, Pieter Abbeel, and Sergey Levine. Soft actor-critic: Off-policy maximum
+entropy deep reinforcement learning with a stochastic actor. arXiv preprint arXiv:1801.01290, 2018.
+Raia Hadsell, Sumit Chopra, and Yann LeCun. Dimensionality reduction by learning an invariant mapping. In
+2006 IEEE Computer Society Conference on Computer Vision and Pattern Recognition (CVPR’06), volume 2,
+pp. 1735–1742. IEEE, 2006.
+Pamela J Haley and DONALD Soloway. Extrapolation limitations of multilayer feedforward neural networks. In
+[Proceedings 1992] IJCNN International Joint Conference on Neural Networks, volume 4, pp. 25–30. IEEE,
+1992.
+10
+
+Published as a conference paper at ICLR 2021
+Maximilian Igl, Kamil Ciosek, Yingzhen Li, Sebastian Tschiatschek, Cheng Zhang, Sam Devlin, and Katja
+Hofmann. Generalization in reinforcement learning with selective noise injection and information bottleneck.
+In Advances in Neural Information Processing Systems, pp. 13978–13990, 2019.
+Wengong Jin, Regina Barzilay, and Tommi Jaakkola. Domain extrapolation via regret minimization. arXiv
+preprint arXiv:2006.03908, 2020.
+Arthur Juliani, Ahmed Khalifa, Vincent-Pierre Berges, Jonathan Harper, Ervin Teng, Hunter Henry, Adam
+Crespi, Julian Togelius, and Danny Lange. Obstacle Tower: A generalization challenge in vision, control,
+and planning. In Proceedings of the International Joint Conference on Artiﬁcial Intelligence (IJCAI), 2019.
+Niels Justesen, Ruben Rodriguez Torrado, Philip Bontrager, Ahmed Khalifa, Julian Togelius, and Sebastian
+Risi. Illuminating generalization in deep reinforcement learning through procedural level generation. arXiv
+preprint arXiv:1806.10729, 2018.
+Taylor W. Killian, George Dimitri Konidaris, and Finale Doshi-Velez. Robust and efﬁcient transfer learning
+with hidden parameter Markov decision processes. In Proceedings of the AAAI Conference on Artiﬁcial
+Intelligence (AAAI), pp. 4949–4950, 2017.
+Ilya Kostrikov, Denis Yarats, and Rob Fergus.
+Image augmentation is all you need: Regularizing deep
+reinforcement learning from pixels. CoRR, abs/2004.13649, 2020.
+Kim G Larsen and Arne Skou. Bisimulation through probabilistic testing. Information and computation, 94(1):
+1–28, 1991.
+Michael Laskin, Kimin Lee, Adam Stooke, Lerrel Pinto, Pieter Abbeel, and Aravind Srinivas. Reinforcement
+learning with augmented data. CoRR, abs/2004.14990, 2020a.
+Michael Laskin, Aravind Srinivas, and Pieter Abbeel. Curl: Contrastive unsupervised representations for
+reinforcement learning. Proceedings of the 37th International Conference on Machine Learning, Vienna,
+Austria, PMLR 119, 2020b. arXiv:2003.06417.
+Kimin Lee, Kibok Lee, Jinwoo Shin, and Honglak Lee. Network randomization: A simple technique for general-
+ization in deep reinforcement learning. In The International Conference on Learning Representations (ICLR),
+2020a.
+Kuang-Huei Lee, Ian Fischer, Anthony Liu, Yijie Guo, Honglak Lee, John Canny, and Sergio Guadarrama.
+Predictive information accelerates learning in rl. arXiv preprint arXiv:2007.12401, 2020b.
+Da Li, Yongxin Yang, Yi-Zhe Song, and Timothy M. Hospedales. Learning to generalize: Meta-learning for
+domain generalization. In Proceedings of the AAAI Conference on Artiﬁcial Intelligence (AAAI), 2018.
+Bogdan Mazoure, Remi Tachet des Combes, Thang Long DOAN, Philip Bachman, and R Devon Hjelm. Deep
+reinforcement and infomax learning. Advances in Neural Information Processing Systems, 33, 2020.
+L. McInnes, J. Healy, and J. Melville. UMAP: Uniform Manifold Approximation and Projection for Dimension
+Reduction. ArXiv e-prints, February 2018.
+Ted Moskovitz, Michael Arbel, Ferenc Huszar, and Arthur Gretton. Efﬁcient wasserstein natural gradients for
+reinforcement learning. In International Conference on Learning Representations, 2021.
+Junhyuk Oh, Satinder P. Singh, Honglak Lee, and Pushmeet Kohli. Zero-shot task generalization with multi-task
+deep reinforcement learning. In Proceedings of the International Conference on Machine Learning (ICML),
+2017.
+Aaron van den Oord, Yazhe Li, and Oriol Vinyals. Representation learning with contrastive predictive coding.
+arXiv preprint arXiv:1807.03748, 2018.
+Aldo Pacchiano, Jack Parker-Holder, Yunhao Tang, Krzysztof Choromanski, Anna Choromanska, and Michael
+Jordan. Learning to score behaviors for guided policy optimization. In International Conference on Machine
+Learning, 2020.
+Charles Packer, Katelyn Gao, Jernej Kos, Philipp Krähenbühl, Vladlen Koltun, and Dawn Song. Assessing
+generalization in deep reinforcement learning. arXiv preprint arXiv:1810.12282, 2018.
+Christian F. Perez, Felipe Petroski Such, and Theofanis Karaletsos. Generalized hidden parameter mdps
+transferable model-based rl in a handful of trials. In Proceedings of the AAAI Conference on Artiﬁcial
+Intelligence (AAAI), 2020.
+11
+
+Published as a conference paper at ICLR 2021
+Jordi Pont-Tuset, Federico Perazzi, Sergi Caelles, Pablo Arbeláez, Alex Sorkine-Hornung, and Luc Van Gool.
+The 2017 davis challenge on video object segmentation. arXiv preprint arXiv:1704.00675, 2017.
+Martin L Puterman. Markov Decision Processes: Discrete Stochastic Dynamic Programming. John Wiley &
+Sons, Inc., 1994.
+Roberta Raileanu, Max Goldstein, Denis Yarats, Ilya Kostrikov, and Rob Fergus. Automatic data augmentation
+for generalization in deep reinforcement learning. arXiv preprint arXiv:2006.12862, 2020.
+Aravind Rajeswaran, Kendall Lowrey, Emanuel Todorov, and Sham M. Kakade. Towards generalization and
+simplicity in continuous control. In Advances in Neural Information Processing Systems (NeurIPS), 2017.
+Benjamin Recht. A tour of reinforcement learning: The view from continuous control. Annual Review of Control,
+Robotics, and Autonomous Systems, 2019.
+Max Schwarzer, Ankesh Anand, Rishab Goel, R Devon Hjelm, Aaron Courville, and Philip Bachman. Data-
+efﬁcient reinforcement learning with momentum predictive representations. arXiv preprint arXiv:2007.05929,
+2020.
+Anoopkumar Sonar, Vincent Pacelli, and Anirudha Majumdar. Invariant policy optimization: Towards stronger
+generalization in reinforcement learning. arXiv preprint arXiv:2006.01096, 2020.
+Xingyou Song, Yiding Jiang, Yilun Du, and Behnam Neyshabur. Observational overﬁtting in reinforcement
+learning. In The International Conference on Learning Representations (ICLR), 2019.
+Austin Stone, Oscar Ramirez, Kurt Konolige, and Rico Jonschkowski. The distracting control suite – a
+challenging benchmark for reinforcement learning from pixels. arXiv preprint arXiv:2101.02722, 2021.
+Adam Stooke, Kimin Lee, Pieter Abbeel, and Michael Laskin. Decoupling representation learning from
+reinforcement learning. arXiv preprint arXiv:2009.08319, 2020.
+Remi Tachet des Combes, Philip Bachman, and Harm van Seijen. Learning invariances for policy generalization.
+In Workshop track at the International Conference on Learning Representations (ICLR), 2018.
+Yujin Tang, Duong Nguyen, and David Ha. Neuroevolution of self-interpretable agents. arXiv preprint
+arXiv:2003.08165, 2020.
+Yuval Tassa, Saran Tunyasuvunakool, Alistair Muldal, Yotam Doron, Siqi Liu, Steven Bohez, Josh Merel, Tom
+Erez, Timothy Lillicrap, and Nicolas Heess. dm_control: Software and tasks for continuous control. arXiv
+preprint arXiv:2006.12983, 2020.
+Matthew E. Taylor and Peter Stone. Transfer learning for reinforcement learning domains: A survey. Journal of
+Machine Learning Research, 10:1633–1685, 2009.
+Josh Tobin, Rachel Fong, Alex Ray, Jonas Schneider, Wojciech Zaremba, and Pieter Abbeel. Domain randomiza-
+tion for transferring deep neural networks from simulation to the real world. In 2017 IEEE/RSJ International
+Conference on Intelligent Robots and Systems (IROS), pp. 23–30. IEEE, 2017.
+Elise van der Pol, Thomas Kipf, Frans A Oliehoek, and Max Welling. Plannable approximations to mdp
+homomorphisms: Equivariance under actions. In Proceedings of the 19th International Conference on
+Autonomous Agents and MultiAgent Systems, pp. 1431–1439, 2020.
+Cédric Villani. Optimal transport: old and new. Springer, 2008.
+Sam Witty, Jun Ki Lee, Emma Tosch, Akanksha Atrey, Michael Littman, and David Jensen. Measuring and
+characterizing generalization in deep reinforcement learning. In NeurIPS Critiquing and Correcting Trends in
+Machine Learning Workshop, 2018.
+Keyulu Xu, Jingling Li, Mozhi Zhang, Simon S Du, Ken-ichi Kawarabayashi, and Stefanie Jegelka. How neural
+networks extrapolate: From feedforward to graph neural networks. arXiv preprint arXiv:2009.11848, 2020.
+Chang Ye, Ahmed Khalifa, Philip Bontrager, and Julian Togelius. Rotation, translation, and cropping for
+zero-shot generalization. CoRR, abs/2001.09908, 2020.
+Amy Zhang, Nicolas Ballas, and Joelle Pineau. A Dissection of Overﬁtting and Generalization in Continuous
+Reinforcement Learning. CoRR, abs/1806.07937, 2018a.
+Amy Zhang, Yuxin Wu, and Joelle Pineau. Natural environment benchmarks for reinforcement learning. arXiv
+preprint arXiv:1811.06032, 2018b.
+12
+
+Published as a conference paper at ICLR 2021
+Amy Zhang, Clare Lyle, Shagun Sodhani, Angelos Filos, Marta Kwiatkowska, Joelle Pineau, Yarin Gal, and
+Doina Precup. Invariant causal prediction for block mdps. In Proceedings of the International Conference on
+Machine Learning (ICML), 2020.
+Amy Zhang, Rowan McAllister, Roberto Calandra, Yarin Gal, and Sergey Levine. Learning invariant repre-
+sentations for reinforcement learning without reconstruction. The International Conference on Learning
+Representations (ICLR), 2021.
+Chiyuan Zhang, Oriol Vinyals, Rémi Munos, and Samy Bengio. A study on overﬁtting in deep reinforcement
+learning. CoRR, abs/1804.06893, 2018c.
+13
+
+Published as a conference paper at ICLR 2021
+Appendix
+A
+LEARNING CONTRASTIVE METRIC EMBEDDINGS
+Policy
+ᴪ𝑥
+f𝑥
+  𝑥
+  y
+ᴪy
+fy
+  
+zy
+  
+z𝑥
+Input
+Augmentation
+Representation
+Projection
+fθ
+hθ
+Contrastive 
+Learning
+πy
+WT
+Reinforcement 
+Learning
+fθ
+hθ
+Figure A.1: Architecture for learning CMEs. Given an input pair (x, y), we ﬁrst apply the (optional) data
+augmentation operator Ψ to produce the input augmentations Ψx := Ψ(x), Ψy := Ψ(y). When not using
+data augmentation, Ψ is equal to the identity operator, that is, ∀x Ψ(x) = x. The agent’s policy network then
+outputs the representations for these augmentations by applying the encoder fθ, that is, fx = fθ(Ψx), fy =
+fθ(Ψy). These representations are projected using a non-linear projector hθ to obtain the embedding zθ, that is,
+zθ(x) = hθ(fx), zθ(y) = hθ(fy). These metric embeddings are trained using the contrastive loss deﬁned in
+Equation (4). The policy πθ is an afﬁne function of the representation, that is, πθ(·|y) = W T fy + b, where
+W, b are learned weights and biases. The entire network is trained end-to-end jointly using the reinforcement
+learning (or imitation learning) loss in conjunction with the auxiliary contrastive loss.
+B
+PROOFS
+We begin by deﬁning some notation which will be used throughout these results:
+• We denote Et≥0[γtTV (˜π(Y t
+y ), π∗(Y t
+y ))] = EY t
+y
+hP
+t≥0 γtTV (˜π(Y t
+y ), π∗(Y t
+y ))
+i
+• For any y ∈Y , let Y t
+y ∼P ˜π(·|Y t−1
+y
+), where Y 0
+y = y.
+• TV n(Y k
+y ) = E0≤t<nγtTV (˜π(Y k+t
+y
+), π∗(Y k+t
+y
+)).
+We now proceed with some technical lemmas necessary for the main result.
+Lemma 1. Given any two pseudometrics5 d, d′ ∈M and probability distributions PX , PY where
+X, Y ⊂S, we have:
+W1(d)(PX , PY) ≤∥d −d′∥+ W1(d′)(PX , PY)
+Proof. Note that the dual of the linear program for computing W1(d)(PX , PY) is given by
+min
+Γ
+X
+x∈X, y∈Y
+Γ(x, y) d(x, y)
+subject to
+X
+x
+Γ(x, y) = PY(y) ∀y,
+X
+y
+Γ(x, y) = PX (x) ∀x,
+Γ(x, y) ≥0 ∀x, y
+5Pseudometrics are generalization of metrics where the distance between two distinct states can be zero.
+14
+
+Published as a conference paper at ICLR 2021
+Using the dual formulation subject to the constraints above, W1(d) can be written as
+W1(d)(PX , PY) ≤∥d −d′∥= W1(d −d′ + d′)(PX , PY) ≤∥d −d′∥
+= min
+Γ
+X
+x∈X, y∈Y
+Γ(x, y) (d(x, y) −d′(x, y) + d′(x, y))
+≤min
+Γ
+X
+x∈X, y∈Y
+Γ(x, y) (∥d −d′∥+ d′(x, y))
+= ∥d −d′∥+ min
+Γ
+X
+x∈X, y∈Y
+Γ(x, y) d′(x, y)
+= ∥d −d′∥+ W1(d′)(PX , PY)
+Lemma 2. Given any y0 ∈Y , we have:
+X
+y1∈Y
+
+P ˜π(y1|y0) −P π∗(y1|y0)
+
+TV n(Y 0
+y1) ≤
+2
+1 −γ TV (˜π(y0), π∗(y0))
+Proof.
+X
+y1∈Y
+
+P ˜π(y1|y0) −P π∗(y1|y0)
+
+TV n(Y 0
+y1) ≤
+
+X
+y1∈Y
+
+P ˜π(y1|y0) −P π∗(y1|y0)
+
+TV n(Y 0
+y1)
+
+≤
+X
+y1∈Y
+
+X
+a∈A
+P(y1|y0, a) (˜π(a|y0) −π∗(a|y0))
+ TV n(Y 0
+y1)
+≤
+1
+1 −γ
+X
+y1∈Y
+X
+a∈A
+P(y1|y0, a) |˜π(a|y0) −π∗(a|y0)|
+=
+1
+1 −γ
+X
+a∈A
+|˜π(a|y0) −π∗(a|y0)|
+X
+y1∈Y
+P(y1|y0, a)
+=
+1
+1 −γ
+X
+a∈A
+|˜π(a|y0) −π∗(a|y0)|
+=
+2
+1 −γ TV (˜π(y0), π∗(y0))
+Lemma 3. Given any y0 ∈Y , if TV n(Y 0
+y1) ≤1+γ
+1−γ d∗(˜xy1, y1), we have:
+X
+y1∈Y
+P π∗(y1|y0)TV n(Y 0
+y1) ≤1 + γ
+1 −γ W1(d∗)
+
+P π∗(·|˜xy0), P π∗(·|y0)
+
+Proof. Note that we have the following equality, where 0 is a vector of zeros:
+X
+y1∈Y
+P π∗(y1|y0)TV n(Y 0
+y1) =
+X
+y1∈Y
+P π∗(y1|y0)TV n(Y 0
+y1) −
+X
+x∈X
+P π∗(x|˜xy0)0
+which is the same form as the primal LP for W1(d∗)(P π∗(·|y0), P π∗(·|˜xy0)). By assumption, we
+have that
+TV n(Y 0
+y1) ≤1 + γ
+1 −γ d∗(˜xy1, y1)
+This implies that 1−γ
+1+γ TV n(Y 0
+· ) is a feasible solution to W1(d∗)(P π∗(·|y0), P π∗(·|˜xy0)):
+X
+y1∈Y
+P π∗(y1|y0)1 −γ
+1 + γ TV n(Y 0
+y1) ≤W1(d∗)
+
+P π∗(·|˜xy0), P π∗(·|y0)
+
+and the result follows.
+15
+
+Published as a conference paper at ICLR 2021
+Proposition B.1. The operator F given by:
+F(d)(x, y) = DIST(π∗(x), π∗(y)) + γW1(d)(P π∗
+X (·|x), P π∗
+Y (·|y))
+is a contraction mapping and has a unique ﬁxed point for a bounded dist.
+Proof. We ﬁrst prove that F is contraction mapping. Then, a simple application of the Banach Fixed
+Point Theorem asserts that F has a unique ﬁxed point. Note that for all pseudometrics d, d′ ∈M,
+and for all states x ∈X, y ∈Y,
+F(d)(x, y) −F(d′)(x, y)
+= γ
+
+W1(d)(P π∗
+X (·|x), P π∗
+Y (·|y)) −W1(d′)(P π∗
+X (·|x), P π∗
+Y (·|y))
+
+Lemma 1
+≤
+γ
+
+∥d −d′∥+ W1(d′)(P π∗
+X (·|x), P π∗
+Y (·|y)) −W1(d′)(P π∗
+X (·|x), P π∗
+Y (·|y))
+
+= γ ∥d −d′∥
+Thus, ∥F(d) −F(d′)∥≤γ∥d −d′∥, so that F is a contracting mapping for γ < 1 and has an unique
+ﬁxed point d∗.
+Theorem 1. [Bound on policy transfer] For any y ∈Y, let Y t
+y ∼P ˜π(· | Y t−1
+y
+) deﬁne the sequence
+of random states encountered starting in Y 0
+y = y and following policy ˜π. We have:
+EY t
+y
+
+X
+t≥0
+γtTV
+ ˜π(Y t
+y ), π∗(Y t
+y )
+
+
+≤1 + γ
+1 −γ d∗(˜xy, y) .
+Proof. We will prove this by induction. Assuming that the bound holds for TV n, we prove the bound
+holds for TV n+1. The base case for n = 1 follows from TV (˜π(y), π∗(y)) = TV (π∗(˜xy), π∗(y)) ≤
+d∗(˜xy, y). Note that TV n ≤1−γn+1
+1−γ
+since the TV distance per time-step can be at most 1.
+Let P π
+t (y′|y) denote the probability of ending in state y′ ∈Y after t steps when following policy π
+and starting from state y. We then have:
+TV n+1(Y k
+y ) =
+X
+yk∈Y
+P ˜π
+k (yk|y)TV (˜π(yk), π∗(yk)) + γTV n(Y k+1
+y
+)
+=
+X
+yk∈Y
+P ˜π
+k (yk|y)
+
+TV (˜π(yk), π∗(yk)) + γ
+X
+yk+1∈Y
+P ˜π(yk+1|yk)TV n(Y 0
+yk+1)
+
+
+=
+X
+yk∈Y
+P ˜π
+k (yk|y)
+
+TV (˜π(yk), π∗(yk)) + γ
+X
+yk+1∈Y
+
+P ˜π(yk+1|yk) −P π∗(yk+1|yk)
+
+TV n(Y 0
+yk+1)
++γ
+X
+yk+1∈Y
+P π∗(yk+1|yk)TV n(Y 0
+yk+1)
+
+
+Lemma 2
+≤
+X
+yk∈Y
+P ˜π
+k (yk|y)
+
+TV (˜π(yk), π∗(yk)) +
+2γ
+1 −γ TV (˜π(yk), π∗(yk)) + γ
+X
+yk+1∈Y
+P π∗(yk+1|yk)TV n(Y 0
+yk+1)
+
+
+Lemma 3
+≤
+X
+yk∈Y
+P ˜π
+k (yk|y) [TV (˜π(yk), π∗(yk))
++γ
+
+2
+1 −γ TV (˜π(yk), π∗(yk)) + 1 + γ
+1 −γ W1(d∗)
+
+P π∗(·|˜xyk), P π∗(·|yk)
+
+=
+X
+yk∈Y
+P ˜π
+k (yk|y)
+1 + γ
+1 −γ
+
+TV (π∗(˜xyk), π∗(yk)) + γW1(d∗)(P π∗(·|˜xyk), P π∗(·|yk))
+
+≤
+X
+yk∈Y
+P ˜π
+k (yk|y)1 + γ
+1 −γ d∗(˜xyk, yk)
+16
+
+Published as a conference paper at ICLR 2021
+Thus, by induction, it follows that for all n:
+TV n(Y 0
+y ) ≤1 + γ
+1 −γ d∗(˜xy, y),
+which completes the proof.
+C
+BISIMULATION METRICS
+Notation. We use the notation as deﬁned in Section 2.
+Bisimulation metrics (Givan et al., 2003; Ferns et al., 2011) deﬁne a pseudometric d∼: S × S →R
+where d∼(x, y) is deﬁned in terms of distance between immediate rewards and next state distributions.
+Deﬁne Fe
+∼: M →M by
+Fe
+∼(d)(x, y) = max
+a∈A |R(x, a) −R(y, a)| + γW1(d) (P a(· | x), P a(· | y))
+(C.1)
+then, Fe
+∼has a unique ﬁxed point d∼which is a bisimulation metric. Fe
+∼uses the 1-Wasserstein
+metric W1 : M →Mp. The 1-Wasserstein distance W1(d) under the pseudometric d can be computed
+using the dual linear program:
+max
+u,v
+X
+x∈X
+P(x)ux −
+X
+y∈Y
+P(y)vy
+subject to ∀x ∈X, y ∈Y
+ux −vy ≤d(x, y)
+Since we are only interested in computing the coupling between the states in X and Y, the above
+formulation assumes that PX (y) = 0 for all y ∈Y and PY(x) = 0 for all x ∈X. The computation
+of d∼is expensive and requires a tabular representation of the states, rendering it impractical for large
+state spaces. On-policy bisimulation (Castro, 2020) (e.g., π∗-bisimulation) is tied to speciﬁc behavior
+policies and is much easier to approximate than bisimulation.
+D
+POLICY SIMILARITY METRIC
+D.1
+COMPUTING PSM
+In general, PSM for a given DIST across MDPs MX and MY is given by
+d∗(x, y) = DIST
+ π∗
+X (x), π∗
+Y(y)
+
++ γW1
+ d∗)(P π∗
+X (· | x), P π∗
+Y (· | y)
+
+.
+(D.1)
+Since our main focus is showing the utility of PSM for generalization, we simply use environments
+where PSM can be computed using dynamic programming. Using a similar observation to Castro
+(2020), we assert that the recursion for d∗takes the following form in deterministic environments:
+d∗(x, y) = DIST
+ π∗
+X (x), π∗
+Y(y)
+
++ γd∗(x′, y′
+.
+(D.2)
+where x′ = P π∗
+X (x), y′ = P π∗
+Y (y) are the next states from taking actions π∗
+X (x), π∗
+X (y) from states
+x, y respectively. Furthermore, we assume that DIST between terminal states from MX and MY is
+zero. Note that the form of Equation D.2 closely resembles the update rule in Q-learning, and as such,
+can be efﬁciently computed with samples using approximate dynamic programming. Given access to
+optimal trajectories τ ∗
+X = {xt}N
+t=1 and τ ∗
+Y = {yt}N
+t=1, where xt+1 = P π∗
+X (xt) and yt+1 = P π∗
+Y (yt),
+Equation D.2 can be solved using exact dynamic programming; we provide pseudocode in Section J.1.
+There are other ways to approximate the Wasserstein distance in bisimulation metrics (e.g., Ferns
+et al., 2006; 2011; Castro, 2020; Zhang et al., 2021). That said, approximating bisimulation (or PSM)
+for stochastic environments remains an exciting research direction (Castro, 2020). Investigating other
+distance metrics for long-term behavior difference in PSM is also interesting for future work.
+D.2
+PSM CONNECTIONS TO DATA AUGMENTATION AND BISIMULATION
+Connection to bisimulation. Although bisimulation metrics have appealing properties such as
+bounding value function differences (e.g., (Ferns & Precup, 2014)), they rely on reward information
+and may not provide a meaningful notion of behavioral similarity in certain environments. Propo-
+sition D.1 implies that states similar under PSM would have similar optimal policies yet can have
+arbitrarily large bisimulation distance between them.
+17
+
+Published as a conference paper at ICLR 2021
+x1
+x2
+y0
+x0
+y1
+y2
+a0, rx
+“Cake”
+a1,
+“No Cake”
+a0, “Cake”
+a1, rx
+“No Cake”
+a0,
+a1
+a0, ry
+“Cake”
+a1,
+“No Cake”
+a0, “Cake”
+a1, ry
+“No Cake”
+a0,
+a1
+Figure D.1: Cyan edges represent actions with a positive reward, which are also the optimal actions. Zero
+rewards everywhere else. x0, y0 are the start states while x2, y2 are the terminal states.
+Proposition D.1. There exists environments MX and MY such that ∀(x, y) ∈L where L =
+{(x, y) |x ∈X, y ∈Y, d∗(x, y) = 0}, d∗
+∼(x, y) = |Rmax−Rmin|
+1−γ
+−ϵ for any given ϵ > 0.
+For example, consider the two semantically equivalent environments in Figure D.1 with π∗
+X (x0) =
+π∗
+Y(y0) = a0 and π∗
+X (x1) = π∗
+Y(y1) = a1 but different rewards rx, ry respectively. Whenever
+ry > (1 + 1/γ) rx, bisimulation metrics incorrectly imply that x0 is more behaviorally similar to y1
+than y0.
+For the MDPs shown in Figure D.1, to determine which y state is behaviorally equivalent to x0, we
+look at the distances computed by bisimulation metric d∼and π∗-bisimulation metric d∗
+∼:
+d∼(x0, y0) = d∗
+∼(x0, y0) = (1 + γ)|ry −rx|
+d∼(x0, y1) = max ((1 + γ) rx, ry) , d∗
+∼(x0, y1) = |ry −rx| + γrx
+Thus, ry > (1 + 1/γ) rx implies that d∼(x0, y1) < d∼(x0, y0) as well as d∗
+∼(x0, y1) < d∗
+∼(x0, y0).
+Connection to data augmentation. Data augmentation often assumes access to optimality invariant
+transformations, e.g., random crops or ﬂips in image-based benchmarks (Laskin et al., 2020a;
+Kostrikov et al., 2020). However, for certain RL tasks, such augmentations can erroneously alias
+states with different optimal behavior and hurt generalization. For example, if the image observation
+is ﬂipped in a goal reaching task with left and right actions, the optimal actions would also be ﬂipped
+to take left actions instead of right and vice versa. Proposition D.2 states that PSMs can precisely
+quantify the invariance of such augmentations.
+Proposition D.2. For an MDP MX and its transformed version Mψ(X) for the data augmentation
+ψ, d∗(x, ψ(x)) indicates the optimality invariance of ψ for any x ∈X.
+D.3
+PSM WITH APPROXIMATELY-OPTIMAL POLICIES
+Generalized Policy Similarity Metric for arbitrary policies. For a given DIST, we deﬁne a
+generalized PSM d : (S × Π) × (S × Π) →R where Π is the set of all policies over S. d satisﬁes
+the recursive equation:
+d
+ (x, π1), (y, π2)
+
+= DIST
+ π1(x), π2(y)
+
++ γW1(d)
+ P π1(· | x), P π2(· | y)
+
+.
+(D.3)
+Since DIST is assumed to be a pseudometric and W1 is a probability metric, it implies that d
+is a pseudometric as (1) d is non-negative, that is, d
+ (x, π1), (y, π2)
+
+≥0, (2) d is symmetric,
+that is, d
+ (x, π1), (y, π2)
+
+= d
+ (x, π1), (y, π2)
+
+, and d satisﬁes the triangle inequality, that is,
+d
+ (x, π1), (y, π2)
+
+< d
+ (x, π1), (z, π3)
+
++ d
+ (z, π3), (y, π2)
+
+.
+Using this notion of generalized PSM, we show that the approximation error in PSM from
+using a suboptimal policy is bounded by the policy’s suboptimality. Thus, for policies with decreasing
+suboptimality, the PSM approximation becomes more accurate, resulting in improved PSEs.
+Proposition D.3. [Approximation error in PSM] Let ˆd : S × S →R be the approximate PSM
+computed using a suboptimal policy ˆπ deﬁned over S, that is, ˆd(x, y) = DIST
+ ˆπ(x), ˆπ(y)
+
++
+γW1( ˆd)
+ P ˆπ(· | x), P ˆπ(· | y)
+
+. We have:
+|d∗(x, y) −ˆd(x, y)| <
+d
+ (x, π∗), (x, ˆπ)
+
+|
+{z
+}
+Long-term suboptimality
+difference from x
++
+d
+ (y, ˆπ), (y, π∗)
+
+|
+{z
+}
+Long-term suboptimality
+difference from y
+.
+18
+
+Published as a conference paper at ICLR 2021
+Proof. The PSM d∗and approximate PSM ˆd are instantiations of the generalized PSM (Equation D.3)
+with both input policies as π∗and ˆπ respectively.
+d∗(x, y) = d ((x, π∗), (y, π∗)) < d
+ (x, π∗), (x, ˆπ)
+
++ d
+ (x, ˆπ), (y, π∗)
+
+< d
+ (x, π∗), (x, ˆπ)
+
++ d
+ (y, ˆπ), (y, π∗)
+
++ d
+ (x, ˆπ), (y, ˆπ)
+
+d∗(x, y) −ˆd(x, y) < d
+ (x, π∗), (x, ˆπ)
+
++ d
+ (y, ˆπ), (y, π∗)
+
+∵ˆd(x, y) = d
+ (x, ˆπ), (y, ˆπ)
+
+Similarly, ˆd(x, y) −d∗(x, y) < d
+ (x, π∗), (x, ˆπ)
+
++ d
+ (y, ˆπ), (y, π∗)
+
+E
+L2 METRIC EMBEDDINGS
+Another common choice (Zhang et al., 2021) for learning metric embeddings is to use the squared
+loss (i.e., l2-loss) for matching the euclidean distance between the representations of a pair of states
+to the metric distance between those states. Concretely, for a given d∗and representation fθ, the
+loss L(θ) = Esi,sj[(∥fθ(si) −fθ(sj)∥2 −d∗(si, sj))2] is minimized. However, it might be too
+restrictive to match the exact metric distances, which we demonstrate empirically by comparing l2
+metric embeddings with CMEs (Section 5.2).
+F
+EXTENDED RELATED WORK
+Generalization across different tasks used to be described as transfer learning. In the past, most
+transfer learning approaches relied on ﬁxed representations and tackled different problem formulations
+(e.g., assuming shared state space). Taylor & Stone (2009) present a comprehensive survey of
+the techniques at the time, before representation learning became so prevalent in RL. Recently,
+the problem of performing well in a different, but related task, started to be seen as a problem
+of generalization; with the community highlighting that deep RL agents tend to overﬁt to the
+environments they are trained on (Cobbe et al., 2019; Witty et al., 2018; Farebrother et al., 2018;
+Juliani et al., 2019; Kostrikov et al., 2020; Song et al., 2019; Justesen et al., 2018; Packer et al., 2018).
+Prior generalization approaches are typically adapted from supervised learning, including data aug-
+mentation, regularization (Cobbe et al., 2019; Farebrother et al., 2018), stochasticity (Zhang et al.,
+2018c), noise injection (Igl et al., 2019; Zhang et al., 2018a), more diverse training conditions (Ra-
+jeswaran et al., 2017; Witty et al., 2018) and self-attention architectures (Tang et al., 2020). In contrast,
+PSEs exploits behavior similarity (Section 3), a property related to the sequential aspect of RL. Fur-
+thermore, for certain RL tasks, it can be unclear what an optimality invariant data augmentation would
+look like (Section 5.3). PSM can quantify the invariance of such augmentations (Proposition D.2).
+Meta-learning is also related to generalization. Meta-learning methods try to ﬁnd a parametrization
+that requires a small number of gradient steps to achieve good performance on a new task (Finn et al.,
+2017). In this context, various meta-learning approaches capable of zero-shot generalization have
+been proposed (Li et al., 2018; Agarwal et al., 2019; Balaji et al., 2018). These approaches typically
+consist in minimizing the loss in the environments the agent is while adding an auxiliary loss for
+ensuring improvement in the other (validation) environments available to the agent. Nevertheless,
+Tachet des Combes et al. (2018) has shown that meta-learning approaches fail in the jumping task
+which we also observed empirically. Others have also reported similar ﬁndings (e.g., Farebrother
+et al., 2018).
+There are several other approaches for tackling zero-shot generalization in RL, but they often rely on
+domain-speciﬁc information. Some examples include knowledge about equivalences between entities
+in the environment (Oh et al., 2017) and about what is under the agent’s control (Ye et al., 2020).
+Causality-based methods are a different way of tackling generalization, but current solutions do not
+scale to high-dimensional observation spaces (e.g., Killian et al., 2017; Perez et al., 2020; Zhang
+et al., 2020).
+19
+
+Published as a conference paper at ICLR 2021
+G
+JUMPING TASK WITH PIXELS
+Obstacle Position=20, Floor Height = 15
+Obstacle Position=30, Floor Height = 10
+Figure G.1: Optimal trajectories on the jumping tasks for two different environments. Note that the optimal
+trajectory is a sequence of right actions, followed by a single jump at a certain distance from the obstacle,
+followed by right actions.
+Detailed Task Description. The jumping task consists of an agent trying to jump over an obstacle
+on a ﬂoor. The environment is deterministic with the agent observing a reward of +1 at each time
+step. If the agent successfully reaches the rightmost side of the screen, it receives a bonus reward of
++100; if the agent touches the obstacle, the episode terminates. The observation space is the pixel
+representation of the environment, as depicted in Figure 1. The agent has access to two actions: right
+and jump. The jump action moves the agent vertically and horizontally to the right.
+Architecture. The neural network used for Jumping Task experiment is adapted from the Nature
+DQN architecture. Speciﬁcally, the network consists of 3 convolutional layers of sizes 32, 64, 64
+with ﬁlter sizes 8 × 8, 4 × 4 and 3 × 3 and strides 4, 2, and 1, respectively. The output of the convnet
+is fed into a single fully connected layer of size 256 followed by ’ReLU’ non-linearity. Finally, this
+FC layer output is fed into a linear layer which computes the policy which outputs the probability of
+the jump and right actions.
+Contrastive Embedding. For all our experiments, we use a single ReLU layer with k = 64 units for
+the non-linear projection to obtain the embedding zθ (Figure A.1). We compute the embedding using
+the penultimate layer in the jumping task network. Hyperparameters are reported in Table G.2.
+Total Loss. For jumpy world, the total loss is given by LIL + αLCME where LIL is the imitation
+learning loss, LCME is the auxiliary loss for learning PSEs with the coefﬁcient α.
+0
+500
+1000
+1500
+2000
+Training Iterations
+0%
+10%
+20%
+30%
+40%
+50%
+% Test tasks solved
+PSEs
+Dropout + l2 reg.
+0
+500
+1000
+1500
+2000
+Training Iterations
+0%
+10%
+20%
+30%
+40%
+50%
+% Test tasks solved
+PSEs
+Dropout + l2 reg.
+0
+500
+1000
+1500
+2000
+Training Iterations
+0%
+10%
+20%
+30%
+40%
+50%
+% Test tasks solved
+PSEs
+Dropout + l2 reg.
+Figure G.3: Test performance curves in the setting without data augmentation on the “wide”, “narrow”, and
+random grids described in Figure 2. We plot the median performance across 100 runs. Shaded regions show 25
+and 75 percentiles.
+20
+
+Published as a conference paper at ICLR 2021
+x0 x10 x20 x30 x40 x50
+y0
+y10
+y20
+y30
+y40
+y50
+Bisimulation
+0
+25
+50
+75
+100
+125
+150
+175
+(a) Bisimulation metric
+x0 x10 x20 x30 x40 x50
+y0
+y10
+y20
+y30
+y40
+y50
+PSM
+0.00
+0.25
+0.50
+0.75
+1.00
+1.25
+1.50
+1.75
+(b) Policy Similarity metric
+x0 x10 x20 x30 x40 x50
+y0
+y10
+y20
+y30
+y40
+y50
+π∗−Bisimulation
+0
+1000
+2000
+3000
+4000
+(c) π∗-Bisimulation metric
+x0 x10 x20 x30 x40 x50
+y0
+y10
+y20
+y30
+y40
+y50
+True Similarity
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+(d) True State Similarity
+Figure G.2: PSM vs. Bisimulation. Visualizing PSM and bisimulation metrics with discount factor γ = 0.99.
+xi and yi correspond to the states visited by optimal policies in the two environments with obstacle at positions
+25 and 45, respectively. For each grid, the (i, j)th location shows the distance assigned by the metric to the
+states xi and yj. Lower distances (lighter shades) imply higher similarity between two states. The bottom right
+ﬁgure shows which states are equivalent to each other. The ranges are different for each metric as bisimulation
+metrics utilize reward differences while PSM uses the total variation (TV ) distance between policies. Note that
+the large bisimulation distances are due to the fact that the reward at the terminal state is set to 100.
+0
+500
+1000
+1500
+2000
+Training Iterations
+0%
+20%
+40%
+60%
+80%
+100%
+% Test tasks solved
+RandConv + PSEs
+RandConv
+0
+500
+1000
+1500
+2000
+Training Iterations
+0%
+20%
+40%
+60%
+80%
+100%
+% Test tasks solved
+RandConv + PSEs
+RandConv
+0
+500
+1000
+1500
+2000
+Training Iterations
+0%
+20%
+40%
+60%
+80%
+100%
+% Test tasks solved
+RandConv + PSEs
+RandConv
+Figure G.4: Test performance curves in the setting with data augmentation on the “wide”, “narrow”, and
+random grids described in Figure 2. We plot the median performance across 100 runs. Shaded regions show 25
+and 75 percentiles.
+21
+
+Published as a conference paper at ICLR 2021
+G.1
+JUMPING TASK FROM COLORS
+0
+10
+20
+30
+40
+50
+0
+10
+20
+30
+40
+50
+0
+10
+20
+30
+40
+50
+0
+10
+20
+30
+40
+50
+Figure G.5: Jumping task with colored ob-
+stacles. The agent needs to jump over the red
+obstacle but strike the green obstacle.
+Table G.1: Percentage (%) of test tasks solved when trained
+on the “wide” grid with both red and green obstacles. The
+numbers we report are averaged across 100 runs. Standard
+error is reported between parentheses.
+Method
+Red (%)
+Green (%)
+RandConv
+6.2 (0.4)
+99.6 (0.2)
+Dropout and l2 reg.
+19.5(0.2)
+100.0 (0.0)
+RandConv + PSEs
+29.8 (1.3)
+99.6 (0.2)
+PSEs
+37.9 (1.9)
+100.0 (0.0)
+Input
+Augmentation
+Augmentation
+Augmentation
+Augmentation
+Augmentation
+Input
+Augmentation
+Augmentation
+Augmentation
+Augmentation
+Augmentation
+Figure G.6: Randconv enforces color invariance. The ﬁrst column shows the original observation where
+the top row corresponds to the observation from task with green obstacle jumping task while the bottom row
+corresponds to the red obstacle jumping task. Columns 2-6 in each row show 5 augmentations by applying
+RandConv. The augmentations show that RandConv tries to encode invariance with respect to the obstacle color.
+G.2
+HYPERPARAMETERS
+For hyperparameter selection, we evaluate all agents on a validation set containing 54 unseen tasks
+in the “wide” grid and pick the parameters with the best validation performance. The validation
+set (Figure G.7) was selected by using the environments nearby to the training environments whose
+ﬂoor height differ by 1 or whose obstacle position differ by 1.
+Table G.2: Common hyperparameters across
+all methods for all jumping task experiments.
+Hyperparameter
+Value
+Learning rate decay
+0.999
+Training epochs
+2000
+Optimizer
+Adam
+Batch size (Imitation)
+256
+Num training tasks
+18
+Γ-scale Parameter (β)
+0.01
+Embedding size (k)
+64
+Batch Size (LCME)
+57
+|τ ∗
+X |
+57
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+T
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+V
+Figure G.7: Unseen 56 validation tasks, labeled with V, used
+for hyperparameter selection.
+22
+
+Published as a conference paper at ICLR 2021
+Table G.3: Optimal hyperparameters for reporting results in Table 1. These hyperparameters are selected using
+the “wide” grid by maximizing ﬁnal performance on a validation set containing 56 unseen tasks. All grid
+conﬁgurations in Table 1 use these hyperparameters.
+Hyperparameter
+Dropout and ℓ2-reg.
+PSEs
+RandConv RandConv + PSEs
+Learning Rate
+4×10−3
+3.2×10−3
+7×10−3
+2.6×10−3
+ℓ2-reg. coefﬁcient
+4.3×10−4
+1×10−5
+–
+–
+Dropout coefﬁcient
+3×10−1
+–
+–
+–
+Contrastive Temperature (1/λ)
+–
+1.0
+–
+5×10−1
+Auxiliary loss coefﬁcient (α)
+–
+1×101
+–
+5.0
+Table G.4: Optimal hyperparameters for reporting results in Figure 5.3. These hyperparameters are selected
+using the “wide” grid by maximizing ﬁnal performance on a validation set containing 56 unseen tasks.
+Hyperparameter
+Dropout and ℓ2-reg.
+PSEs
+RandConv RandConv + PSEs
+Learning Rate
+4×10−3
+6×10−3
+5×10−3
+2.6×10−3
+ℓ2-reg. coefﬁcient
+4.3×10−4
+7×10−5
+–
+–
+Dropout coefﬁcient
+3×10−1
+–
+–
+–
+Contrastive Temperature (1/λ)
+–
+5×10−1
+–
+5×10−1
+Auxiliary loss coefﬁcient (α)
+–
+5.0
+–
+5.0
+Table G.5: Optimal hyperparameters for reporting ablation results in Table 2. These hyperparameters are selected
+using the “wide” grid by maximizing ﬁnal performance on a validation set containing 56 unseen tasks.
+Hyperparameter
+PSM
+π∗-bisimulation
+CMEs
+ℓ2-embeddings
+CMEs
+ℓ2-embeddings
+Learning Rate
+4×10−3
+5×10−4
+4.7×10−4
+1×10−4
+Contrastive Temperature (1/λ)
+1.0
+–
+5×10−1
+–
+Auxiliary loss coefﬁcient (α)
+5.0
+1×10−1
+1×10−1
+1×10−6
+Please note that Table G.3 and Table G.4 correspond to two different tasks: one uses the standard
+jumping task with white obstacles, while the other uses colored obstacles where the optimal policies
+depend on color. For fair comparison, we tune hyperparameters for all the methods using Bayesian
+optimization (Golovin et al., 2017). We use the best parameters among these tuned hyperparameters
+and the ones found in Table G.3, leading to different parameters for both PSEs as well as RandConv.
+Evaluating PSEs with the jumping task hyperparameters from Table G.3 instead of the ones in
+Table G.4 leads to a small drop (-4%) on the jumping task with colors (Section 5.3). Nevertheless,
+PSEs still outperform other methods in Section 5.3.
+H
+LQR: ADDITIONAL DETAILS
+Optimal control with linear dynamics and quadratic cost, commonly known as LQR, has been
+increasingly used as a simpliﬁed surrogate for deep RL problems (Recht, 2019). Following Song et al.
+(2019); Sonar et al. (2020), we analyze the following LQR problem for assessing generalization:
+minimize
+Es0∼D
+ 1
+2
+P∞
+t=0 sT
+t Qst + aT
+t Rat
+
+,
+subject to
+st+1 = Ast + Bat, ot =
+
+0.1 Wc
+Wd
+
+st, at = Kot,
+(H.1)
+where D is the initial state distribution, st ∈Rns is the (hidden) true state at time t, at ∈Rna is
+the control action, and K is the linear policy matrix. The agent receives the input observation ot,
+which is a linear transformation of the state st. Wc and Wd are semi-orthogonal matrices to prevent
+information loss for predicting optimal actions. An environment corresponds to a particular choice
+23
+
+Published as a conference paper at ICLR 2021
+Table H.1: LQR generalization performance: Absolute error in LQR cost, w.r.t. the oracle solver (which has
+access to true state), of various methods trained with nd distractors on N = 2 environments. The reported mean
+and standard deviations are across 100 different seeds. Lower error is better.
+Method
+Number of Distractors (nd)
+500
+1000
+10000
+Overparametrization (Song et al., 2019)
+25.8 (1.5)
+24.9 (1.1)
+24.9 (0.4)
+IPO (Sonar et al., 2020) (IRM + Policy opt.)
+32.6 (5.0)
+27.3 (2.8)
+24.8 (0.4)
+Weight Sparsity (ℓ1-reg.)
+28.2 (0.0)
+28.2 (0.0)
+28.2 (0.0)
+PSM (State aggregation)
+0.03 (0.0)
+0.03 (0.0)
+0.02 (0.0)
+of Wd; all other system parameters (A, B, Q, R, Wc) are ﬁxed matrices which are shared across
+environments and unknown to the agent. The agent learns the policy matrix K using N training
+environments based on Equation H.1. At test time, the learned policy is evaluated on environments
+with unseen Wd.
+The generalization challenge in this setup is to ignore the distractors: Wcst ∈Rns represents the
+state features invariant across environments while Wdst ∈Rnd is a high-dimensional distractor of
+size ns, nd, respectively, such that ns << nd. Furthermore, the policy matrix which generalizes
+across all environments is K⋆=
+
+10 WcP⋆
+T
+0
+T
+, where P⋆corresponds to the optimal LQR solution
+with access to state st. However, for a single environment with distractor Wd, multiple solutions
+exist, for instance, K⋆
+′ =
+
+10α WcP⋆
+T
+(1 −α) WdP⋆
+T
+T
+∀α ∈[0, 1]. Note that the distractors are an order
+of magnitude larger than the invariant features in ot and dependence on them is likely to cause the
+agent to act erratically on inputs with unseen distractors, resulting in poor generalization.
+We use overparametrized policies with two linear layers, i.e., K = K1K2, where K1(o) is the learned
+representation for observation o. We learn K using gradient descent using the combined cost on
+2 training environments with varying number of distractors. We aggregate observation pairs with
+near-zero PSM by matching their representations using a squared loss. We use the open-source code
+released by Sonar et al. (2020) for our experiments.
+Table H.2: An overview of hyper-parameters for LQR.
+Parameter
+Setting
+A
+Orthogonal matrix, scaled 0.8
+B
+I20×20
+nx
+20
+na
+20
+Q
+I20×20
+R
+I20×20
+Ki ∀i
+Orthogonal Initialization, scaled 0.001
+Wd
+Random semi-orthogonal matrix
+The reliance on distractors for IPO also highlights a limitation of IRM: if a model can achieve
+a solution with zero training error, then any such solution is acceptable by IRM regardless of its
+generalization ability – a common scenario with overparametrized deep neural nets (Jin et al., 2020).
+H.1
+NEAR-OPTIMALITY OF PSM AGGREGATION
+Conjecture 1. Assuming zero state aggregation error with policy similarity metric (PSM), the policy
+matrix K learned using gradient descent is independent of the distractors.
+Proof. For LQR domains x, y, an observation pair (otx, oty) has zero PSM iff the underlying state st
+is same for both the observations in the pair. This is true, as (a) both domains has the same transition
+24
+
+Published as a conference paper at ICLR 2021
+dynamics, as speciﬁed by Equation H.1, and (b) the optimal policy is deterministic and is completely
+determined by the current state st at any time t.
+Assume otx =
+
+0.1 Wc
+Wdx
+
+st and oty =
+
+0.1 Wc
+Wdy
+
+st for distractor semi-orthogonal matrices WdX and
+WdY, respectively. Furthermore, the representation is given by K1(otx) and K1(oty) respectively.
+Assume that K1 = [Ks
+Kd] where Ks ∈Rh×ns and Kd ∈Rh×nd and K1 ∈Rh×(ns+nd).
+Zero state-aggregation error with squared loss implies that for pair (otx, oty) corresponding to st,
+K1(ot
+x −ot
+y) = K1
+
+0
+Wdx −Wdy
+
+st = 0 =⇒Kd(Wdx −Wdy)st = 0
+(H.2)
+As Equation H.2 holds for all states visited by the optimal policy in an inﬁnite horizon LQR, it
+follows that Kd(Wdx −Wdy) = 0.
+Furthermore, it is well-known that gradient descent tends to ﬁnd low-rank solutions due to implicit
+regularization (Arora et al., 2019; Gunasekar et al., 2017), e.g.,with small enough step sizes and
+initialization close enough to the origin, gradient descent on matrix factorization converges to the
+minimum nuclear norm solution for 2 layer linear networks (Gunasekar et al., 2017). Based on this,
+we conjecture that Kd = 0 which we found to be true in practice.
+I
+DISTRACTING CONTROL SUITE
+We use the same setup as Kostrikov et al. (2020); Stone et al. (2021) for implementation details and
+training protocol. For completeness, we describe the details below.
+Dynamic Background Distractions. In Distracting Control Suite (Stone et al., 2021), random
+backgrounds are projected from scenes of the DAVIS 2017 dataset (Pont-Tuset et al., 2017) onto
+the skybox of the scene. To make these backgrounds visible for all tasks and views, the ﬂoor grid
+is semi-transparent with transparency coefﬁcient 0.3. We take the ﬁrst 2 videos in the DAVIS 2017
+training set and randomly sample a scene and a frame from those at the start of every episode. In
+the dynamic setting, the video plays forwards or backwards until the last or ﬁrst frame is reached at
+which point the video is played backwards. This way, the background motion is always smooth and
+without “cuts”.
+Soft Actor-Critic. Soft Actor-Critic (SAC) (Haarnoja et al., 2018) learns a state-action value function
+Qθ, a stochastic policy πθ and a temperature α to ﬁnd an optimal policy for an MDP (S, A, p, r, γ) by
+optimizing a γ-discounted maximum-entropy objective. θ is used generically to denote the parameters
+updated through training in each part of the model. The actor policy πθ(at|st) is a parametric tanh-
+Gaussian that given st samples at = tanh(µθ(st) + σθ(st)ϵ), where ϵ ∼N(0, 1) and µθ and σθ are
+parametric mean and standard deviation.
+The policy evaluation step learns the critic Qθ(st, at) network by optimizing a single-step of the soft
+Bellman residual
+JQ(D) = E(st,at,s′
+t)∼D
+a′
+t∼π(·|s′
+t)
+[(Qθ(st, at) −yt)2]
+yt = r(st, at) + γ[Qθ′(s′
+t, a′
+t) −α log πθ(a′
+t|s′
+t)],
+where D is a replay buffer of transitions, θ′ is an exponential moving average of the weights. SAC
+uses clipped double-Q learning, which we omit for simplicity but employ in practice.
+The policy improvement step then ﬁts the actor policy πθ(at|st) network by optimizing the objective
+Jπ(D) = Est∼D[DKL(πθ(·|st)|| exp{ 1
+αQθ(st, ·)})].
+Finally, the temperature α is learned with the loss
+Jα(D) = E
+st∼D
+at∼πθ(·|st)
+[−α log πθ(at|st) −α ¯H],
+where ¯H ∈R is the target entropy hyper-parameter that the policy tries to match, which in practice is
+usually set to ¯H = −|A|.
+25
+
+Published as a conference paper at ICLR 2021
+Figure I.1: DCS Test Environments: Snapshots of test environments used for evaluating generalization on
+Distracting Control Suite. Random backgrounds are projected from scenes of the ﬁrst 30 videos of DAVIS 2017
+validation dataset.
+26
+
+Published as a conference paper at ICLR 2021
+I.1
+ACTOR AND CRITIC NETWORKS
+Following Kostrikov et al. (2020), we use clipped double Q-learning for the critic, where each
+Q-function is parametrized as a 3-layer MLP with ReLU activations after each layer except of the
+last. The actor is also a 3-layer MLP with ReLUs that outputs mean and covariance for the diagonal
+Gaussian that represents the policy. The hidden dimension is set to 1024 for both the critic and actor.
+I.2
+ENCODER NETWORK
+We employ the encoder architecture from Kostrikov et al. (2020). This encoder consists of four
+convolution layers with 3 × 3 kernels and 32 channels. The ReLU activation is applied after each
+convolutional layer. We use stride to 1 everywhere, except of the ﬁrst convolutional layer, which
+has stride 2. The output of the convnet is feed into a single fully-connected layer normalized
+by LayerNorm. Finally, we apply tanh nonlinearity to the 50 dimensional output of the fully-
+connected layer. We initialize the weight matrix of fully-connected and convolutional layers with the
+orthogonal initialization and set the bias to be zero. The actor and critic networks both have separate
+encoders, although we share the weights of the conv layers between them. Furthermore, only the
+critic optimizer is allowed to update these weights (i.e.,we stop the gradients from the actor before
+they propagate to the shared convolutional layers).
+I.3
+CONTRASTIVE METRIC EMBEDDING LOSS
+For all our experiments, we use a single ReLU layer with k = 256 units for the non-linear projection
+to obtain the embedding zθ (Figure A.1). We compute the embedding using the penultimate layer in
+the actor network. For picking the hyperparameters, we used 3 temperatures [0.1, 0.01, 1.0] and 3
+auxiliary LCME loss coefﬁcients [1, 3, 10] using “Ball In Cup Catch” as the validation environment.
+All other hyperparameters are the same as prior work (see Table I.2).
+We approximate optimal policies with the policies obtained after training a DrQ agent for 500K
+environment steps. Since a given action sequence from this approximate policy has the same perfor-
+mance across different training environments, we compute the PSM across training environments, via
+dynamic programming (see Section J.1 for pseudo-code), using such action sequences.
+Total Loss. The total loss is given by LRL + αLCME where LRL is the reinforcement learning loss
+which combines Jπ(D), Jπ(D), and Jα(D)), while LCME is the auxiliary loss for learning PSEs
+with the coefﬁcient α.
+I.4
+TRAINING AND EVALUATION SETUP
+For evaluation, we use the ﬁrst 30 videos from the DAVIS 2017 validation dataset (see Figure I.1).
+Each checkpoint is evaluated by computing the average episode return over 100 episodes from the
+unseen environments. All experiments are performed with ﬁve random seeds per task used to compute
+means and standard deviations/errors of their evaluations. We use K = 2, M = 2 as prescribed by
+Kostrikov et al. (2020) for DrQ. Following Kostrikov et al. (2020) and Stone et al. (2021), we use a
+different action repeat hyper-parameter for each task, which we summarize in Table I.3. We construct
+an observational input as a 3-stack of consecutive frames (Kostrikov et al., 2020), where each frame
+is an RGB rendering of size 84 × 84 from the 0th camera. We then divide each pixel by 255 to scale
+it down to [0, 1] range. For data augmentation, we maintain temporal consistency by using the same
+crop augmentation across consecutive frames.
+Table I.1: Optimal hyperparameters for PSE auxiliary loss for reporting results in Table 3.
+Hyperparameter
+Setting
+Contrastive temperature (1/λ)
+0.1
+Auxiliary loss coefﬁcient (α)
+1.0
+Γ-scale parameter (β)
+0.1
+Batch Size (LCME)
+128
+|τ ∗
+X |
+1000 // Action Repeat
+27
+
+Published as a conference paper at ICLR 2021
+Table I.2: Hyper-parameters taken from Kostrikov et al. (2020) in the Distracting Control Suite experiments.
+Parameter
+Setting
+Replay buffer capacity
+100, 000
+Seed steps
+1, 000
+Batch size (DrQ)
+512
+Discount γ
+0.99
+Optimizer
+Adam
+Learning rate
+10−3
+Critic target update frequency
+2
+Critic Q-function soft-update rate τ
+0.01
+Actor update frequency
+2
+Actor log stddev bounds
+[−10, 2]
+Init temperature
+0.1
+Table I.3: The action repeat hyper-parameter used for each task in the Distracting Control Suite benchmark.
+Task name
+Action repeat
+Cartpole Swingup
+8
+Reacher Easy
+4
+Cheetah Run
+4
+Finger Spin
+2
+Ball In Cup Catch
+4
+Walker Walk
+2
+I.5
+GENERALIZATION CURVES
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+Environment Steps (×106)
+0
+200
+400
+600
+800
+Episode Return
+ball_in_cup-catch
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+Environment Steps (×106)
+200
+400
+600
+800
+cartpole-swingup
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+Environment Steps (×106)
+0
+100
+200
+300
+cheetah-run
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+Environment Steps (×106)
+0
+250
+500
+750
+Episode Return
+finger-spin
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+Environment Steps (×106)
+200
+400
+600
+800
+1000
+reacher-easy
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+Environment Steps (×106)
+0
+250
+500
+750
+walker-walk
+DrQ + PSEs
+DrQ
+Figure I.2: Random Initialization. Generalization performance on unseen environments over the course of
+training. The agent is initialized randomly. DrQ augmented with PSEs outperforms DrQ. We plot the average
+episode return across 5 seeds and the shaded region shows the standard deviation. Each checkpoint is evaluated
+using 100 episodes with unseen backgrounds.
+28
+
+Published as a conference paper at ICLR 2021
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+Environment Steps (×106)
+400
+600
+800
+Episode Return
+ball_in_cup-catch
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+Environment Steps (×106)
+400
+600
+800
+cartpole-swingup
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+Environment Steps (×106)
+100
+200
+300
+cheetah-run
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+Environment Steps (×106)
+400
+600
+800
+Episode Return
+finger-spin
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+Environment Steps (×106)
+400
+600
+800
+1000
+reacher-easy
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+Environment Steps (×106)
+400
+600
+800
+walker-walk
+DrQ + PSEs (Pretrained)
+DrQ (Pretrained)
+Figure I.3: Pretrained Initialization. Generalization performance on unseen environments over the course of
+training. The agent is initialized using a pretrained DrQ agent. DrQ augmented with PSEs outperforms DrQ on
+most of the environments. We plot the average return across 5 seeds and the shaded region shows the standard
+deviation. Each checkpoint is evaluated using 100 episodes with unseen backgrounds.
+J
+PSEUDO CODE
+J.1
+DYNAMIC PROGRAMMING FOR COMPUTING PSM
+1 def metric_fixed_point(cost_matrix, gamma=0.99, eps=1e-7):
+2
+"""DP for calculating PSM in environments with deterministic dynamics.
+3
+4
+Args:
+5
+cost_matrix: DIST matrix where entries at index (i, j) is DIST(x_i,
+y_j)
+6
+gamma: Metric discount factor.
+7
+eps: Threshold for stopping the fixed point iteration.
+8
+"""
+9
+d = np.zeros_like(cost_matrix)
+10
+def operator(d_cur):
+11
+d_new = 1 * cost_matrix
+12
+discounted_d_cur = gamma * d_cur
+13
+d_new[:-1, :-1] += discounted_d_cur[1:, 1:]
+14
+d_new[:-1, -1] += discounted_d_cur[1:, -1]
+15
+d_new[-1, :-1] += discounted_d_cur[-1, 1:]
+16
+return d_new
+17
+18
+while True:
+19
+d_new = operator(d)
+20
+if np.sum(np.abs(d - d_new)) < eps:
+21
+break
+22
+else:
+23
+d = d_new[:]
+24
+return d
+J.2
+CONTRASTIVE LOSS
+1 def contrastive_loss(similarity_matrix,
+2
+metric_values,
+3
+temperature,
+29
+
+Published as a conference paper at ICLR 2021
+4
+beta=1.0):
+5
+"""Contrative Loss with embedding similarity ."""
+6
+metric_shape = tf.shape(metric_values)
+7
+## z_\theta(X): embedding_1 = nn_model.representation(X)
+8
+## z_\theta(Y): embedding_2 = nn_model.representation(Y)
+9
+## similarity_matrix = cosine_similarity(embedding_1, embedding_2
+10
+## metric_values = PSM(X, Y)
+11
+similarity_matrix /= temperature
+12
+neg_logits1 = similarity_matrix
+13
+14
+col_indices = tf.cast(tf.argmin(metric_values, axis=1), dtype=tf.int32)
+15
+pos_indices1 = tf.stack(
+16
+(tf.range(metric_shape[0], dtype=tf.int32), col_indices), axis=1)
+17
+pos_logits1 = tf.gather_nd(similarity_matrix, pos_indices1)
+18
+19
+metric_values /= beta
+20
+similarity_measure = tf.exp(-metric_values)
+21
+pos_weights1 = -tf.gather_nd(metric_values, pos_indices1)
+22
+pos_logits1 += pos_weights1
+23
+negative_weights = tf.math.log((1.0 - similarity_measure) + 1e-8)
+24
+neg_logits1 += tf.tensor_scatter_nd_update(
+25
+negative_weights, pos_indices1, pos_weights1)
+26
+27
+neg_logits1 = tf.math.reduce_logsumexp(neg_logits1, axis=1)
+28
+return tf.reduce_mean(neg_logits1 - pos_logits1) # Equation 4
+a
+30
+

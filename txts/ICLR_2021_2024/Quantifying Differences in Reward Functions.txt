@@ -1,0 +1,4362 @@
+Published as a conference paper at ICLR 2021
+QUANTIFYING DIFFERENCES IN REWARD FUNCTIONS
+Adam Gleave1,2
+Michael Dennis1
+Shane Legg2
+Stuart Russell1
+Jan Leike3∗
+1UC Berkeley
+2DeepMind
+3OpenAI
+gleave@berkeley.edu
+ABSTRACT
+For many tasks, the reward function is inaccessible to introspection or too complex
+to be speciﬁed procedurally, and must instead be learned from user data. Prior
+work has evaluated learned reward functions by evaluating policies optimized for
+the learned reward. However, this method cannot distinguish between the learned
+reward function failing to reﬂect user preferences and the policy optimization pro-
+cess failing to optimize the learned reward. Moreover, this method can only tell us
+about behavior in the evaluation environment, but the reward may incentivize very
+different behavior in even a slightly different deployment environment. To address
+these problems, we introduce the Equivalent-Policy Invariant Comparison (EPIC)
+distance to quantify the difference between two reward functions directly, without
+a policy optimization step. We prove EPIC is invariant on an equivalence class of
+reward functions that always induce the same optimal policy. Furthermore, we ﬁnd
+EPIC can be efﬁciently approximated and is more robust than baselines to the choice
+of coverage distribution. Finally, we show that EPIC distance bounds the regret of
+optimal policies even under different transition dynamics, and we conﬁrm empiri-
+cally that it predicts policy training success. Our source code is available at https:
+//github.com/HumanCompatibleAI/evaluating-rewards.
+1
+INTRODUCTION
+Reinforcement learning (RL) has reached or surpassed human performance in many domains with
+clearly deﬁned reward functions, such as games [20; 15; 23] and narrowly scoped robotic manipulation
+tasks [16]. Unfortunately, the reward functions for most real-world tasks are difﬁcult or impossible
+to specify procedurally. Even a task as simple as peg insertion from pixels has a non-trivial reward
+function that must usually be learned [22, IV.A]. Tasks involving human interaction can have far
+more complex reward functions that users may not even be able to introspect on. These challenges
+have inspired work on learning a reward function, whether from demonstrations [13; 17; 26; 8; 3],
+preferences [1; 25; 6; 18; 27] or both [10; 4].
+Prior work has usually evaluated the learned reward function ˆR using the “rollout method”: training a
+policy πˆR to optimize ˆR and then examining rollouts from πˆR. Unfortunately, using RL to compute
+πˆR is often computationally expensive. Furthermore, the method produces false negatives when the
+reward ˆR matches user preferences but the RL algorithm fails to optimize with respect to ˆR.
+The rollout method also produces false positives. Of the many reward functions that induce the
+desired rollout in a given environment, only a small subset align with the user’s preferences. For
+example, suppose the agent can reach states {A, B, C}. If the user prefers A > B > C, but the agent
+instead learns A > C > B, the agent will still go to the correct state A. However, if the initial state
+distribution or transition dynamics change, misaligned rewards may induce undesirable policies. For
+example, if A is no longer reachable at deployment, the previously reliable agent would misbehave
+by going to the least-favoured state C.
+We propose instead to evaluate learned rewards via their distance from other reward functions, and
+summarize our desiderata for reward function distances in Table 1. For benchmarks, it is usually
+possible to directly compare a learned reward ˆR to the true reward function R. Alternatively,
+benchmark creators can train a “proxy” reward function from a large human data set. This proxy can
+then be used as a stand-in for the true reward R when evaluating algorithms trained on a different or
+smaller data set.
+∗Work partially conducted while at DeepMind.
+1
+
+Published as a conference paper at ICLR 2021
+Table 1: Summary of the desiderata satisﬁed by each reward function distance. Key – the distance is:
+a pseudometric (section 3); invariant to potential shaping [14] and positive rescaling (section 3); a
+computationally efﬁcient approximation achieving low error (section 6.1); robust to the choice of
+coverage distribution (section 6.2); and predictive of the similarity of the trained policies (section 6.3).
+Distance
+Pseudometric
+Invariant
+Efﬁcient
+Robust
+Predictive
+EPIC
+
+
+
+
+
+NPEC
+
+
+
+
+
+ERC
+
+
+
+
+
+Comparison with a ground-truth reward function is rarely possible outside of benchmarks. However,
+even in this challenging case, comparisons can at least be used to cluster reward models trained
+using different techniques or data. Larger clusters are more likely to be correct, since multiple
+methods arrived at a similar result. Moreover, our regret bound (Theorem 4.9) suggests we could use
+interpretability methods [12] on one model and get some guarantees for models in the same cluster.
+We introduce the Equivalent-Policy Invariant Comparison (EPIC) distance that meets all the criteria
+in Table 1. We believe EPIC is the ﬁrst method to quantitatively evaluate reward functions without
+training a policy. EPIC (section 4) canonicalizes the reward functions’ potential-based shaping [14],
+then takes the correlation between the canonical rewards over a coverage distribution D of transitions.
+We also introduce baselines NPEC and ERC (section 5) which partially satisfy the criteria.
+EPIC works best when D has support on all realistic transitions. We achieve this in our experiments
+by using uninformative priors, such as rollouts of a policy taking random actions. Moreover, we
+ﬁnd EPIC is robust to the exact choice of distribution D, producing similar results across a range of
+distributions, whereas ERC and especially NPEC are highly sensitive to the choice of D (section 6.2).
+Moreover, low EPIC distance between a learned reward ˆR and the true reward R predicts low regret.
+That is, the policies πˆR and πR optimized for ˆR and R obtain similar returns under R. Theorem 4.9
+bounds the regret even in unseen environments; by contrast, the rollout method can only determine
+regret in the evaluation environment. We also conﬁrm this result empirically (section 6.3).
+2
+RELATED WORK
+There exist a variety of methods to learn reward functions. Inverse reinforcement learning (IRL) [13] is
+a common approach that works by inferring a reward function from demonstrations. The IRL problem
+is inherently underconstrained: many different reward functions lead to the same demonstrations.
+Bayesian IRL [17] handles this ambiguity by inferring a posterior over reward functions. By
+contrast, Maximum Entropy IRL [26] selects the highest entropy reward function consistent with the
+demonstrations; this method has scaled to high-dimensional environments [7; 8].
+An alternative approach is to learn from preference comparisons between two trajectories [1; 25; 6; 18].
+T-REX [4] is a hybrid approach, learning from a ranked set of demonstrations. More directly, Cabi
+et al. [5] learn from “sketches” of cumulative reward over an episode.
+To the best of our knowledge, there is no prior work that focuses on evaluating reward functions
+directly. The most closely related work is Ng et al. [14], identifying reward transformations guaranteed
+to not change the optimal policy. However, a variety of ad-hoc methods have been developed to
+evaluate reward functions. The rollout method – evaluating rollouts of a policy trained on the learned
+reward – is evident in the earliest work on IRL [13]. Fu et al. [8] reﬁned the rollout method by testing
+on a transfer environment, inspiring our experiment in section 6.3. Recent work has compared reward
+functions by scatterplotting returns [10; 4], inspiring our ERC baseline (section 5.1).
+3
+BACKGROUND
+This section introduces material needed for the distances deﬁned in subsequent sections. We start by
+introducing the Markov Decision Process (MDP) formalism, then describe when reward functions
+induce the same optimal policies in an MDP, and ﬁnally deﬁne the notion of a distance metric.
+2
+
+Published as a conference paper at ICLR 2021
+Deﬁnition 3.1. A Markov Decision Process (MDP) M = (S, A, γ, d0, T , R) consists of a set of
+states S and a set of actions A; a discount factor γ ∈[0, 1]; an initial state distribution d0(s); a
+transition distribution T (s′ | s, a) specifying the probability of transitioning to s′ from s after taking
+action a; and a reward function R(s, a, s′) specifying the reward upon taking action a in state s and
+transitioning to state s′.
+A trajectory τ = (s0, a0, s1, a1, · · · ) consists of a sequence of states si ∈S and actions ai ∈A. The
+return on a trajectory is deﬁned as the sum of discounted rewards, g(τ; R) = P|τ|
+t=0 γtR(st, at, st+1),
+where the length of the trajectory |τ| may be inﬁnite.
+In the following, we assume a discounted (γ < 1) inﬁnite-horizon MDP. The results can be generalized
+to undiscounted (γ = 1) MDPs subject to regularity conditions needed for convergence.
+A stochastic policy π(a | s) assigns probabilities to taking action a ∈A in state s ∈S. The objective
+of an MDP is to ﬁnd a policy π that maximizes the expected return G(π) = Eτ(π) [g(τ; R)], where
+τ(π) is a trajectory generated by sampling the initial state s0 from d0, each action at from the policy
+π(at | st) and successor states st+1 from the transition distribution T (st+1 | st, at). An MDP M
+has a set of optimal policies π∗(M) that maximize the expected return, π∗(M) = arg maxπ G(π).
+In this paper, we consider the case where we only have access to an MDP\R, M −= (S, A, γ, d0, T ).
+The unknown reward function R must be learned from human data. Typically, only the state space
+S, action space A and discount factor γ are known exactly, with the initial state distribution d0
+and transition dynamics T only observable from interacting with the environment M −. Below, we
+describe an equivalence class whose members are guaranteed to have the same optimal policy set in
+any MDP\R M −with ﬁxed S, A and γ (allowing the unknown T and d0 to take arbitrary values).
+Deﬁnition 3.2. Let γ ∈[0, 1] be the discount factor, and Φ : S →R a real-valued function. Then
+R(s, a, s′) = γΦ(s′) −Φ(s) is a potential shaping reward, with potential Φ [14].
+Deﬁnition 3.3 (Reward Equivalence). We deﬁne two bounded reward functions RA and RB to be
+equivalent, RA ≡RB, for a ﬁxed (S, A, γ) if and only if there exists a constant λ > 0 and a bounded
+potential function Φ : S →R such that for all s, s′ ∈S and a ∈A:
+RB(s, a, s′) = λRA(s, a, s′) + γΦ(s′) −Φ(s).
+(1)
+Proposition 3.4. The binary relation ≡is an equivalence relation. Let RA, RB, RC : S×A×S →R
+be bounded reward functions. Then ≡is reﬂexive, RA ≡RA; symmetric, RA ≡RB implies
+RB ≡RA; and transitive, (RA ≡RB) ∧(RB ≡RC) implies RA ≡RC.
+Proof.
+See section A.3.1 in supplementary material.
+The expected return of potential shaping γΦ(s′) −Φ(s) on a trajectory segment (s0, · · · , sT ) is
+γT Φ(sT ) −Φ(s0). The ﬁrst term γT Φ(sT ) →0 as T →∞, while the second term Φ(s0) only
+depends on the initial state, and so potential shaping does not change the set of optimal policies.
+Moreover, any additive transformation that is not potential shaping will, for some reward R and
+transition distribution T , produce a set of optimal policies that is disjoint from the original [14].
+The set of optimal policies is invariant to constant shifts c ∈R in the reward, however this can already
+be obtained by shifting Φ by
+c
+γ−1.* Scaling a reward function by a positive factor λ > 0 scales the
+expected return of all trajectories by λ, also leaving the set of optimal policies unchanged.
+If RA ≡RB for some ﬁxed (S, A, γ), then for any MDP\R M −= (S, A, γ, d0, T ) we have
+π∗((M −, RA)) = π∗((M −, RB)), where (M −, R) denotes the MDP speciﬁed by M −with re-
+ward function R. In other words, RA and RB induce the same optimal policies for all initial state
+distributions d0 and transition dynamics T .
+Deﬁnition 3.5. Let X be a set and d : X × X →[0, ∞) a function. d is a premetric if d(x, x) = 0
+for all x ∈X. d is a pseudometric if, furthermore, it is symmetric, d(x, y) = d(y, x) for all x, y ∈X;
+and satisﬁes the triangle inequality, d(x, z) ≤d(x, y) + d(y, z) for all x, y, z ∈X. d is a metric if,
+furthermore, for all x, y ∈X, d(x, y) = 0 =⇒x = y.
+We wish for d(RA, RB) = 0 whenever the rewards are equivalent, RA ≡RB, even if they are not
+identical, RA ̸= RB. This is forbidden in a metric but permitted in a pseudometric, while retaining
+*Note constant shifts in the reward of an undiscounted MDP would cause the value function to diverge.
+Fortunately, the shaping γΦ(s′) −Φ(s) is unchanged by constant shifts to Φ when γ = 1.
+3
+
+Published as a conference paper at ICLR 2021
+other guarantees such as symmetry and triangle inequality that a metric provides. Accordingly, a
+pseudometric is usually the best choice for a distance d over reward functions.
+4
+COMPARING REWARD FUNCTIONS WITH EPIC
+In this section we introduce the Equivalent-Policy Invariant Comparison (EPIC) pseudometric.
+This novel distance canonicalizes the reward functions’ potential-based shaping, then compares
+the canonical representatives using Pearson correlation, which is invariant to scale. Together, this
+construction makes EPIC invariant on reward equivalence classes. See section A.3.2 for proofs.
+We deﬁne the canonically shaped reward CDS,DA (R) as an expectation over some arbitrary distribu-
+tions DS and DA over states S and actions A respectively. This construction means that CDS,DA (R)
+does not depend on the MDP’s initial state distribution d0 or transition dynamics T . In particular,
+we may evaluate R on transitions that are impossible in the training environment, since these may
+become possible in a deployment environment with a different d0 or T .
+Deﬁnition 4.1 (Canonically Shaped Reward). Let R : S × A × S →R be a reward function. Given
+distributions DS ∈∆(S) and DA ∈∆(A) over states and actions, let S and S′ be random variables
+independently sampled from DS and A sampled from DA. We deﬁne the canonically shaped R to be:
+CDS,DA (R) (s, a, s′) = R(s, a, s′) + E [γR(s′, A, S′) −R(s, A, S′) −γR(S, A, S′)] .
+(2)
+Informally, if R′ is shaped by potential Φ, then increasing Φ(s) decreases R′(s, a, s′) but in-
+creases E [−R′(s, A, S′)], canceling. Similarly, increasing Φ(s′) increases R′(s, a, s′) but decreases
+E [γR′(s′, A, S′)]. Finally, E[γR(S, A, S′)] centers the reward, canceling constant shift.
+Proposition 4.2 (The Canonically Shaped Reward is Invariant to Shaping). Let R : S × A × S →R
+be a reward function and Φ : S →R a potential function. Let γ ∈[0, 1] be a discount rate, and
+DS ∈∆(S) and DA ∈∆(A) be distributions over states and actions. Let R′ denote R shaped by
+Φ: R′(s, a, s′) = R(s, a, s′) + γΦ(s′) −Φ(s). Then the canonically shaped R′ and R are equal:
+CDS,DA (R′) = CDS,DA (R).
+Proposition 4.2 holds for arbitrary distributions DS and DA. However, in the following Proposition
+we show that the potential shaping applied by the canonicalization CDS,DA (R) is more inﬂuenced by
+perturbations to R of transitions (s, a, s′) with high joint probability. This suggests choosing DS and
+DA to have broad support, making CDS,DA (R) more robust to perturbations of any given transition.
+Proposition 4.3. Let S and A be ﬁnite, with |S| ≥2. Let DS ∈∆(S) and DA ∈∆(A). Let
+R, ν : S × A × S →R be reward functions, with ν(s, a, s′) = λI[(s, a, s′) = (x, u, x′)], λ ∈R,
+x, x′ ∈S and u ∈A. Let ΦDS,DA(R)(s, a, s′) = CDS,DA (R) (s, a, s′) −R(s, a, s′). Then:
+∥ΦDS,DA(R + ν) −ΦDS,DA(R)∥∞= λ (1 + γDS(x)) DA(u)DS(x′).
+(3)
+We have canonicalized potential shaping; next, we compare the rewards in a scale-invariant manner.
+Deﬁnition 4.4. The Pearson distance between random variables X and Y is deﬁned by the expression
+Dρ(X, Y ) =
+p
+1 −ρ(X, Y )/
+√
+2, where ρ(X, Y ) is the Pearson correlation between X and Y .
+Lemma 4.5. The Pearson distance Dρ is a pseudometric. Moreover, let a, b ∈(0, ∞), c, d ∈R and
+X, Y be random variables. Then it follows that 0 ≤Dρ(aX + c, bY + d) = Dρ(X, Y ) ≤1.
+We can now deﬁne EPIC in terms of the Pearson distance between canonically shaped rewards.
+Deﬁnition 4.6 (Equivalent-Policy Invariant Comparison (EPIC) pseudometric). Let D be some
+coverage distribution over transitions s
+a→s′. Let S, A, S′ be random variables jointly sampled from
+D. Let DS and DA be some distributions over states S and A respectively. The Equivalent-Policy
+Invariant Comparison (EPIC) distance between reward functions RA and RB is:
+DEPIC(RA, RB) = Dρ (CDS,DA (RA) (S, A, S′), CDS,DA (RB) (S, A, S′)) .
+(4)
+Theorem 4.7. The Equivalent-Policy Invariant Comparison distance is a pseudometric.
+Since EPIC is a pseudometric, it satisﬁes the triangle inequality. To see why this is useful, consider an
+environment with an expensive to evaluate ground-truth reward R. Directly comparing many learned
+4
+
+Published as a conference paper at ICLR 2021
+rewards ˆR to R might be prohibitively expensive. We can instead pay a one-off cost: query R a ﬁnite
+number of times and infer a proxy reward RP with DEPIC(R, RP ) ≤ϵ. The triangle inequality
+allows us to evaluate ˆR via comparison to RP , since DEPIC(ˆR, R) ≤DEPIC(ˆR, RP ) + ϵ. This is
+particularly useful for benchmarks, which can be expensive to build but should be cheap to use.
+Theorem 4.8. Let RA, R′
+A, RB, R′
+B : S × A × S →R be reward functions such that R′
+A ≡RA
+and R′
+B ≡RB. Then 0 ≤DEPIC(R′
+A, R′
+B) = DEPIC(RA, RB) ≤1.
+The following is our main theoretical result, showing that DEPIC(RA, RB) distance gives an upper
+bound on the difference in returns under either RA or RB between optimal policies π∗
+RA and π∗
+RB. In
+other words, EPIC bounds the regret under RA of using π∗
+RB instead of π∗
+RA. Moreover, by symmetry
+DEPIC(RA, RB) also bounds the regret under RB of using π∗
+RA instead of π∗
+RB.
+Theorem 4.9. Let M be a γ-discounted MDP\R with ﬁnite state and action spaces S and A.
+Let RA, RB : S × A × S →R be rewards, and π∗
+A, π∗
+B be respective optimal policies. Let
+Dπ(t, st, at, st+1) denote the distribution over transitions S × A × S induced by policy π at time t,
+and D(s, a, s′) be the coverage distribution used to compute DEPIC. Suppose there exists K > 0 such
+that KD(st, at, st+1) ≥Dπ(t, st, at, st+1) for all times t ∈N, triples (st, at, st+1) ∈S × A × S
+and policies π ∈{π∗
+A, π∗
+B}. Then the regret under RA from executing π∗
+B instead of π∗
+A is at most
+GRA(π∗
+A) −GRA(π∗
+B) ≤16K∥RA∥2 (1 −γ)−1 DEPIC(RA, RB),
+where GR(π) is the return of policy π under reward R.
+We generalize the regret bound to continuous spaces in theorem A.16 via a Lipschitz assump-
+tion, with Wasserstein distance replacing K. Importantly, the returns of π∗
+A and π∗
+B converge as
+DEPIC(RA, RB) →0 in both cases, no matter which reward function you evaluate on.
+The key assumption is that the coverage distribution D has adequate support for transitions occurring
+in rollouts of π∗
+A and π∗
+B. The bound is tightest when D is similar to Dπ∗
+A and Dπ∗
+B. However,
+computing π∗
+A and π∗
+B is often intractable. The MDP M may be unknown, such as when making
+predictions about an unseen deployment environment. Even when M is known, RL is computationally
+expensive and may fail to converge in non-trivial environments.
+In ﬁnite cases, a uniform D satisﬁes the requirements with K ≤|S|2|A|. In general, it is best to
+choose D to have broad coverage over plausible transitions. Broad coverage ensures adequate support
+for Dπ∗
+A and Dπ∗
+B. But excluding transitions that are unlikely or impossible to occur leads to tighter
+regret bounds due to a smaller K (ﬁnite case) or Wasserstein distance (continuous case).
+While EPIC upper bounds policy regret, it does not lower bound it. In fact, no reward distance can
+lower bound regret in arbitrary environments. For example, suppose the deployment environment
+transitions to a randomly chosen state independent of the action taken. In this case, all policies obtain
+the same expected return, so the policy regret is always zero, regardless of the reward functions.
+To demonstrate EPIC’s properties, we compare the gridworld reward functions from Figure 1,
+reporting the distances between all reward pairs in Figure A.2. Dense is a rescaled and shaped
+version of Sparse, despite looking dissimilar at ﬁrst glance, so DEPIC (Sparse, Dense) = 0. By
+contrast, DEPIC (Path, Cliff) = 0.27. In deterministic gridworlds, Path and Cliff have the
+same optimal policy, so the rollout method could wrongly conclude they are equivalent. But in fact
+the rewards are fundamentally different: when there is a signiﬁcant risk of “slipping” in the wrong
+direction the optimal policy for Cliff walks along the top instead of the middle row, incurring a −1
+penalty to avoid the risk of falling into the −4 “cliff”.
+For this example, we used state and action distributions DS and DA uniform over S and A, and
+coverage distribution D uniform over state-action pairs (s, a), with s′ deterministically computed. It
+is important these distributions have adequate support. As an extreme example, if DS and D have no
+support for a particular state then the reward of that state has no effect on the distance. We can compute
+EPIC exactly in a tabular setting, but in general use a sample-based approximation (section A.1.1).
+5
+BASELINE APPROACHES FOR COMPARING REWARD FUNCTIONS
+Given the lack of established methods, we develop two alternatives as baselines: Episode Return
+Correlation (ERC) and Nearest Point in Equivalence Class (NPEC).
+5
+
+Published as a conference paper at ICLR 2021
+0
+1
+2
+0
+1
+2
+0
+0
+0
+0
+0
+0
+1
+0
+0
+0
+0
+0
+1
+0
+0
+0
+0
+0
+0
+1
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+Sparse Reward
+0
+1
+2
+-1
+-1
+-1
+-1
+-1
+-1
+3
+-1
+-1
+-4
+-4
+-4
+0
+-4
+-4
+-4
+-4
+-4
+-4
+0
+-4
+2
+2
+2
+2
+2
+2
+2
+2
+2
+2
+2
+2
+Dense Reward
+0
+1
+2
+-1
+0
+0
+-1
+0
+-1
+4
+0
+-1
+-1
+0
+-1
+4
+0
+-1
+-1
+0
+-1
+0
+4
+0
+-1
+0
+0
+-1
+0
+-1
+0
+0
+0
+-1
+0
+-1
+Path Reward
+0
+1
+2
+-4
+0
+0
+-4
+0
+-1
+4
+0
+-1
+-4
+0
+-1
+4
+0
+-1
+-4
+0
+-4
+0
+4
+0
+-4
+0
+0
+-4
+0
+-1
+0
+0
+0
+-1
+0
+-1
+Cliff Reward
+-4
+-2
+0
+2
+4
+Figure 1: Heatmaps of four reward functions for a 3 × 3 gridworld. Sparse and Dense look
+different but are actually equivalent with DEPIC (Sparse, Dense) = 0. By contrast, the optimal
+policies for Path and Cliff are the same if the gridworld is deterministic but different if it is
+“slippery”. EPIC recognizes this difference with DEPIC (Path, Cliff) = 0.27. Key: Reward
+R(s, s′) for moving from s to s′ is given by the triangular wedge in cell s that is adjacent to cell
+s′. R(s, s) is given by the central circle in cell s. Optimal action(s) (deterministic, inﬁnite horizon,
+discount γ = 0.99) have bold labels. See Figure A.2 for the distances between all reward pairs.
+5.1
+EPISODE RETURN CORRELATION (ERC)
+The goal of an MDP is to maximize expected episode return, so it is natural to compare reward
+functions by the returns they induce. If the return of a reward function RA is a positive afﬁne
+transformation of another reward RB, then RA and RB have the same set of optimal policies. This
+suggests using Pearson distance, which is invariant to positive afﬁne transformations.
+Deﬁnition 5.1 (Episode Return Correlation (ERC) pseudometric). Let D be some distribution over
+trajectories. Let E be a random variable sampled from D. The Episode Return Correlation distance
+between reward functions RA and RB is the Pearson distance between their episode returns on D,
+DERC(RA, RB) = Dρ(g(E; RA), g(E; RB)).
+Prior work has produced scatter plots of the return of RA against RB over episodes [4, Figure 3]
+and ﬁxed-length segments [10, section D]. ERC is the Pearson distance of such plots, so is a natural
+baseline. We approximate ERC by the correlation of episode returns on a ﬁnite collection of rollouts.
+ERC is invariant to shaping when the initial state s0 and terminal state sT are ﬁxed. Let R be a
+reward function and Φ a potential function, and deﬁne the shaped reward R′(s, a, s′) = R(s, a, s′) +
+γΦ(s′) −Φ(s). The return under the shaped reward on a trajectory τ = (s0, a0, · · · , sT ) is
+g(τ; R′) = g(τ; R) + γT Φ(sT ) −Φ(s0). Since s0 and sT are ﬁxed, γT Φ(sT ) −Φ(s0) is constant.
+It follows that ERC is invariant to shaping, as Pearson distance is invariant to constant shifts. In fact,
+for inﬁnite-horizon discounted MDPs only s0 needs to be ﬁxed, since γT Φ(sT ) →0 as T →∞.
+However, if the initial state s0 is stochastic, then the ERC distance can take on arbitrary values
+under shaping. Let RA and RB be two arbitrary reward functions. Suppose that there are at least
+two distinct initial states, sX and sY , with non-zero measure in D. Choose potential Φ(s) = 0
+everywhere except Φ(sX) = Φ(sY ) = c, and let R′
+A and R′
+B denote RA and RB shaped by Φ. As
+c →∞, the correlation ρ (g(E; R′
+A), g(E; R′
+B)) →1. This is since the relative difference tends to
+zero, even though g(E; R′
+A) and g(E; R′
+B) continue to have the same absolute difference as c varies.
+Consequently, the ERC pseudometric DERC(R′
+A, R′
+B) →0 as c →∞. By an analogous argument,
+setting Φ(sX) = c and Φ(sY ) = −c gives DERC(R′
+A, R′
+B) →1 as c →∞.
+5.2
+NEAREST POINT IN EQUIVALENCE CLASS (NPEC)
+NPEC takes the minimum Lp distance between equivalence classes. See section A.3.3 for proofs.
+Deﬁnition 5.2 (Lp distance). Let D be a coverage distribution over transitions s
+a→s′ and let p ≥1
+be a power. The Lp distance between reward functions RA and RB is the Lp norm of their difference:
+DLp,D(RA, RB) =
+ Es,a,s′∼D
+
+|RA(s, a, s′) −RB(s, a, s′)|p1/p .
+6
+
+Published as a conference paper at ICLR 2021
+S
+S
+D
+D
+M
+RB
+S
+S
+D
+D
+M
+RA
+0.00 0.51 0.00 0.51 0.63
+0.51 0.00 0.51 0.00 0.55
+0.00 0.51 0.00 0.51 0.63
+0.51 0.00 0.51 0.00 0.55
+0.63 0.55 0.63 0.55 0.00
+(a) EPIC
+S
+S
+D
+D
+M
+RB
+0.00 0.88 0.22 0.86 0.96
+0.92 0.00 0.94 0.04 0.74
+0.58 0.95 0.00 0.81 0.97
+0.88 0.04 0.84 0.00 0.58
+0.93 0.79 0.80 0.62 0.00
+(b) NPEC
+S
+S
+D
+D
+M
+RB
+0.00 0.41 0.56 0.56 0.57
+0.41 0.00 0.61 0.55 0.62
+0.56 0.61 0.00 0.11 0.64
+0.56 0.55 0.11 0.00 0.64
+0.57 0.62 0.64 0.64 0.00
+0.0
+0.5
+1.0
+¯D(RA, RB)
+(c) ERC
+Figure 2: Approximate distances between hand-designed reward functions in PointMass, where the
+agent moves on a line trying to reach the origin. EPIC correctly assigns 0 distance between equivalent
+rewards such as (D
+, S
+) while DNPEC(D
+, S
+) = 0.58 and DERC(D
+, S
+) = 0.56. The
+coverage distribution D is sampled from rollouts of a policy πuni taking actions uniformly at random.
+Key: The agent has position x ∈R, velocity ˙x ∈R and can accelerate ¨x ∈R, producing future
+position x′ ∈R.
+quadratic penalty on control ¨x2,
+no control penalty. S is Sparse(x) = 1[|x| <
+0.05], D is shaped Dense(x, x′) = Sparse(x) + |x′| −|x|, while M is Magnitude(x) = −|x|.
+The Lp distance is affected by potential shaping and positive rescaling that do not change the optimal
+policy. A natural solution is to take the distance from the nearest point in the equivalence class:
+DU
+NPEC(RA, RB) = infR′
+A≡RA DLp,D(R′
+A, RB). Unfortunately, DU
+NPEC is sensitive to RB’s scale.
+It is tempting to instead take the inﬁmum over both arguments of DLp,D.
+However,
+infR′
+A≡RA,R′
+B≡RB DLp,D(R′
+A, RB) = 0 since all equivalence classes come arbitrarily close to
+the origin in Lp space. Instead, we ﬁx this by normalizing DU
+NPEC.
+Deﬁnition 5.3. NPEC is deﬁned by DNPEC(RA, RB) = DU
+NPEC(RA, RB)/DU
+NPEC(Zero, RB)
+when DU
+NPEC(Zero, RB) ̸= 0, and is otherwise given by DNPEC(RA, RB) = 0.
+If DU
+NPEC(Zero, RB) = 0 then DU
+NPEC(RA, RB) = 0 since RA can be scaled arbitrarily close to
+Zero. Since all policies are optimal for R ≡Zero, we choose DNPEC(RA, RB) = 0 in this case.
+Theorem 5.4. DNPEC is a premetric on the space of bounded reward functions. Moreover, let
+RA, RA′, RB, RB′ : S × A × S →R be bounded reward functions such that RA ≡RA′ and
+RB ≡RB′. Then 0 ≤DNPEC(RA′, RB′) = DNPEC(RA, RB) ≤1.
+Note that DNPEC may not be symmetric and so is not, in general, a pseudometric: see proposition A.3.
+The inﬁmum in DU
+NPEC can be computed exactly in a tabular setting, but in general we must
+approximate it using gradient descent. This gives an upper bound for DU
+NPEC, but the quotient of
+upper bounds DNPEC may be too low or too high. See section A.1.2 for details of the approximation.
+6
+EXPERIMENTS
+We evaluate EPIC and the baselines ERC and NPEC in a variety of continuous control tasks. In
+section 6.1, we compute the distance between hand-designed reward functions, ﬁnding EPIC to be the
+most reliable. NPEC has substantial approximation error, and ERC sometimes erroneously assigns
+high distance to equivalent rewards. Next, in section 6.2 we show EPIC is robust to the exact choice
+of coverage distribution D, whereas ERC and especially NPEC are highly sensitive to the choice
+of D. Finally, in section 6.3 we ﬁnd that the distance of learned reward functions to a ground-truth
+reward predicts the return obtained by policy training, even in an unseen test environment.
+6.1
+COMPARING HAND-DESIGNED REWARD FUNCTIONS
+We compare procedurally speciﬁed reward functions in four tasks, ﬁnding that EPIC is more reliable
+than the baselines NPEC and ERC, and more computationally efﬁcient than NPEC. Figure 2 presents
+results in the proof-of-concept PointMass task. The results for Gridworld, HalfCheetah
+and Hopper, in section A.2.4, are qualitatively similar.
+7
+
+Published as a conference paper at ICLR 2021
+Table 2: Low reward distance from the ground-truth (GT) in PointMaze-Train predicts high pol-
+icy return even in unseen task PointMaze-Test. EPIC distance is robust to the choice of coverage
+distribution D, with similar values across columns, while ERC and especially NPEC are sensitive
+to D. Center: approximate distances (1000× scale) of reward functions from GT. The coverage
+distribution D is computed from rollouts in PointMaze-Train of: a uniform random policy πuni,
+an expert π∗and a Mixture of these policies. DS and DA are computed by marginalizing D. Right:
+mean GT return over 9 seeds of RL training on the reward in PointMaze-{Train,Test}, and
+returns for AIRL’s generator policy. Conﬁdence Intervals: see Table A.7.
+Reward
+1000 × DEPIC
+1000 × DNPEC
+1000 × DERC
+Episode Return
+Function
+πuni π∗
+Mix
+πuni π∗
+Mix
+πuni π∗
+Mix
+Gen.
+Train
+Test
+GT
+0.06
+0.05 0.04
+0.04
+3.17
+0.01
+0.00
+0.00
+0.00
+—
+−5.19 −6.59
+Regress
+35.8
+33.7 26.1
+1.42
+38.9
+0.35
+9.99
+90.7
+2.43
+—
+−5.47 −6.30
+Pref
+68.7
+100
+56.8
+8.51
+1333 9.74
+24.9
+360
+19.6
+—
+−5.57 −5.04
+AIRL SO
+572
+520
+404
+817
+2706 488
+549
+523
+240
+−5.43 −27.3 −22.7
+AIRL SA
+776
+930
+894
+1067 2040 1039
+803
+722
+964
+−5.05 −30.7 −29.0
+Mirage
+17.0
+0.05 397
+0.68
+6.30
+597
+35.3
+<0.01 166
+—
+−30.4 −29.1
+In PointMass the agent can accelerate ¨x left or right on a line. The reward functions include (
+)
+or exclude (
+) a quadratic penalty ¨x2. The sparse reward (S) gives a reward of 1 in the region ±0.05
+from the origin. The dense reward (D) is a shaped version of the sparse reward. The magnitude
+reward (M) is the negative distance of the agent from the origin.
+We ﬁnd that EPIC correctly identiﬁes the equivalent reward pairs (S
+-D
+and S
+-D
+)
+with estimated distance < 1 × 10−3. By contrast, NPEC has substantial approximation error:
+DNPEC(D
+, S
+) = 0.58. Similarly, DERC(D
+, S
+) = 0.56 due to ERC’s erroneous handling of
+stochastic initial states. Moreover, NPEC is computationally inefﬁcient: Figure 2(b) took 31 hours to
+compute. By contrast, the ﬁgures for EPIC and ERC were generated in less than two hours, and a
+lower precision approximation of EPIC ﬁnishes in just 17 seconds (see section A.2.6).
+6.2
+SENSITIVITY OF REWARD DISTANCE TO COVERAGE DISTRIBUTION
+Reward distances should be robust to the choice of coverage distribution D. In Table 2 (center),
+we report distances from the ground-truth reward (GT) to reward functions (rows) across coverage
+distributions D ∈{πuni, π∗, Mix} (columns). We ﬁnd EPIC is fairly robust to the choice of D
+with a similar ratio between rows in each column D. By contrast, ERC and especially NPEC are
+substantially more sensitive to the choice of D.
+We evaluate in the PointMaze MuJoCo task from Fu et al. [8], where a point mass agent must
+navigate around a wall to reach a goal. The coverage distributions D are induced by rollouts from
+three different policies: πuni takes actions uniformly at random, producing broad support over
+transitions; π∗is an expert policy, yielding a distribution concentrated around the goal; and Mix is a
+mixture of the two. In EPIC, DS and DA are marginalized from D and so also vary with D.
+We evaluate four reward learning algorithms: Regression onto reward labels [target method from 6,
+section 3.3], Preference comparisons on trajectories [6], and adversarial IRL with a state-only (AIRL
+SO) and state-action (AIRL SA) reward model [8]. All models are trained using synthetic data from
+an oracle with access to the ground-truth; see section A.2.2 for details.
+We ﬁnd EPIC is robust to varying D when comparing the learned reward models: the distance varies
+by less than 2×, and the ranking between the reward models is the same across coverage distributions.
+By contrast, NPEC is highly sensitive to D: the ratio of AIRL SO (817) to Pref (8.51) is 96 : 1
+under πuni but only 2 : 1 (2706 : 1333) under π∗. ERC lies somewhere in the middle: the ratio is
+22 : 1 (549 : 24.9) under πuni and 3 : 2 (523 : 360) under π∗.
+We evaluate the effect of pathological choices of coverage distribution D in Table A.8. For example,
+Ind independently samples states and next states, giving physically impossible transitions, while Jail
+constrains rollouts to a tiny region excluding the goal. We ﬁnd that the ranking of EPIC changes in
+only one distribution, whilst the ranking of NPEC changes in two cases and ERC changes in all cases.
+8
+
+Published as a conference paper at ICLR 2021
+However, we do ﬁnd that EPIC is sensitive to D on Mirage, a reward function we explicitly designed
+to break these methods. Mirage assigns a larger reward when close to a “mirage” state than when at
+the true goal, but is identical to GT at all other points. The “mirage” state is rarely visited by random
+exploration πuni as it is far away and on the opposite side of the wall from the agent. The expert
+policy π∗is even less likely to visit it, as it is not on or close to the optimal path to the goal. As a
+result, the EPIC distance from Mirage to GT (Table 2, bottom row) is small under πuni and π∗.
+In general, any black-box method for assessing reward models – including the rollout method – only
+has predictive power on transitions visited during testing. Fortunately, we can achieve a broad support
+over states with Mix: it often navigates around the wall due to π∗, but strays from the goal thanks to
+πuni. As a result, EPIC under Mix correctly infers that Mirage is far from the ground-truth GT.
+These empirical results support our theoretically inspired recommendation from section 4: “in general,
+it is best to choose D to have broad coverage over plausible transitions.” Distributions such as π∗
+are too narrow, assigning coverage only on a direct path from the initial state to the goal. Very
+broad distributions such as Ind waste probability mass on impossible transitions like teleporting.
+Distributions like Mix strike the right balance between these extremes.
+6.3
+PREDICTING POLICY PERFORMANCE FROM REWARD DISTANCE
+We ﬁnd that low distance from the ground-truth reward GT (Table 2, center) predicts high GT return
+(Table 2, right) of policies optimized for that reward. Moreover, the distance is predictive of return not
+just in PointMaze-Train where the reward functions were trained and evaluated in, but also in the
+unseen variant PointMaze-Test. This is despite the two variants differing in the position of the
+wall, such that policies for PointMaze-Train run directly into the wall in PointMaze-Test.
+Both Regress and Pref achieve very low distances at convergence, producing near-expert policy
+performance. The AIRL SO and AIRL SA models have reward distances an order of magnitude
+higher and poor policy performance. Yet intriguingly, the generator policies for AIRL SO and AIRL
+SA – trained simultaneously with the reward – perform reasonably in PointMaze-Train. This
+suggests the learned rewards are reasonable on the subset of transitions taken by the generator policy,
+yet fail to transfer to the different transitions taken by a policy being trained from scratch.
+Figure A.6 shows reward distance and policy regret during reward model training. The lines all
+closely track each other, showing that the distance to GT is highly correlated with policy regret for
+intermediate reward checkpoints as well as at convergence. Regress and Pref converge quickly
+to low distance and low regret, while AIRL SO and AIRL SA are slower and more unstable.
+7
+CONCLUSION
+Our novel EPIC distance compares reward functions directly, without training a policy. We have
+proved it is a pseudometric, is bounded and invariant to equivalent rewards, and bounds the regret of
+optimal policies (Theorems 4.7, 4.8 and 4.9). Empirically, we ﬁnd EPIC correctly infers zero distance
+between equivalent reward functions that the NPEC and ERC baselines wrongly consider dissimilar.
+Furthermore, we ﬁnd the distance of learned reward functions to the ground-truth reward predicts the
+return of policies optimized for the learned reward, even in unseen environments.
+Standardized metrics are an important driver of progress in machine learning. Unfortunately, tradi-
+tional policy-based metrics do not provide any guarantees as to the ﬁdelity of the learned reward
+function. We believe the EPIC distance will be a highly informative addition to the evaluation toolbox,
+and would encourage researchers to report EPIC distance in addition to policy-based metrics. Our
+implementation of EPIC and our baselines, including a tutorial and documentation, are available at
+https://github.com/HumanCompatibleAI/evaluating-rewards.
+ACKNOWLEDGEMENTS
+Thanks to Sam Toyer, Rohin Shah, Eric Langlois, Siddharth Reddy and Stuart Armstrong for helpful
+discussions; to Miljan Martic for code-review; and to David Krueger, Matthew Rahtz, Rachel
+Freedman, Cody Wild, Alyssa Dayan, Adria Garriga, Jon Uesato, Zac Kenton and Alden Hung for
+feedback on drafts. This work was supported by Open Philanthropy and the Leverhulme Trust.
+9
+
+Published as a conference paper at ICLR 2021
+REFERENCES
+[1] Riad Akrour, Marc Schoenauer, and Michele Sebag. Preference-based policy learning. In
+Machine Learning and Knowledge Discovery in Databases, 2011.
+[2] Dario
+Amodei,
+Paul
+Christiano,
+and
+Alex
+Ray.
+Learning
+from
+hu-
+man
+preferences,
+June
+2017.
+URL
+https://openai.com/blog/
+deep-reinforcement-learning-from-human-preferences/.
+[3] Dzmitry Bahdanau, Felix Hill, Jan Leike, Edward Hughes, Arian Hosseini, Pushmeet Kohli,
+and Edward Grefenstette. Learning to understand goal speciﬁcations by modelling reward. In
+ICLR, 2019.
+[4] Daniel S. Brown, Wonjoon Goo, Prabhat Nagarajan, and Scott Niekum. Extrapolating beyond
+suboptimal demonstrations via inverse reinforcement learning from observations. In ICML,
+2019.
+[5] Serkan Cabi, Sergio Gómez Colmenarejo, Alexander Novikov, Ksenia Konyushkova, Scott
+Reed, Rae Jeong, Konrad Zolna, Yusuf Aytar, David Budden, Mel Vecerik, Oleg Sushkov, David
+Barker, Jonathan Scholz, Misha Denil, Nando de Freitas, and Ziyu Wang. Scaling data-driven
+robotics with reward sketching and batch reinforcement learning. arXiv: 1909.12200v2 [cs.RO],
+2019.
+[6] Paul F Christiano, Jan Leike, Tom Brown, Miljan Martic, Shane Legg, and Dario Amodei. Deep
+reinforcement learning from human preferences. In NIPS, pp. 4299–4307, 2017.
+[7] Chelsea Finn, Sergey Levine, and Pieter Abbeel. Guided cost learning: Deep inverse optimal
+control via policy optimization. In ICML, 2016.
+[8] Justin Fu, Katie Luo, and Sergey Levine. Learning robust rewards with adverserial inverse
+reinforcement learning. In ICLR, 2018.
+[9] Ashley Hill, Antonin Rafﬁn, Maximilian Ernestus, Adam Gleave, Anssi Kanervisto, Rene
+Traore, Prafulla Dhariwal, Christopher Hesse, Oleg Klimov, Alex Nichol, Matthias Plappert,
+Alec Radford, John Schulman, Szymon Sidor, and Yuhuai Wu. Stable Baselines. https:
+//github.com/hill-a/stable-baselines, 2018.
+[10] Borja Ibarz, Jan Leike, Tobias Pohlen, Geoffrey Irving, Shane Legg, and Dario Amodei. Reward
+learning from human preferences and demonstrations in Atari. In NeurIPS, pp. 8011–8023,
+2018.
+[11] Charles L. Lawson and Richard J. Hanson. Solving Least Squares Problems. SIAM, 1995.
+[12] Eric J. Michaud, Adam Gleave, and Stuart Russell. Understanding learned reward functions. In
+Proceedings of the Workshop on Deep Reinforcement Learning at NeurIPS, 2020.
+[13] Andrew Y. Ng and Stuart Russell. Algorithms for inverse reinforcement learning. In ICML,
+2000.
+[14] Andrew Y. Ng, Daishi Harada, and Stuart Russell. Policy invariance under reward transforma-
+tions: theory and application to reward shaping. In NIPS, 1999.
+[15] OpenAI. OpenAI Five. https://blog.openai.com/openai-five/, 2018.
+[16] OpenAI, Ilge Akkaya, Marcin Andrychowicz, Maciek Chociej, Mateusz Litwin, Bob McGrew,
+Arthur Petron, Alex Paino, Matthias Plappert, Glenn Powell, Raphael Ribas, Jonas Schneider,
+Nikolas Tezak, Jerry Tworek, Peter Welinder, Lilian Weng, Qiming Yuan, Wojciech Zaremba,
+and Lei Zhang. Solving Rubik’s Cube with a robot hand. arXiv: 1910.07113v1 [cs.LG], 2019.
+[17] Deepak Ramachandran and Eyal Amir. Bayesian inverse reinforcement learning. In IJCAI,
+2007.
+[18] Dorsa Sadigh, Anca D. Dragan, S. Shankar Sastry, and Sanjit A. Seshia. Active preference-based
+learning of reward functions. In RSS, July 2017.
+10
+
+Published as a conference paper at ICLR 2021
+[19] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal
+policy optimization algorithms. arXiv:1707.06347v2 [cs.LG], 2017.
+[20] David Silver, Aja Huang, Chris J. Maddison, Arthur Guez, Laurent Sifre, George van den Driess-
+che, Julian Schrittwieser, Ioannis Antonoglou, Veda Panneershelvam, Marc Lanctot, Sander
+Dieleman, Dominik Grewe, John Nham, Nal Kalchbrenner, Ilya Sutskever, Timothy Lillicrap,
+Madeleine Leach, Koray Kavukcuoglu, Thore Graepel, and Demis Hassabis. Mastering the
+game of Go with deep neural networks and tree search. Nature, 529(7587):484–489, 2016.
+[21] Satinder P. Singh and Richard C. Yee. An upper bound on the loss from approximate optimal-
+value functions. Machine Learning, 16(3):227–233, September 1994.
+[22] Mel Vecerik, Oleg Sushkov, David Barker, Thomas Rothörl, Todd Hester, and Jon Scholz. A
+practical approach to insertion with variable socket position using deep reinforcement learning.
+In ICRA, 2019.
+[23] Oriol Vinyals, Igor Babuschkin, Wojciech M. Czarnecki, Michaël Mathieu, Andrew Dudzik,
+Junyoung Chung, David H. Choi, Richard Powell, Timo Ewalds, Petko Georgiev, Junhyuk Oh,
+Dan Horgan, Manuel Kroiss, Ivo Danihelka, Aja Huang, Laurent Sifre, Trevor Cai, John P.
+Agapiou, Max Jaderberg, Alexander S. Vezhnevets, Rémi Leblond, Tobias Pohlen, Valentin
+Dalibard, David Budden, Yury Sulsky, James Molloy, Tom L. Paine, Caglar Gulcehre, Ziyu
+Wang, Tobias Pfaff, Yuhuai Wu, Roman Ring, Dani Yogatama, Dario Wünsch, Katrina McKin-
+ney, Oliver Smith, Tom Schaul, Timothy Lillicrap, Koray Kavukcuoglu, Demis Hassabis, Chris
+Apps, and David Silver. Grandmaster level in StarCraft II using multi-agent reinforcement
+learning. Nature, 575(7782):350–354, 2019.
+[24] Steven Wang, Adam Gleave, and Sam Toyer.
+imitation:
+implementations of inverse
+reinforcement learning and imitation learning algorithms.
+https://github.com/
+humancompatibleai/imitation, 2020.
+[25] Aaron Wilson, Alan Fern, and Prasad Tadepalli. A Bayesian approach for policy learning from
+trajectory preference queries. In NIPS, 2012.
+[26] Brian D. Ziebart, Andrew Maas, J. Andrew Bagnell, and Anind K. Dey. Maximum entropy
+inverse reinforcement learning. In AAAI, 2008.
+[27] Daniel M. Ziegler, Nisan Stiennon, Jeffrey Wu, Tom B. Brown, Alec Radford, Dario Amodei,
+Paul Christiano, and Geoffrey Irving. Fine-tuning language models from human preferences.
+arXiv: 1909.08593v2 [cs.CL], 2019.
+11
+
+Published as a conference paper at ICLR 2021
+A
+SUPPLEMENTARY MATERIAL
+A.1
+APPROXIMATION PROCEDURES
+A.1.1
+SAMPLE-BASED APPROXIMATION FOR EPIC DISTANCE
+We approximate EPIC distance (deﬁnition 4.6) by estimating Pearson distance on a set of samples,
+canonicalizing the reward on-demand. Speciﬁcally, we sample a batch BV of NV samples from the
+coverage distribution D, and a batch BM of NM samples from the joint state and action distributions
+DS × DA. For each (s, a, s′) ∈BV , we approximate the canonically shaped rewards (deﬁnition 4.1)
+by taking the mean over BM:
+CDS,DA (R) (s, a, s′) = R(s, a, s′) + E [γR(s′, A, S′) −R(s, A, S′) −γR(S, A, S′)]
+(5)
+≈R(s, a, s′) +
+γ
+NM
+X
+(x,u)∈BM
+R(s′, u, x)
+(6)
+−
+1
+NM
+X
+(x,u)∈BM
+R(s, u, x) −c.
+(7)
+We drop the constant c from the approximation since it does not affect the Pearson distance; it can also
+be estimated in O(N 2
+M) time by c =
+γ
+N2
+M
+P
+(x,·)∈BM
+P
+(x′,u)∈BM R(x, u, x′). Finally, we compute
+the Pearson distance between the approximate canonically shaped rewards on the batch of samples
+BV , yielding an O(NV NM) time algorithm.
+A.1.2
+OPTIMIZATION-BASED APPROXIMATION FOR NPEC DISTANCE
+DNPEC(RA, RB) (section 5.2) is deﬁned as the inﬁmum of Lp distance over an inﬁnite set of
+equivalent reward functions R ≡RA. We approximate this using gradient descent on the reward
+model
+Rν,c,w(s, a, s′) = exp(ν)RA(s, a, s′) + c + γΦw(s′) −Φw(s),
+(8)
+where ν, c ∈R are scalar weights and w is a vector of weights parameterizing a deep neural network
+Φw. The constant c ∈R is unnecessary if Φw has a bias term, but its inclusion simpliﬁes the
+optimization problem.
+We optimize ν, c, w to minimize the mean of the cost
+J(ν, c, w)(s, a, s′) = ∥Rν,c,w(s, a, s′), RB(s, a, s′)∥p
+(9)
+on samples (s, a, s′) from a coverage distribution D. Note
+E(S,A,S′)∼D [J(ν, c, w)(S, A, S′)]1/p = DLp,D(Rν,c,w, RB)
+(10)
+upper bounds the true NPEC distance since Rν,c,w ≡RA.
+We found empirically that ν and c need to be initialized close to their optimal values for gradient
+descent to reliably converge. To resolve this problem, we initialize the afﬁne parameters to ν ←log λ
+and c found by:
+arg min
+λ≥0,c∈R
+E
+s,a,s′∼D (λRA(s, a, s′) + c −RB(s, a, s′))2 .
+(11)
+We use the active set method of Lawson & Hanson [11] to solve this constrained least-squares problem.
+These initial afﬁne parameters minimize the Lp distance DLp,D(Rν,c,0(s, a, s′), RB(s, a, s′)) when
+p = 2 with the potential ﬁxed at Φ0(s) = 0.
+A.1.3
+CONFIDENCE INTERVALS
+We report conﬁdence intervals to help measure the degree of error introduced by the approximations.
+Since approximate distances may not be normally distributed, we use bootstrapping to produce a
+distribution-free conﬁdence interval. For EPIC, NPEC and Episode Return (sometimes reported as
+regret rather than return), we compute independent approximate distances or returns over different
+12
+
+Published as a conference paper at ICLR 2021
+Table A.1: Summary of hyperparameters and distributions used in experiments. The uniform random
+coverage distribution Dunif samples states and actions uniformly at random, and samples the next
+state from the transition dynamics. Random policy πuni takes uniform random actions. The synthetic
+expert policy π∗was trained with PPO on the ground-truth reward. Mixture samples actions from
+either πuni or π∗, switching between them at each time step with probability 0.05. Warmstart Size is
+the size of the dataset used to compute initialization parameters described in section A.1.2.
+Parameter
+Value
+In experiment
+Coverage Distribution D
+Random transitions Dunif
+GridWorld
+Rollouts from πuni
+PointMass, HalfCheetah, Hopper
+πuni, π∗and Mixture
+PointMaze
+Bootstrap Samples
+10 000
+All
+Discount γ
+0.99
+All
+EPIC
+State Distribution DS
+Marginalized from D
+All
+Action Distribution DA
+Marginalized from D
+All
+Seeds
+30
+All
+Samples NV
+32 768
+All
+Mean Samples NM
+32 768
+All
+NPEC
+Seeds
+3
+All
+Total Time Steps
+1 × 106
+All
+Optimizer
+Adam
+All
+Learning Rate
+1 × 10−2
+All
+Batch Size
+4096
+All
+Warmstart Size
+16 386
+All
+Loss ℓ
+ℓ(x, y) = (x −y)2
+All
+ERC
+Episodes
+131 072
+All
+Episode Return
+Seeds
+9
+All
+See Table A.2 for the policy training hyperparameters
+seeds, and then compute a bootstrapped conﬁdence interval for each seed. We use 30 seeds for
+EPIC, but only 9 seeds for computing Episode Return and 3 seeds for NPEC due to their greater
+computational requirements. In ERC, computing the distance is very fast, so we instead apply
+bootstrapping to the collected episodes, computing the ERC distance for each bootstrapped episode
+sample.
+A.2
+EXPERIMENTS
+A.2.1
+HYPERPARAMETERS FOR APPROXIMATE DISTANCES
+Table A.1 summarizes the hyperparameters and distributions used to compute the distances between
+reward functions. Most parameters are the same across all environments. We use a coverage
+distribution of uniform random transitions Dunif in the simple GridWorld environment with known
+determinstic dynamics. In other environments, the coverage distribution is sampled from rollouts of a
+policy. We use a random policy πuni for PointMass, HalfCheetah and Hopper in the hand-
+designed reward experiments (section 6.1). In PointMaze, we compare three coverage distributions
+(section 6.2) induced by rollouts of πuni, an expert policy π∗and a Mixture of the two policies,
+sampling actions from either πuni or π∗and switching between them with probability 0.05 per time
+step.
+13
+
+Published as a conference paper at ICLR 2021
+Table A.2: Hyperparameters for proximal policy optimisation (PPO) [19]. We used the implemen-
+tation and default hyperparameters from Hill et al. [9]. PPO was used to train expert policies on
+ground-truth reward and to optimize learned reward functions for evaluation.
+Parameter
+Value
+In environment
+Total Time Steps
+1 × 106
+All
+Seeds
+9
+All
+Batch Size
+4096
+All
+Discount γ
+0.99
+All
+Entropy Coefﬁcient
+0.01
+All
+Learning Rate
+3 × 10−4
+All
+Value Function Coefﬁcient
+0.5
+All
+Gradient Clipping Threshold
+0.5
+All
+Ratio Clipping Thrsehold
+0.2
+All
+Lambda (GAE)
+0.95
+All
+Minibatches
+4
+All
+Optimization Epochs
+4
+All
+Parallel Environments
+8
+All
+Table A.3: Hyperparameters for adversarial inverse reinforcement learning (AIRL) used in Wang
+et al. [24].
+Parameter
+Value
+RL Algorithm
+PPO [19]
+Total Time Steps
+1 000 000
+Discount γ
+0.99
+Demonstration Time Steps
+100 000
+Generator Batch Size
+2048
+Discriminator Batch Size
+50
+Entropy Weight
+1.0
+Reward Function Architecture
+MLP, two 32-unit hidden layers
+Potential Function Architecture
+MLP, two 32-unit hidden layers
+Table A.4: Hyperparameters for preference comparison used in our implementation of Christiano
+et al. [6].
+Parameter
+Value
+Range Tested
+Total Time Steps
+5 × 106
+[1, 10 × 106]
+Batch Size
+10 000
+[500, 250 000]
+Trajectory Length
+5
+[1, 100]
+Learning Rate
+1 × 10−2
+[1 × 10−4, 1 × 10−1]
+Discount γ
+0.99
+Reward Function Architecture
+MLP, two 32-unit hidden layers
+Output L2 Regularization Weight
+1 × 10−4
+Table A.5: Hyperparameters for regression used in our implementation of Christiano et al. [6, target
+method from section 3.3].
+Parameter
+Value
+Range Tested
+Total Time Steps
+10 × 106
+[1, 20 × 106]
+Batch Size
+4096
+[256, 16 384]
+Learning Rate
+2 × 10−2
+[1 × 10−3, 1 × 10−1]
+Discount γ
+0.99
+Reward Function Architecture
+MLP, two 32-unit hidden layers
+14
+
+Published as a conference paper at ICLR 2021
+A.2.2
+TRAINING LEARNED REWARD MODELS
+For the experiments on learned reward functions (sections 6.3 and 6.2), we trained reward mod-
+els using adversarial inverse reinforcement learning (AIRL; 8), preference comparison [6] and
+by regression onto the ground-truth reward [target method from 6, section 3.3]. For AIRL, we
+use an existing open-source implementation [24]. We developed new implementations for prefer-
+ence comparison and regression, available at https://github.com/HumanCompatibleAI/
+evaluating-rewards. We also use the RL algorithm proximal policy optimization (PPO; 19)
+on the ground-truth reward to train expert policies to provide demonstrations for AIRL. We use 9
+seeds, taking rollouts from the seed with the highest ground-truth return.
+Our hyperparameters for PPO in Table A.2 were based on the defaults in Stable Baselines [9]. We
+only modiﬁed the batch size and learning rate, and disabled value function clipping to match the
+original PPO implementation.
+Our AIRL hyperparameters in Table A.3 likewise match the defaults, except for increasing the total
+number of timesteps to 106. Due to the high variance of AIRL, we trained 5 seeds, selecting the one
+with the highest ground-truth return. While this does introduce a positive bias for our AIRL results,
+in spite of this AIRL performed worse in our tests than other algorithms. Moreover, the goal in this
+paper is to evaluate distance metrics, not reward learning algorithms.
+For preference comparison we performed a sweep over batch size, trajectory length and learning
+rate to decide on the hyperparameters in Table A.4. Total time steps was selected once diminishing
+returns were observed in loss curves. The exact value of the regularization weight was found to be
+unimportant, largely controlling the scale of the output at convergence.
+Finally, for regression we performed a sweep over batch size, learning rate and total time steps to
+decide on the hyperparameters in Table A.5. We found batch size and learning rate to be relatively
+unimportant with many combinations performing well, but regression was found to converge slowly
+but steadily requiring a relatively large 10 × 106 time steps for good performance in our environments.
+All algorithms are trained on synthetic data generated from the ground-truth reward function. AIRL
+is provided with a large demonstration dataset of 100 000 time steps from an expert policy trained
+on the ground-truth reward (see Table A.3). In preference comparison and regression, each batch is
+sampled afresh from the coverage distribution speciﬁed in Table A.1 and labeled according to the
+ground-truth reward.
+A.2.3
+COMPUTING INFRASTRUCTURE
+Experiments were conducted on a workstation (Intel i9-7920X CPU with 64 GB of RAM), and
+a small number of r5.24xlarge AWS VM instances, with 48 CPU cores on an Intel Skylake
+processor and 768 GB of RAM. It takes less than three weeks of compute on a single r5.24xlarge
+instance to run all the experiments described in this paper.
+A.2.4
+COMPARING HAND-DESIGNED REWARD FUNCTIONS
+We compute distances between hand-designed reward functions in four environments: GridWorld,
+PointMass, HalfCheetah and Hopper. The reward functions for GridWorld are described
+in Figure A.1, and the distances are reported in Figure A.2. We report the approximate distances and
+conﬁdence intervals between reward functions in the other environments in Figures A.3, A.4 and A.5.
+We ﬁnd the (approximate) EPIC distance closely matches our intuitions for similarity between the
+reward functions. NPEC often produces similar results to EPIC, but unfortunately is dogged by opti-
+mization error. This is particularly notable in higher-dimensional environments like HalfCheetah
+and Hopper, where the NPEC distance often exceeds the theoretical upper bound of 1.0 and the
+conﬁdence interval width is frequently larger than 0.2.
+By contrast, ERC distance generally has a tight conﬁdence interval, but systematically fails in
+the presence of shaping. For example, it conﬁdently assigns large distances between equivalent
+reward pairs in PointMass such as S
+-D
+. However, ERC produces reasonable results in
+HalfCheetah and Hopper where rewards are all similarly shaped. In fact, ERC picks up on
+a detail in Hopper that EPIC misses: whereas EPIC assigns a distance of around 0.71 between
+15
+
+Published as a conference paper at ICLR 2021
+Distance
+Wall-Clock
+Environment
+Reward
+# of
+95% CI Width
+Metric
+Time
+Time Steps
+Queries
+Seeds
+Max
+Mean
+EPIC Quick
+17 s
+8192
+1.67 × 107
+3
+0.023 04
+0.008 60
+EPIC
+6738 s
+65 536
+1.07 × 109
+30
+0.005 58
+0.002 34
+NPEC
+29 769 s
+7.50 × 107
+7.50 × 107
+3
+0.315 91
+0.066 20
+ERC
+1376 s
+6.55 × 106
+6.55 × 106
+—
+0.015 81
+0.005 33
+RL (PPO)
+14 745 s
+7.50 × 107
+7.50 × 107
+3
+—
+—
+Table A.6: Time and resources taken by different metrics to perform 25 distance comparisons
+on PointMass, and the conﬁdence interval widths obtained (smaller is better). Methods EPIC,
+NPEC and ERC correspond to Figures 2(a), (b) and (c) respectively. EPIC Quick is an abbreviated
+version with fewer samples. RL (PPO) is estimated from the time taken using PPO to train a single
+policy (16m:23s) until convergence (106 time steps). EPIC samples NM + NV time steps from the
+environment and performs NMNV reward queries. In EPIC Quick, NM = NV = 4096; in EPIC,
+NM = NV = 302768. Other methods query the reward once per environment time step.
+all rewards of different types (running vs backﬂipping), ERC assigns lower distances when the
+rewards are in the same direction (forward or backward). Given this, ERC may be attractive in some
+circumstances, especially given the ease of implementation. However, we would caution against
+using it in isolation due to the likelihood of misleading results in the presence of shaping.
+A.2.5
+COMPARING LEARNED REWARD FUNCTIONS
+Previously, we reported the mean approximate distance from a ground-truth reward of four learned
+reward models in PointMaze (Table 2). Since these distances are approximate, we report 95%
+lower and upper bounds computed via bootstrapping in Table A.7. We also include the relative
+difference of the upper and lower bounds from the mean, ﬁnding the relative difference to be fairly
+consistent across reward models for a given algorithm and coverage distribution pair. The relative
+difference is less than 1% for all EPIC and ERC distances. However, NPEC conﬁdence intervals can
+be as wide as 50%: this is due to the method’s high variance, and the small number of seeds we were
+able to run because of the method’s computational expense.
+A.2.6
+RUNTIME OF DISTANCE METRICS
+We report the empirical runtime for EPIC and baselines in Table A.6, performing 25 pairwise com-
+parisons across 5 reward functions in PointMass. These comparisons were run on an unloaded
+machine running Ubuntu 20.04 (kernel 5.4.0-52) with an Intel i9-7920X CPU and 64 GB of RAM.
+We report sequential runtimes: runtimes for all methods could be decreased further by parallelizing
+across seeds. The algorithms were conﬁgured to use 8 parallel environments for sampling. Inference
+and training took place on CPU. All methods used the same TensorFlow conﬁguration, parallelizing
+operations across threads both within and between operations. We found GPUs offered no perfor-
+mance beneﬁt in this setting, and in some cases even increased runtime. This is due to the ﬁxed cost
+of CPU-GPU communication, and the relatively small size of the observations.
+We ﬁnd that in just 17 seconds EPIC can provide results with a 95% conﬁdence interval < 0.023,
+an order of magnitude tighter than NPEC running for over 8 hours. Training policies for all learned
+rewards in this environment using PPO is comparatively slow, taking over 4 hours even with only 3
+seeds. While ERC is relatively fast, it takes a large number of samples to achieve tight conﬁdence
+intervals. Moreover, since PointMass has stochastic initial states, ERC can take on arbitrary values
+under shaping, as discussed in sections 5.1 and 6.3.
+16
+
+Published as a conference paper at ICLR 2021
+0
+1
+2
+0
+0
+0
+0
+0
+0
+1
+0
+0
+0
+0
+0
+1
+0
+0
+0
+0
+0
+0
+1
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+Sparse Reward
+-1
+-1
+-1
+-1
+-1
+-1
+3
+-1
+-1
+-4
+-4
+-4
+0
+-4
+-4
+-4
+-4
+-4
+-4
+0
+-4
+2
+2
+2
+2
+2
+2
+2
+2
+2
+2
+2
+2
+Dense Reward
+0
+1
+2
+0
+0
+0
+0
+0
+0
+-1
+0
+0
+0
+0
+0
+-1
+0
+0
+0
+0
+0
+0
+-1
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+Penalty Reward
+0
+0
+0
+0
+1
+0
+0
+0
+0
+0
+1
+0
+0
+0
+0
+0
+0
+0
+1
+0
+0
+0
+0
+0
+0
+1
+0
+0
+0
+1
+0
+0
+0
+Center Reward
+0
+1
+2
+0
+1
+2
+-1
+0
+0
+-1
+0
+-1
+4
+0
+-1
+-1
+0
+-1
+4
+0
+-1
+-1
+0
+-1
+0
+4
+0
+-1
+0
+0
+-1
+0
+-1
+0
+0
+0
+-1
+0
+-1
+Path Reward
+0
+1
+2
+-4
+0
+0
+-4
+0
+-1
+4
+0
+-1
+-4
+0
+-1
+4
+0
+-1
+-4
+0
+-4
+0
+4
+0
+-4
+0
+0
+-4
+0
+-1
+0
+0
+0
+-1
+0
+-1
+Cliff Reward
+-4
+-3
+-2
+-1
+0
+1
+2
+3
+4
+-4
+-3
+-2
+-1
+0
+1
+2
+3
+4
+-4
+-3
+-2
+-1
+0
+1
+2
+3
+4
+Figure A.1: Heatmaps of reward functions R(s, a, s′) for a 3×3 deterministic gridworld. R(s, stay, s)
+is given by the central circle in cell s. R(s, a, s′) is given by the triangular wedge in cell s adjacent
+to cell s′ in direction a. Optimal action(s) (for inﬁnite horizon, discount γ = 0.99) have bold labels
+against a hatched background. See Figure A.2 for the distance between all reward pairs.
+17
+
+Published as a conference paper at ICLR 2021
+Sparse
+Dense
+Center
+Penalty
+Path
+Cliff
+RB
+Sparse
+Dense
+Center
+Penalty
+Path
+Cliff
+RA
+0.0000
+0.0000
+0.7500
+1.0000
+0.1602
+0.3676
+0.0000
+0.0000
+0.7500
+1.0000
+0.1602
+0.3676
+0.7500
+0.7500
+0.0000
+0.6614
+0.7071
+0.6692
+1.0000
+1.0000
+0.6614
+0.0000
+0.9871
+0.9300
+0.1602
+0.1602
+0.7071
+0.9871
+0.0000
+0.2672
+0.3676
+0.3676
+0.6692
+0.9300
+0.2672
+0.0000
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+D(RA, RB)
+(a) EPIC
+Sparse
+Dense
+Center
+Penalty
+Path
+Cliff
+RB
+Sparse
+Dense
+Center
+Penalty
+Path
+Cliff
+RA
+0.0000
+0.0000
+1.0016
+1.0009
+0.3068
+0.7038
+0.0000
+0.0000
+1.0016
+1.0000
+0.3068
+0.7038
+1.0011
+1.0133
+0.0000
+0.9853
+1.0016
+1.0004
+1.0009
+1.0213
+0.9824
+0.0000
+1.0010
+1.0010
+0.3069
+0.3069
+1.0023
+1.0000
+0.0000
+0.5476
+0.7031
+0.7031
+1.0025
+1.0000
+0.5468
+0.0000
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+D(RA, RB)
+(b) NPEC
+Figure A.2: Distances (EPIC, top; NPEC, bottom) between hand-designed reward functions for the
+3 × 3 deterministic Gridworld environment. EPIC and NPEC produce similar results, but EPIC
+more clearly discriminates between rewards whereas NPEC distance tends to saturate. For example,
+the NPEC distance from Penalty to other rewards lies in the very narrow [0.98, 1.0] range, whereas
+EPIC uses the wider [0.66, 1.0] range. See Figure A.1 for deﬁnitions of each reward. Distances are
+computed using tabular algorithms. We do not report conﬁdence intervals since these algorithms are
+deterministic and exact up to ﬂoating point error.
+18
+
+Published as a conference paper at ICLR 2021
+S
+S
+D
+D
+M
+RB
+S
+S
+D
+D
+M
+RA
+0.00 0.51 0.00 0.51 0.63
+0.51 0.00 0.51 0.00 0.55
+0.00 0.51 0.00 0.51 0.63
+0.51 0.00 0.51 0.00 0.55
+0.63 0.55 0.63 0.55 0.00
+(a) EPIC Median
+S
+S
+D
+D
+M
+RB
+0.00 0.88 0.22 0.86 0.96
+0.92 0.00 0.94 0.04 0.74
+0.58 0.95 0.00 0.81 0.97
+0.88 0.04 0.84 0.00 0.58
+0.93 0.79 0.80 0.62 0.00
+(b) NPEC Median
+S
+S
+D
+D
+M
+RB
+0.00 0.41 0.56 0.56 0.57
+0.41 0.00 0.61 0.55 0.62
+0.56 0.61 0.00 0.11 0.64
+0.56 0.55 0.11 0.00 0.64
+0.57 0.62 0.64 0.64 0.00
+0.0
+0.5
+1.0
+¯D(RA, RB)
+(c) ERC Median
+S
+S
+D
+D
+M
+RB
+S
+S
+D
+D
+M
+RA
+6e-5 2e-3 9e-5 2e-3 9e-4
+2e-3 6e-5 2e-3 5e-5 2e-3
+9e-5 2e-3 7e-5 2e-3 9e-4
+2e-3 5e-5 2e-3 5e-5 2e-3
+9e-4 2e-3 9e-4 2e-3 5e-5
+(d) EPIC CI Width
+S
+S
+D
+D
+M
+RB
+2e-5 9e-3 3e-2 2e-2 2e-1
+9e-2 9e-7 2e-1 4e-3 1e-1
+1e-1 1e-2 1e-5 6e-3 1e-1
+6e-2 2e-3 9e-2 2e-6 6e-2
+1e-1 1e-1 3e-1 1e-2 4e-7
+(e) NPEC CI Width
+S
+S
+D
+D
+M
+RB
+7e-9 1e-2 4e-3 4e-3 3e-3
+1e-2 7e-9 6e-3 5e-3 4e-3
+4e-3 6e-3 1e-8 1e-3 4e-3
+4e-3 5e-3 1e-3 1e-8 4e-3
+3e-3 4e-3 4e-3 4e-3 7e-9
+0.0
+0.5
+1.0
+DW (RA, RB)
+(f) ERC CI Width
+Figure A.3: Approximate distances between hand-designed reward functions in PointMass. The
+coverage distribution D is sampled from rollouts of a policy πuni taking actions uniformly at random.
+Key: The agent has position x ∈R, velocity ˙x ∈R and can accelerate ¨x ∈R, producing future
+position x′ ∈R.
+quadratic penalty on control ¨x2,
+no control penalty. S is Sparse(x) =
+1[|x| < 0.05], D is shaped Dense(x, x′) = Sparse(x)+|x′|−|x|, while M is Magnitude(x) = −|x|.
+Conﬁdence Interval (CI): 95% CI computed by bootstraping over 10 000 samples.
+RB
+RA
+0.00 0.17 1.00 0.98
+0.17 0.00 0.98 0.94
+1.00 0.98 0.00 0.17
+0.98 0.94 0.17 0.00
+(a) EPIC Median
+RB
+0.01 0.03 1.17 1.11
+0.03 0.01 1.13 1.19
+1.15 1.09 0.01 0.03
+1.08 1.08 0.03 0.01
+(b) NPEC Median
+RB
+0.00 0.02 1.00 1.00
+0.02 0.00 1.00 1.00
+1.00 1.00 0.00 0.02
+1.00 1.00 0.02 0.00
+0.00
+0.25
+0.50
+0.75
+1.00
+¯D(RA, RB)
+(c) ERC Median
+RB
+RA
+5e-5 6e-4 1e-8 1e-4
+6e-4 5e-5 1e-4 4e-4
+1e-8 1e-4 5e-5 7e-4
+1e-4 4e-4 7e-4 6e-5
+(d) EPIC CI Width
+RB
+1e-2 1e-2 1e-1 3e-1
+2e-2 1e-2 1e-2 1e-1
+2e-1 2e-1 1e-2 1e-2
+3e-1 8e-2 9e-3 1e-2
+(e) NPEC CI Width
+RB
+1e-8 2e-4 1e-16 3e-6
+2e-4 1e-8 3e-6 1e-5
+1e-16 3e-6 1e-8 2e-4
+3e-6 1e-5 2e-4 1e-8
+0.00
+0.25
+0.50
+0.75
+1.00
+DW (RA, RB)
+(f) ERC CI Width
+Figure A.4: Approximate distances between hand-designed reward functions in HalfCheetah.
+The coverage distribution D is sampled from rollouts of a policy πuni taking actions uniformly at
+random. Key:
+is a reward proportional to the change in center of mass and moving forward is
+rewarded when
+to the right, and moving backward is rewarded when
+to the left.
+quadratic
+control penalty,
+no control penalty. Conﬁdence Interval (CI): 95% CI computed by bootstraping
+over 10 000 samples.
+19
+
+Published as a conference paper at ICLR 2021
+RB
+RA
+0.00 0.00 0.99 0.99 0.71 0.71 0.71 0.71
+0.00 0.00 0.99 0.99 0.71 0.71 0.71 0.71
+0.99 0.99 0.00 0.00 0.71 0.71 0.71 0.71
+0.99 0.99 0.00 0.00 0.71 0.71 0.71 0.71
+0.71 0.71 0.71 0.71 0.00 0.00 1.00 1.00
+0.71 0.71 0.71 0.71 0.00 0.00 1.00 1.00
+0.71 0.71 0.71 0.71 1.00 1.00 0.00 0.00
+0.71 0.71 0.71 0.71 1.00 1.00 0.00 0.00
+(a) EPIC Median
+RB
+0.00 0.00 1.06 1.01 1.20 1.24 0.95 1.00
+0.00 0.00 0.92 1.40 1.24 1.15 0.97 1.02
+1.25 1.46 0.00 0.00 1.02 0.99 0.95 1.08
+0.94 1.13 0.00 0.00 1.03 1.00 0.95 0.99
+1.73 1.42 1.02 1.18 0.00 0.00 1.03 0.98
+1.29 1.27 1.12 1.17 0.00 0.00 0.97 0.92
+1.41 1.14 1.36 1.52 1.07 1.03 0.00 0.00
+1.18 1.65 1.16 1.69 1.09 1.01 0.00 0.00
+(b) NPEC Median
+RB
+0.00 0.00 0.97 0.97 0.37 0.37 0.93 0.93
+0.00 0.00 0.97 0.97 0.37 0.37 0.93 0.93
+0.97 0.97 0.00 0.00 0.88 0.88 0.47 0.47
+0.97 0.97 0.00 0.00 0.88 0.88 0.47 0.47
+0.37 0.37 0.88 0.88 0.00 0.00 1.00 1.00
+0.37 0.37 0.88 0.88 0.00 0.00 1.00 1.00
+0.93 0.93 0.47 0.47 1.00 1.00 0.00 0.00
+0.93 0.93 0.47 0.47 1.00 1.00 0.00 0.00
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+¯D(RA, RB)
+(c) ERC Median
+RB
+RA
+6e-5 8e-5 2e-4 3e-4 1e-3 1e-3 1e-3 1e-3
+8e-5 5e-5 2e-4 2e-4 1e-3 1e-3 1e-3 1e-3
+3e-4 2e-4 6e-5 8e-5 1e-3 1e-3 1e-3 1e-3
+2e-4 3e-4 8e-5 6e-5 1e-3 1e-3 1e-3 1e-3
+1e-3 1e-3 1e-3 1e-3 5e-5 2e-5 1e-8 4e-8
+1e-3 1e-3 1e-3 1e-3 1e-5 6e-5 4e-8 1e-7
+1e-3 1e-3 1e-3 1e-3 1e-8 4e-8 5e-5 1e-5
+1e-3 1e-3 1e-3 1e-3 4e-8 1e-7 1e-5 6e-5
+(d) EPIC CI Width
+RB
+3e-3 3e-3 8e-1 4e-1 3e-1 5e-2 8e-2 1e-1
+3e-3 3e-3 9e-1 2e0 3e-1 3e-1 8e-2 2e-1
+4e-1 1e0 4e-3 4e-3 2e-1 2e-1 1e-1 3e-1
+4e-1 6e-1 2e-3 4e-3 2e-1 2e-1 6e-2 1e-1
+7e-1 1e-1 3e-1 3e-1 2e-4 1e-5 2e-1 3e-1
+4e-1 6e-1 7e-1 4e-1 3e-4 2e-4 9e-2 2e-1
+4e-2 4e-1 6e-1 2e-1 3e-1 2e-1 2e-4 3e-4
+1e0 2e0 7e-1 7e-1 4e-1 1e-1 1e-4 2e-4
+(e) NPEC CI Width
+RB
+7e-9 5e-7 7e-4 7e-4 4e-3 4e-3 2e-3 2e-3
+5e-7 7e-9 7e-4 7e-4 4e-3 4e-3 2e-3 2e-3
+7e-4 7e-4 1e-8 6e-7 2e-3 2e-3 4e-3 4e-3
+7e-4 7e-4 6e-7 1e-8 2e-3 2e-3 4e-3 4e-3
+4e-3 4e-3 2e-3 2e-3 1e-8 2e-61e-164e-10
+4e-3 4e-3 2e-3 2e-3 2e-6 1e-84e-102e-9
+2e-3 2e-3 4e-3 4e-31e-164e-101e-8 2e-6
+2e-3 2e-3 4e-3 4e-34e-102e-9 2e-6 1e-8
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+DW (RA, RB)
+(f) ERC CI Width
+Figure A.5: Approximate distances between hand-designed reward functions in Hopper. The
+coverage distribution D is sampled from rollouts of a policy πuni taking actions uniformly at random.
+Key:
+is a reward proportional to the change in center of mass and
+is the backﬂip reward deﬁned
+in Amodei et al. [2, footnote]. Moving forward is rewarded when
+or
+is to the right, and moving
+backward is rewarded when
+or
+is to the left.
+quadratic control penalty,
+no control penalty.
+Conﬁdence Interval (CI): 95% CI computed by bootstraping over 10 000 samples.
+20
+
+Published as a conference paper at ICLR 2021
+Table A.7: Approximate distances of reward functions from the ground-truth (GT). We report the 95%
+bootstrapped lower and upper bounds, the mean, and a 95% bound on the relative error from the mean.
+Distances (1000× scale) use coverage distribution D from rollouts in the PointMaze-Train
+environment of: a uniform random policy πuni, an expert π∗and a Mixture of these policies. DS
+and DA are computed by marginalizing D.
+(a) 95% lower bound DLOW of approximate distance.
+Reward
+1000 × DLOW
+EPIC
+1000 × DLOW
+NPEC
+1000 × DLOW
+ERC
+Episode Return
+Function
+πuni π∗
+Mix
+πuni π∗
+Mix
+πuni π∗
+Mix
+Train
+Test
+GT
+0.03 0.02 <0.01
+0.02 1.43
+<0.01
+0.00 0.00
+0.00
+−4.46
+−5.82
+Regress
+35.5 33.6 26.0
+1.22 38.8
+0.33
+9.94 90.2
+2.42
+−4.7
+−5.63
+Pref
+68.3 100
+56.6
+7.02 1239 9.25
+24.7 358
+19.5
+−5.26
+−4.88
+AIRL SO
+570
+519
+402
+734
+1645 424
+547
+521
+238
+−27.3
+−22.7
+AIRL SA
+774
+930
+894
+956
+723
+952
+802
+720
+963
+−29.9
+−28
+Mirage
+3.49 0.02 381
+0.17 4.03
+481
+25.8 <0.01 162
+−28.4
+−26.2
+(b) Mean approximate distanceD. Results are the same as Table 2.
+Reward
+1000 × DEPIC
+1000 × DNPEC
+1000 × DERC
+Episode Return
+Function
+πuni π∗
+Mix
+πuni
+π∗
+Mix
+πuni π∗
+Mix
+Train
+Test
+GT
+0.06 0.05 0.04
+0.04
+3.17
+0.01
+0.00 0.00
+0.00
+−5.19
+−6.59
+Regress
+35.8 33.7 26.1
+1.42
+38.9
+0.35
+9.99 90.7
+2.43
+−5.47
+−6.3
+Pref
+68.7 100
+56.8
+8.51
+1333 9.74
+24.9 360
+19.6
+−5.57
+−5.04
+AIRL SO
+572
+520
+404
+817
+2706 488
+549
+523
+240
+−27.3
+−22.7
+AIRL SA
+776
+930
+894
+1067 2040 1039
+803
+722
+964
+−30.7
+−29
+Mirage
+17.0 0.05 397
+0.68
+6.30
+597
+35.3 <0.01 166
+−30.4
+−29.1
+(c) 95% upper bound DUP of approximate distance.
+Reward
+1000 × DUP
+EPIC
+1000 × DUP
+NPEC
+1000 × DUP
+ERC
+Episode Return
+Function
+πuni π∗
+Mix
+πuni
+π∗
+Mix
+πuni
+π∗
+Mix
+Train
+Test
+GT
+0.09 0.07 0.07
+0.06
+6.14
+0.01
+<0.01 <0.01 <0.01
+−6.04
+−7.14
+Regress
+36.1 33.7 26.2
+1.53
+39.1
+0.37
+10.0
+91.2
+2.44
+−6.26
+−6.83
+Pref
+69.1 101
+57.1
+10.0
+1432 10.1
+25.2
+361
+19.7
+−5.9
+−5.22
+AIRL SO
+574
+520
+407
+982
+3984 532
+551
+526
+242
+−27.3
+−22.8
+AIRL SA
+779
+930
+895
+1241 4378 1124
+805
+724
+964
+−31.7
+−29.8
+Mirage
+35.2 0.09 414
+1.66
+10.8
+821
+45.4
+<0.01 171
+−32
+−31.4
+(d) Relative 95% conﬁdence interval DREL =
+max
+  Upper
+Mean −1, 1 −Lower
+Mean
+ in percent. The population mean
+is contained within ±DREL% of the sample mean in Table A.7b with 95% probability.
+Reward
+DREL
+EPIC%
+DREL
+NPEC%
+DREL
+ERC%
+Episode Return
+Function
+πuni π∗
+Mix
+πuni π∗
+Mix
+πuni π∗
+Mix
+Train
+Test
+GT
+50.0 62.5 80.0
+61.8 94.0 29.7
+inf
+inf
+inf
+0.16
+0.12
+Regress
+0.81 0.14 0.40
+14.2 0.42 7.48
+0.53 0.55 0.57
+0.14
+0.11
+Pref
+0.61 0.14 0.44
+17.5 7.49 5.02
+0.90 0.48 0.48
+0.06
+0.04
+AIRL SO
+0.38 0.08 0.67
+20.2 47.2 13.2
+0.34 0.40 0.69
+<0.01
+<0.01
+AIRL SA
+0.35 0.02 0.08
+16.3 115
+8.42
+0.23 0.26 0.04
+0.03
+0.04
+Mirage
+108
+65.5 4.17
+142
+70.9 37.5
+28.5 0.55 2.66
+0.07
+0.10
+21
+
+Published as a conference paper at ICLR 2021
+Table A.8: Approximate distances of reward functions from the ground-truth (GT) under pathological
+coverage distributions. We report the 95% bootstrapped lower and upper bounds, the mean, and a
+95% bound on the relative error from the mean. Distances (1000× scale) use four different coverage
+distributions D. σ independently samples states, actions and next states from the marginal distri-
+butions of rollouts from the uniform random policy πuni in the PointMaze-Train environment.
+Ind independently samples the components of states and next states from N(0, 1), and actions from
+U[−1, 1]. Jail consists of rollouts of πuni restricted to a small 0.09 × 0.09 “jail” square that excludes
+the goal state 0.5 distance away. πbad are rollouts in PointMaze-Train of a policy that goes to
+the corner opposite the goal state. σ and Ind are not supported by ERC since they do not produce
+complete episodes.
+(a) 95% lower bound DLOW of approximate distance.
+Reward
+1000 × DLOW
+EPIC
+1000×DLOW
+NPEC
+1000 × DLOW
+ERC
+Function
+σ
+Ind
+Jail
+πbad
+σ
+Ind
+Jail
+πbad
+Jail
+πbad
+Regress
+127
+398
+705
+205
+87.6 590
+2433 898
+809
+456
+Pref
+146
+433
+462
+349
+97.4 632
+661
+221
+372
+332
+AIRL SO
+570
+541
+712
+710
+697
+821
+957
+621
+751
+543
+AIRL SA
+768
+628
+558
+669
+720
+960
+940
+2355
+428
+753
+Mirage
+9.22 0.03 <0.01 0.02
+0.41 0.05 11.2
+31.3
+<0.01 0.02
+(b) Mean approximate distanceD. Results are the same as Table 2.
+Reward
+1000 × DEPIC
+1000 × DNPEC
+1000×DERC
+Function
+σ
+Ind
+Jail
+πbad
+σ
+Ind
+Jail
+πbad
+Jail
+πbad
+Regress
+128
+398
+705
+206
+97.2 591
+2549 921
+810
+458
+Pref
+147
+433
+463
+349
+117
+633
+683
+237
+374
+333
+AIRL SO
+573
+541
+713
+710
+826
+823
+988
+852
+753
+545
+AIRL SA
+771
+628
+558
+669
+859
+962
+964
+2694
+430
+754
+Mirage
+42.4 0.06 0.03 0.05
+1.41 0.25 18.3
+39
+<0.01 0.02
+(c) 95% upper bound DUP of approximate distance.
+Reward
+1000 × DUP
+EPIC
+1000 × DUP
+NPEC
+1000×DUP
+ERC
+Function
+σ
+Ind
+Jail
+πbad
+σ
+Ind
+Jail
+πbad
+Jail
+πbad
+Regress
+129
+398
+706
+206
+106
+593
+2654 948
+812
+460
+Pref
+148
+433
+464
+349
+132
+635
+705
+265
+376
+335
+AIRL SO
+576
+541
+713
+710
+939
+825
+1047 1021
+755
+547
+AIRL SA
+774
+628
+559
+669
+1015 963
+981
+3012
+432
+756
+Mirage
+85.9 0.09 0.05 0.09
+3.25
+0.46 28.6
+45.3
+<0.01 0.02
+(d) Relative 95% conﬁdence interval DREL =
+max
+  Upper
+Mean −1, 1 −Lower
+Mean
+ in percent. The population mean
+is contained within ±DREL% of the sample mean in Table A.8b with 95% probability.
+Reward
+DREL
+EPIC%
+DREL
+NPEC%
+DREL
+ERC%
+Function
+σ
+Ind
+Jail
+πbad
+σ
+Ind
+Jail
+πbad
+Jail
+πbad
+Regress
+0.79 0.01
+0.08 0.06
+9.81 0.24 4.54 2.89
+0.18 0.42
+Pref
+0.76 <0.01 0.16 0.07
+16.9 0.35 3.35 11.7
+0.47 0.48
+AIRL SO
+0.48 <0.01 0.07 0.02
+15.6 0.28 6.01 27.1
+0.23 0.38
+AIRL SA
+0.38 <0.01 0.13 0.03
+18.2 0.22 2.47 12.6
+0.45 0.23
+Mirage
+103
+50
+80
+83.3
+131
+85.4 56.4 19.7
+0.54 0.55
+22
+
+Published as a conference paper at ICLR 2021
+0
+20
+40
+60
+80
+100
+Regress Training Progress (%)
+0.0
+0.5
+1.0
+Distance
+0
+10
+20
+30
+Regret
+EPIC
+NPEC
+ERC
+RL Train
+RL Test
+(a) Comparisons of Regress using all distance algorithms.
+0
+20
+40
+60
+80
+100
+Pref Training Progress (%)
+0.0
+0.5
+1.0
+Distance
+0
+10
+20
+30
+Regret
+EPIC
+NPEC
+ERC
+RL Train
+RL Test
+(b) Comparisons of Pref using all distance algorithms.
+0
+20
+40
+60
+80
+100
+AIRL SO Training Progress (%)
+0.0
+0.5
+1.0
+Distance
+10
+20
+30
+Regret
+EPIC
+NPEC
+ERC
+RL Train
+RL Test
+(c) Comparisons of AIRL SO using all distance algorithms.
+0
+20
+40
+60
+80
+100
+AIRL SA Training Progress (%)
+0.0
+0.5
+1.0
+Distance
+20
+30
+Regret
+EPIC
+NPEC
+ERC
+RL Train
+RL Test
+(d) Comparisons of AIRL SA using all distance algorithms.
+Figure A.6: Distance of reward checkpoints from the ground-truth in PointMaze and policy
+regret for reward checkpoints during reward model training. Each point evaluates a reward function
+checkpoint from a single seed. EPIC, NPEC and ERC distance use the Mixture distribution. Regret
+is computed by running RL on the checkpoint. The shaded region represents the bootstrapped 95%
+conﬁdence interval for the distance or regret at that checkpoint, calculated following Section A.1.3.
+23
+
+Published as a conference paper at ICLR 2021
+0
+20
+40
+60
+80
+100
+Reward Model Training Progress (%)
+0.0
+0.5
+1.0
+Distance
+AIRL SA
+AIRL SO
+Pref
+Regress
+(a) Comparisons using EPIC on all reward models.
+0
+20
+40
+60
+80
+100
+Reward Model Training Progress (%)
+0.0
+0.5
+1.0
+Distance
+AIRL SA
+AIRL SO
+Pref
+Regress
+(b) Comparisons using NPEC on all reward models.
+0
+20
+40
+60
+80
+100
+Reward Model Training Progress (%)
+0.0
+0.5
+1.0
+Distance
+AIRL SA
+AIRL SO
+Pref
+Regress
+(c) Comparisons using ERC on all reward models.
+0
+20
+40
+60
+80
+100
+Reward Model Training Progress (%)
+0
+20
+Regret
+AIRL SA
+AIRL SO
+RL Train
+Pref
+RL Test
+Regress
+(d) Comparisons using Episode Return on all reward models.
+Figure A.7: Distance of reward checkpoints from the ground-truth in PointMaze and policy
+regret for reward checkpoints during reward model training. Each point evaluates a reward function
+checkpoint from a single seed. EPIC, NPEC and ERC distance use the Mixture distribution. Regret
+is computed by running RL on the checkpoint. The shaded region represents the bootstrapped 95%
+conﬁdence interval for the distance or regret at that checkpoint, calculated following Section A.1.3.
+24
+
+Published as a conference paper at ICLR 2021
+A.3
+PROOFS
+A.3.1
+BACKGROUND
+Proposition 3.4. The binary relation ≡is an equivalence relation. Let RA, RB, RC : S×A×S →R
+be bounded reward functions. Then ≡is reﬂexive, RA ≡RA; symmetric, RA ≡RB implies
+RB ≡RA; and transitive, (RA ≡RB) ∧(RB ≡RC) implies RA ≡RC.
+Proof. RA ≡RA since choosing λ = 1 > 0 and Φ(s) = 0, a bounded potential function, we have
+RA(s, a, s′) = λRA(s, a, s′) + γΦ(s′) −Φ(s) for all s, s′ ∈S and a ∈A.
+Suppose RA ≡RB. Then there exists some λ > 0 and a bounded potential function Φ : S →R
+such that RB(s, a, s′) = λRA(s, a, s′) + γΦ(s′) −Φ(s) for all s, s′ ∈S and a ∈A. Rearranging:
+RA(s, a, s′) = 1
+λRB(s, a, s′) + γ
+−1
+λ Φ(s′)
+
+−
+−1
+λ Φ(s)
+
+.
+(12)
+Since 1
+λ > 0 and Φ′(s) = −1
+λ Φ(s) is a bounded potential function, it follows that RB ≡RA.
+Finally, suppose RA ≡RB and RB ≡RC. Then there exists some λ1, λ2 > 0 and bounded potential
+functions Φ1, Φ2 : S →R such that for all s, s′ ∈S and a ∈A:
+RB(s, a, s′) = λ1RA(s, a, s′) + γΦ1(s′) −Φ1(s),
+(13)
+RC(s, a, s′) = λ2RB(s, a, s′) + γΦ2(s′) −Φ2(s).
+(14)
+Substituting the expression for RB into the expression for RC:
+RC(s, a, s′) = λ2 (λ1RA(s, a, s′) + γΦ1(s′) −Φ1(s)) + γΦ2(s′) −Φ2(s)
+(15)
+= λ1λ2RA(s, a, s′) + γ (λ2Φ1(s′) + Φ2(s′)) −(λ2Φ1(s) + Φ2(s))
+(16)
+= λRA(s, a, s′) + γΦ(s′) −Φ(s),
+(17)
+where λ = λ1λ2 > 0 and Φ(s) = λ2Φ1(s) + Φ2(s) is bounded. Thus RA ≡RC.
+A.3.2
+EQUIVALENT-POLICY INVARIANT COMPARISON (EPIC) PSEUDOMETRIC
+Proposition 4.2 (The Canonically Shaped Reward is Invariant to Shaping). Let R : S × A × S →R
+be a reward function and Φ : S →R a potential function. Let γ ∈[0, 1] be a discount rate, and
+DS ∈∆(S) and DA ∈∆(A) be distributions over states and actions. Let R′ denote R shaped by
+Φ: R′(s, a, s′) = R(s, a, s′) + γΦ(s′) −Φ(s). Then the canonically shaped R′ and R are equal:
+CDS,DA (R′) = CDS,DA (R).
+Proof. Let s, a, s′ ∈S × A × S. Then by substituting in the deﬁnition of R′ and using linearity of
+expectations:
+CDS,DA (R′) (s, a, s′) ≜R′(s, a, s′) + E [γR′(s′, A, S′) −R′(s, A, S′) −γR′(S, A, S′)]
+(18)
+= (R(s, a, s′) + γΦ(s′) −Φ(s))
+(19)
++ E
+
+γR(s′, A, S′) + γ2Φ(S′) −γΦ(s′)
+
+−E [R(s, A, S′) + γΦ(S′) −Φ(s)]
+−E
+
+γR(S, A, S′) + γ2Φ(S′) −γΦ(S)
+
+= R(s, a, s′) + E [γR(s′, A, S′) −R(s, A, S′) −γR(S, A, S′)]
+(20)
++ (γΦ(s′) −Φ(s)) −E [γΦ(s′) −Φ(s)]
++ E
+
+γ2Φ(S′) −γΦ(S′)
+
+−E
+
+γ2Φ(S′) −γΦ(S)
+
+= R(s, a, s′) + E [γR(s′, A, S′) −R(s, A, S′) −γR(S, A, S′)]
+(21)
+≜CDS,DA (R) (s, a, s′),
+(22)
+where the penultimate step uses E[Φ(S′)] = E[Φ(S)] since S and S′ are identically distributed.
+25
+
+Published as a conference paper at ICLR 2021
+Proposition 4.3. Let S and A be ﬁnite, with |S| ≥2. Let DS ∈∆(S) and DA ∈∆(A). Let
+R, ν : S × A × S →R be reward functions, with ν(s, a, s′) = λI[(s, a, s′) = (x, u, x′)], λ ∈R,
+x, x′ ∈S and u ∈A. Let ΦDS,DA(R)(s, a, s′) = CDS,DA (R) (s, a, s′) −R(s, a, s′). Then:
+∥ΦDS,DA(R + ν) −ΦDS,DA(R)∥∞= λ (1 + γDS(x)) DA(u)DS(x′).
+(3)
+Proof. Observe that:
+ΦDS,DA(R)(s, a, s′) = E [γR(s′, A, S′) −R(s, A, S′) −γR(S, A, S′)] ,
+(23)
+where S and S′ are random variables independently sampled from DS, and A independently sampled
+from DA.
+Then:
+ΦDS,DA(R + ν) −ΦDS,DA(R) = ΦDS,DA(ν).
+(24)
+Now:
+LHS ≜∥ΦDS,DA(R + ν) −ΦDS,DA(R)∥∞
+(25)
+= max
+s,s′∈S |E [γν(s′, A, S′) −ν(s, A, S′) −γν(S, A, S′)]|
+(26)
+= max
+s,s′∈S |λ (γI[x = s′]DA(u)DS(x′)
+(27)
+−I[x = s]DA(u)DS(x′) −γDS(x)DA(u)DS(x′))|
+(28)
+= max
+s,s′∈S |λDA(u)DS(x′) (γI[x = s′] −I[x = s] −γDS(x))|
+(29)
+= λ (1 + γDS(x)) DA(u)DS(x′),
+(30)
+where the ﬁnal step follows by substituting s = x and s′ ̸= x (using |S| ≥2).
+Lemma 4.5. The Pearson distance Dρ is a pseudometric. Moreover, let a, b ∈(0, ∞), c, d ∈R and
+X, Y be random variables. Then it follows that 0 ≤Dρ(aX + c, bY + d) = Dρ(X, Y ) ≤1.
+Proof. For a non-constant random variable V , deﬁne a standardized (zero mean and unit variance)
+version:
+Z(V ) =
+V −E[V ]
+r
+E
+h
+(V −E[V ])2i.
+(31)
+The Pearson correlation coefﬁcient on random variables A and B is equal to the expected product of
+these standardized random variables:
+ρ(A, B) = E [Z(A)Z(B)] .
+(32)
+Let W, X, Y be random variables.
+Identity. Have ρ(X, X) = 1, so Dρ(X, X) = 0.
+Symmetry.
+Have ρ(X, Y ) = ρ(Y, X) by commutativity of multiplication, so Dρ(X, Y ) =
+Dρ(Y, X).
+Triangle Inequality. For any random variables A, B:
+E
+h
+(Z(A) −Z(B))2i
+= E
+
+Z(A)2 −2Z(A)Z(B) + Z(B)2
+(33)
+= E
+
+Z(A)2
++ E
+
+Z(B)2
+−2E [Z(A)Z(B)]
+(34)
+= 2 −2E [Z(A)Z(B)]
+(35)
+= 2 (1 −ρ(A, B))
+(36)
+= 4Dρ(A, B)2.
+(37)
+26
+
+Published as a conference paper at ICLR 2021
+So:
+4Dρ(W, Y )2 = E
+h
+(Z(W) −Z(Y ))2i
+(38)
+= E
+h
+(Z(W) −Z(X) + Z(X) −Z(Y ))2i
+(39)
+= E
+h
+(Z(W) −Z(X))2i
++ E
+h
+(Z(X) −Z(Y ))2i
+(40)
++ 2E [(Z(W) −Z(X)) (Z(X) −Z(Y ))]
+= 4Dρ(W, X)2 + 4Dρ(X, Y )2 + 8E [(Z(W) −Z(X)) (Z(X) −Z(Y ))] .
+(41)
+Since ⟨A, B⟩= E[AB] is an inner product over R, it follows by the Cauchy-Schwarz inequality that
+E[AB] ≤
+p
+E[A2]E[B2]. So:
+Dρ(W, Y )2 ≤Dρ(W, X)2 + Dρ(X, Y )2 + 2Dρ(W, X)Dρ(X, Y )
+(42)
+= (Dρ(W, X) + Dρ(X, Y ))2 .
+(43)
+Taking the square root of both sides:
+Dρ(W, Y ) ≤Dρ(W, X) + Dρ(X, Y ),
+(44)
+as required.
+Positive Afﬁne Invariant and Bounded Dρ(aX + c, bY + d) = Dρ(X, Y ) is immediate from
+ρ(X, Y ) invariant to positive afﬁne transformations. Have −1 ≤ρ(X, Y ) ≤1, so 0 ≤1−ρ(X, Y ) ≤
+2 thus 0 ≤Dρ(X, Y ) ≤1.
+Theorem 4.7. The Equivalent-Policy Invariant Comparison distance is a pseudometric.
+Proof. The result follows from Dρ being a pseudometric. Let RA, RB and RC be reward functions
+mapping from transitions S × A × S to real numbers R.
+Identity. Have:
+DEPIC(RA, RA) = Dρ (CDS,DA (RA) (S, A, S′), CDS,DA (RA) (S, A, S′)) = 0,
+(45)
+since Dρ(X, X) = 0.
+Symmetry. Have:
+DEPIC(RA, RB) = Dρ (CDS,DA (RA) (S, A, S′), CDS,DA (RB) (S, A, S′))
+(46)
+= Dρ (CDS,DA (RB) (S, A, S′), CDS,DA (RA) (S, A, S′))
+(47)
+= DEPIC(RB, RA),
+(48)
+since Dρ(X, Y ) = Dρ(Y, X).
+Triangle Inequality. Have:
+DEPIC(RA, RC) = Dρ (CDS,DA (RA) (S, A, S′), CDS,DA (RC) (S, A, S′))
+(49)
+≤Dρ (CDS,DA (RA) (S, A, S′), CDS,DA (RB) (S, A, S′))
+(50)
++ Dρ (CDS,DA (RB) (S, A, S′), CDS,DA (RC) (S, A, S′))
+(51)
+= DEPIC(RA, RB) + DEPIC(RB, RC),
+(52)
+since Dρ(X, Z) ≤Dρ(X, Y ) + Dρ(Y, Z).
+Theorem 4.8. Let RA, R′
+A, RB, R′
+B : S × A × S →R be reward functions such that R′
+A ≡RA
+and R′
+B ≡RB. Then 0 ≤DEPIC(R′
+A, R′
+B) = DEPIC(RA, RB) ≤1.
+Proof. Since DEPIC is deﬁned in terms of Dρ, the bounds 0
+≤
+DEPIC(R′
+A, R′
+B) and
+DEPIC(RA, RB) ≤1 are immediate from the bounds in lemma 4.5.
+Since R′
+A ≡RA and R′
+B ≡RB, we can write for X ∈{A, B}:
+Rλ
+X(s, a, s′) = λXRX(s, a, s′),
+(53)
+R′
+X(s, a, s′) = Rλ
+X(s, a, s′) + γΦX(s′) −ΦX(s),
+(54)
+27
+
+Published as a conference paper at ICLR 2021
+for some scaling factor λX > 0 and potential function ΦX : S →R.
+By proposition 4.2:
+CDS,DA (R′
+X) = CDS,DA
+ Rλ
+X
+
+.
+(55)
+Moreover, since CDS,DA (R) is deﬁned as an expectation over R and expectations are linear:
+CDS,DA
+ Rλ
+X
+
+= λXCDS,DA (RX) .
+(56)
+Unrolling the deﬁnition of DEPIC and applying this result gives:
+DEPIC(R′
+A, R′
+B) = Dρ (CDS,DA (R′
+A) (S, A, S′), CDS,DA (R′
+B) (S, A, S′))
+(57)
+= Dρ (λACDS,DA (RA) (S, A, S′), λBCDS,DA (RB) (S, A, S′))
+eqs. 55 and 56
+= Dρ (CDS,DA (RA) (S, A, S′), CDS,DA (RB) (S, A, S′))
+lemma 4.5
+= DEPIC(RA, RB).
+A.3.3
+NEAREST POINT IN EQUIVALENCE CLASS (NPEC) PREMETRIC
+Proposition A.1. (1) DLp,D is a metric in Lp space, where functions f and g are identiﬁed if they
+agree almost everywhere on D. (2) DLp,D is a pseudometric if functions are identiﬁed only if they
+agree at all points.
+Proof. (1) DLp,D is a metric in the Lp space since Lp is a norm in the Lp space, and
+d(x, y) = ∥x −y∥is always a metric. (2) As f = g at all points implies f = g almost every-
+where, certainly DLp,D(R, R) = 0. Symmetry and triangle inequality do not depend on identity so
+still hold.
+Proposition A.2 (Properties of DU
+NPEC). Let RA, RB, RC : S × A × S →R be bounded reward
+functions, and λ ≥0. Then DU
+NPEC:
+• Is invariant under ≡in source:
+DU
+NPEC(RA, RC) = DU
+NPEC(RB, RC) if RA ≡RB.
+• Invariant under scale-preserving ≡in target:
+DU
+NPEC(RA, RB) = DU
+NPEC(RA, RC) if RB −RC ≡Zero.
+• Scalable in target:
+DU
+NPEC(RA, λRB) = λDU
+NPEC(RA, RB).
+• Bounded:
+DU
+NPEC(RA, RB) ≤DU
+NPEC(Zero, RB).
+Proof. We will show each case in turn.
+Invariance under ≡in source
+If RA ≡RB, then:
+DU
+NPEC(RA, RC) ≜
+inf
+R≡RA DLp,D(R, RC)
+(58)
+=
+inf
+R≡RB DLp,D(R, RC)
+(59)
+≜DU
+NPEC(RB, RC),
+(60)
+(61)
+since R ≡RA if and only if R ≡RB as ≡is an equivalence relation.
+Invariance under scale-preserving ≡in target
+If RB −RC ≡Zero, then we can write RB(s, a, s′) −RC(s, a, s′) = γΦ(s′) −Φ(s) for some
+potential function Φ : S →R. Deﬁne f(R)(s, a, s′) = R(s, a, s′) −γΦ(s′) + Φ(s). Then for any
+28
+
+Published as a conference paper at ICLR 2021
+reward function R : S × A × S →R:
+DLp,D(R, RB) ≜
+
+E
+s,a,s′∼D
+
+|R(s, a, s′) −RB(s, a, s′)|p1/p
+=
+
+E
+s,a,s′∼D
+
+|R(s, a, s′) −(RC(s, a, s′) + γΦ(s′) −Φ(s))|p1/p
+=
+
+E
+s,a,s′∼D
+
+|(R(s, a, s′) −γΦ(s′) + Φ(s)) −RC(s, a, s′)|p1/p
+=
+
+E
+s,a,s′∼D
+
+|f(R)(s, a, s′) −RC(s, a, s′)|p1/p
+≜DLp,D(f(R), RC),
+(62)
+Crucially, note f(R) is a bijection on the equivalence class [R]. Now, substituting this into the
+expression for the NPEC premetric:
+DU
+NPEC(RA, RB) ≜
+inf
+R≡RA DLp,D(R, RB)
+=
+inf
+R≡RA DLp,D(f(R), RC)
+eq. 62
+=
+inf
+f(R)≡RA DLp,D(f(R), RC)
+f bijection on [R]
+=
+inf
+R≡RA DLp,D(R, RC)
+f bijection on [R]
+≜DU
+NPEC(RA, RC).
+(63)
+Scalable in target
+First, note that DLp,D is absolutely scalable in both arguments:
+DLp,D(λRA, λRB) ≜
+
+E
+s,a,s′∼D
+
+|λRA(s, a, s′) −λRB(s, a, s′)|p1/p
+=
+
+E
+s,a,s′∼D
+
+|λ|p |RA(s, a, s′) −RB(s, a, s′)|p1/p
+|·| absolutely scalable
+=
+
+|λ|p
+E
+s,a,s′∼D
+
+|RA(s, a, s′) −RB(s, a, s′)|p1/p
+E linear
+= |λ|
+
+E
+s,a,s′∼D
+
+|RA(s, a, s′) −RB(s, a, s′)|p1/p
+≜|λ| DLp,D(RA, RB).
+(64)
+Now, for λ > 0, applying this to DU
+NPEC:
+DU
+NPEC(RA, λRB) ≜
+inf
+R≡RA DLp,D(R, λRB)
+(65)
+=
+inf
+R≡RA DLp,D(λR, λRB)
+R ≡λR
+(66)
+=
+inf
+R≡RA λDLp,D(R, RB)
+eq. 64
+(67)
+= λ inf
+R≡RA DLp,D(R, RB)
+(68)
+≜λDU
+NPEC(RA, RB).
+(69)
+29
+
+Published as a conference paper at ICLR 2021
+In the case λ = 0, then:
+DU
+NPEC(RA, Zero) ≜
+inf
+R≡RA DLp,D(R, Zero)
+(70)
+=
+inf
+R≡RA DLp,D
+1
+2R, Zero
+
+R ≡1
+2R
+(71)
+=
+inf
+R≡RA
+1
+2DLp,D(R, Zero)
+(72)
+= 1
+2
+inf
+R≡RA DLp,D(R, Zero)
+(73)
+= 1
+2DU
+NPEC(RA, Zero).
+(74)
+Rearranging, we have:
+DU
+NPEC(RA, Zero) = 0.
+(75)
+Bounded
+Let d ≜DNPEC(Zero, RB). Then for any ϵ > 0, there exists some potential function Φ : S →R
+such that the Lp distance of the potential shaping R(s, a, s′) ≜γΦ(s) −Φ(s) from RB satisﬁes:
+DLp,D(R, RB) ≤d + ϵ.
+(76)
+Let λ ∈[0, 1]. Deﬁne:
+R′
+λ(s, a, s′) ≜λRA(s, a, s′) + R(s, a, s′).
+(77)
+Now:
+DLp,D(R′
+λ, R) ≜
+
+E
+s,a,s′∼D
+
+|R′
+λ(s, a, s′) −R(s, a, s′)|p1/p
+(78)
+=
+
+E
+s,a,s′∼D
+
+|λRA(s, a, s′)|p1/p
+(79)
+=
+
+|λ|p
+E
+s,a,s′∼D
+
+|RA(s, a, s′)|p1/p
+(80)
+= |λ|
+
+E
+s,a,s′∼D
+
+|RA(s, a, s′)|p1/p
+(81)
+= |λ|DLp,D(RA, Zero).
+(82)
+Since RA is bounded, DLp,D(RA, Zero) must be ﬁnite, so:
+lim
+λ→0+ DLp,D(R′
+λ, R) = 0.
+(83)
+It follows that for any ϵ > 0 there exists some λ > 0 such that:
+DLp,D(R′
+λ, R) ≤ϵ.
+(84)
+Note that RA ≡R′
+λ for all λ > 0. So:
+DNPEC(RA, RB) ≤DLp,D(R′
+λ, RB)
+(85)
+≤DLp,D(R′
+λ, R) + DLp,D(R, RB)
+prop. A.1
+(86)
+≤ϵ + (d + ϵ)
+eq. 76 and eq. 84
+(87)
+= d + 2ϵ.
+(88)
+Since ϵ > 0 can be made arbitrarily small, it follows:
+DNPEC(RA, RB) ≤d ≜DNPEC(Zero, RB),
+(89)
+completing the proof.
+30
+
+Published as a conference paper at ICLR 2021
+Theorem 5.4. DNPEC is a premetric on the space of bounded reward functions. Moreover, let
+RA, RA′, RB, RB′ : S × A × S →R be bounded reward functions such that RA ≡RA′ and
+RB ≡RB′. Then 0 ≤DNPEC(RA′, RB′) = DNPEC(RA, RB) ≤1.
+Proof. We will ﬁrst prove DNPEC is a premetric, and then prove it is invariant and bounded.
+Premetric
+First, we will show that DNPEC is a premetric.
+Respects identity: DNPEC(RA, RA) = 0
+If DU
+NPEC(Zero, RA) = 0 then DNPEC(RA, RA) = 0 as required. Suppose from now on that
+DU
+NPEC(RA, RA) ̸= 0. It follows from prop A.1 that DLp,D(RA, RA) = 0. Since X ≡X, 0 is an
+upper bound for DU
+NPEC(RA, RA). By prop A.1 DLp,D is non-negative, so this is also a lower bound
+for DU
+NPEC(RA, RA). So DU
+NPEC(RA, RA) = 0 and:
+DNPEC(RA, RA) =
+DU
+NPEC(RA, RA)
+DU
+NPEC(Zero, RA) =
+0
+DU
+NPEC(Zero, RA) = 0.
+(90)
+Well-deﬁned: DNPEC(RA, RB) ≥0
+By prop A.1, it follows that DLp,D(R, RB) ≥0 for all reward functions R : S × A × S. Thus
+0 is a lower bound for {DLp,D(R, RB) | R : S × A × S}, and thus certainly a lower bound for
+{DLp,D(R, Y ) | R ≡X} for any reward function X. Since the inﬁmum is the greatest lower bound,
+it follows that for any reward function X:
+DU
+NPEC(X, RB) ≜inf
+R≡X DLp,D(R, RB) ≥0.
+(91)
+In the case that DU
+NPEC(Zero, RB) = 0, then DNPEC(RA, RB) = 0 which is non-negative. From
+now on, suppose that DU
+NPEC(Zero, RB) ̸= 0. The quotient of a non-negative value with a positive
+value is non-negative, so:
+DNPEC(RA, RB) =
+DU
+NPEC(RA, RB)
+DU
+NPEC(Zero, RB) ≥0.
+(92)
+Invariant and Bounded
+Since R′
+B ≡RB, we have R′
+B −λRB ≡Zero for some λ > 0. By proposition A.2, DU
+NPEC is
+invariant under scale-preserving ≡in target and scalable in target. That is, for any reward R:
+DU
+NPEC(R, R′
+B) = DU
+NPEC(R, λRB) = λDU
+NPEC(R, RB).
+(93)
+In particular, DU
+NPEC(Zero, RB′)
+=
+λDU
+NPEC(Zero, RB).
+As λ
+>
+0, it follows that
+DU
+NPEC(Zero, RB′) = 0 ⇐⇒DU
+NPEC(Zero, RB) = 0.
+Suppose DU
+NPEC(Zero, RB) = 0. Then DNPEC(R, RB) = 0 = DNPEC(R, RB′) for any reward
+R, so the result trivially holds. From now on, suppose DU
+NPEC(Zero, RB) ̸= 0.
+By proposition A.2, DU
+NPEC is invariant to ≡in source.
+That is, DU
+NPEC(RA, RB)
+=
+DU
+NPEC(R′
+A, RB), so:
+DNPEC(R′
+A, RB) =
+DU
+NPEC(R′
+A, RB)
+DU
+NPEC(Zero, RB) =
+DU
+NPEC(RA, RB)
+DU
+NPEC(Zero, RB) = DNPEC(RA, RB).
+(94)
+By eq. (93):
+DNPEC(RA, R′
+B) =
+λDU
+NPEC(RA, RB)
+λDU
+NPEC(Zero, RB) =
+DU
+NPEC(RA, RB)
+DU
+NPEC(Zero, RB) = DNPEC(RA, RB).
+(95)
+Since DNPEC is a premetric it is non-negative. By the boundedness property of proposition A.2,
+DU
+NPEC(R, RB) ≤DU
+NPEC(Zero, RB), so:
+DNPEC(RA, RB) =
+DU
+NPEC(RA, RB)
+DU
+NPEC(Zero, RB) ≤1,
+(96)
+which completes the proof.
+31
+
+Published as a conference paper at ICLR 2021
+Note when DLp,D is a metric, then DNPEC(X, Y ) = 0 if and only if X = Y .
+Proposition A.3. DNPEC is not symmetric in the undiscounted case.
+Proof. We will provide a counterexample showing that DNPEC is not symmetric.
+Choose the state space S to be binary {0, 1} and the actions A to be the singleton {0}. Choose the
+coverage distribution D to be uniform on s
+0→s for s ∈S. Take γ = 1, i.e. undiscounted. Note that
+as the successor state is always the same as the start state, potential shaping has no effect on DLp,D,
+so WLOG we will assume potential shaping is always zero.
+Now, take RA(s) = 2s and RB(s) = 1.
+Take p = 1 for the Lp distance.
+Observe that
+DLp,D(Zero, RA) = 1
+2 (|0| + |2|) = 1 and DLp,D(Zero, RB) = 1
+2 (|1| + |1|) = 1. Since poten-
+tial shaping has no effect, DU
+NPEC(Zero, R) = DLp,D(Zero, R) and so DNPEC(Zero, RA) = 1
+and DNPEC(Zero, RB) = 1.
+Now:
+DU
+NPEC(RA, RB) = inf
+λ>0 DLp,D(λRA, RB)
+(97)
+= inf
+λ>0
+1
+2 (|1| + |2λ −1|)
+(98)
+= 1
+2,
+(99)
+with the inﬁmum attained at λ = 1
+2. But:
+DU
+NPEC(RB, RA) = inf
+λ>0 DLp,D(λRB, RA)
+(100)
+= inf
+λ>0
+1
+2f(λ)
+(101)
+= 1
+2 inf
+λ>0 f(λ),
+(102)
+where:
+f(λ) = |λ| + |2 −λ|,
+λ > 0.
+(103)
+Note that:
+f(λ) =
+2
+λ ∈(0, 2],
+2λ −2
+λ ∈(2, ∞).
+(104)
+So f(λ) ≥2 on all of its domain, thus:
+DU
+NPEC(RB, RA) = 1.
+(105)
+Consequently:
+DNPEC(RA, RB) = 1
+2 ̸= 1 = DNPEC(RB, RA),
+(106)
+so DNPEC is not symmetric.
+A.4
+FULL NORMALIZATION VARIANT OF EPIC
+Previously, we used the Pearson distance Dρ to compare the canonicalized rewards. Pearson distance
+is naturally invariant to scaling. An alternative is to explicitly normalize the canonicalized rewards,
+and then compare them using any metric over functions.
+Deﬁnition A.4 (Normalized Reward). Let R : S × A × S →R be a bounded reward function. Let
+∥·∥be a norm on the vector space of reward functions over the real ﬁeld. Then the normalized R is:
+RN(s, a, s′) = R(s, a, s′)
+∥R∥
+(107)
+Note that (λR)N = RN for any λ > 0 as norms are absolutely homogeneous.
+We say a reward is standardized if it has been canonicalized and then normalized.
+32
+
+Published as a conference paper at ICLR 2021
+Deﬁnition A.5 (Standardized Reward). Let R : S × A × S →R be a bounded reward function.
+Then the standardized R is:
+RS = (CDS,DA (R))N .
+(108)
+Now, we can deﬁne a pseudometric based on the direct distance between the standardized rewards.
+Deﬁnition A.6 (Direct Distance Standardized Reward). Let D be some coverage distribution over
+transitions s
+a→s′. Let DS and DA be some distributions over states S and A respectively. Let
+S, A, S′ be random variables jointly sampled from D. The Direct Distance Standardized Reward
+pseudometric between two reward functions RA and RB is the Lp distance between their standardized
+versions over D:
+DDDSR(RA, RB) = 1
+2DLp,D
+ RS
+A(S, A, S′), RS
+B(S, A, S′)
+
+,
+(109)
+where the normalization step, RN, uses the Lp norm.
+For brevity, we omit the proof that DDDSR is a pseudometric, but this follows from DLp,D being
+a pseudometric in a similar fashion to theorem 4.7. Note it additionally is invariant to equivalence
+classes, similarly to EPIC.
+Theorem A.7. Let RA, RA′, RB and RB′ be reward functions mapping from transitions S × A × S
+to real numbers R such that RA ≡RA′ and RB ≡RB′. Then:
+0 ≤DDDSR(R′
+A, R′
+B) = DDDSR(RA, RB) ≤1.
+(110)
+Proof. The invariance under the equivalence class follows from RS being invariant to potential
+shaping and scale in R. The non-negativity follows from DLp,D being a pseudometric. The upper
+bound follows from the rewards being normalized to norm 1 and the triangle inequality:
+DDDSR(RA, RB) = 1
+2∥RS
+A −RS
+B∥
+(111)
+≤1
+2
+ ∥RS
+A∥+ ∥RS
+B∥
+
+(112)
+= 1
+2 (1 + 1)
+(113)
+= 1.
+Since both DDSR and EPIC are pseudometrics and invariant on equivalent rewards, it is interesting
+to consider the connection between them. In fact, under the L2 norm, then DDSR recovers EPIC.
+First, we will show that canonical shaping centers the reward functions.
+Lemma A.8 (The Canonically Shaped Reward is Mean Zero). Let R be a reward function mapping
+from transitions S × A × S to real numbers R. Then:
+E [CDS,DA (R) (S, A, S′)] = 0.
+(114)
+Proof. Let X, U and X′ be random variables that are independent of S, A and S′ but identically
+distributed.
+LHS ≜E [CDS,DA (R) (S, A, S′)]
+(115)
+= E [R(S, A, S′) + γR(S′, U, X′) −R(S, U, X′) −γR(X, U, X′)]
+(116)
+= E [R(S, A, S′)] + γE [R(S′, U, X′)] −E [R(S, U, X′)] −γE [R(X, U, X′)]
+(117)
+= E [R(S, U, X′)] + γE [R(X, U, X′)] −E [R(S, U, X′)] −γE [R(X, U, X′)]
+(118)
+= 0,
+(119)
+where the penultimate step follows since A is identically distributed to U, and S′ is identically
+distributed to X′ and therefore to X.
+Theorem A.9. DDDSR with p = 2 is equivalent to DEPIC. Let RA and RB be reward functions
+mapping from transitions S × A × S to real numbers R. Then:
+DDDSR(RA, RB) = DEPIC(RA, RB).
+(120)
+33
+
+Published as a conference paper at ICLR 2021
+Proof. Recall from the proof of lemma 4.5 that:
+Dρ(U, V ) = 1
+2
+r
+E
+h
+(Z(U) −Z(V ))2i
+(121)
+= 1
+2 ∥Z(U) −Z(V )∥2 ,
+(122)
+where ∥·∥2 is the L2 norm (treating the random variables as functions on a measure space) and
+Z(U) is a centered (zero-mean) and rescaled (unit variance) random variable. By lemma A.8, the
+canonically shaped reward functions are already centered under the joint distribution DS × DA × DS,
+and normalization by the L2 norm also ensures they have unit variance. Consequently:
+DEPIC(RA, RB) = Dρ (CDS,DA (RA) (S, A, S′), CDS,DA (RB) (S, A, S′))
+(123)
+= 1
+2
+(CDS,DA (RA) (S, A, S′))N −(CDS,DA (RB) (S, A, S′))N
+2
+(124)
+= 1
+2
+RS
+A(S, A, S′) −RS
+B(S, A, S′)
+
+2
+(125)
+= 1
+2DLp,D
+ RS
+A(S, A, S′), RS
+B(S, A, S′)
+
+(126)
+= DDDSR(RA, RB),
+(127)
+completing the proof.
+A.5
+REGRET BOUND
+In this section, we derive an upper bound on the regret in terms of the EPIC distance. Speciﬁ-
+cally, given two reward functions RA and RB with optimal policies π∗
+A and π∗
+B, we show that the
+regret (under reward RA) of using policy π∗
+B instead of a policy π∗
+A is bounded by a function of
+DEPIC(RA, RB). First, in section A.5.1 we derive a bound for MDPs with ﬁnite state and action
+spaces. In section A.6 we then present an alternative bound for MDPs with arbitrary state and action
+spaces and Lipschitz reward functions. Finally, in section A.7 we show that in both cases the regret
+tends to 0 as DEPIC(RA, RB) →0.
+A.5.1
+DISCRETE MDPS
+We start in lemma A.10 by showing that L2 distance upper bounds L1 distance. Next, in lemma A.11
+we show regret is bounded by the L1 distance between reward functions using an argument similar
+to [21]. Then in lemma A.12 we relate regret bounds for standardized rewards RS to the original
+reward R. Finally, in theorem 4.9 we use section A.4 to express DEPIC in terms of the L2 distance
+on standardized rewards, deriving a bound on regret in terms of the EPIC distance.
+Lemma A.10. Let (Ω, F, P) be a probability space and f : Ω→R a measurable function whose
+absolute value raised to the n-th power for n ∈{1, 2} has a ﬁnite expectation. Then the L1 norm of
+f is bounded above by the L2 norm:
+∥f∥1 ≤∥f∥2.
+(128)
+Proof. Let X be a random variable sampled from P, and consider the variance of f(X):
+E
+h
+(|f(X)| −E [|f(X)|])2i
+= E
+h
+|f(X)|2 −2|f(X)|E [|f(X)|] + E [|f(X)|]2i
+(129)
+= E
+
+|f(X)|2
+−2E [|f(X)|] E [|f(X)|] + E [|f(X)|]2
+(130)
+= E
+
+|f(X)|2
+−E [|f(X)|]2
+(131)
+≥0.
+(132)
+Rearranging terms, we have
+∥f∥2
+2 = E
+
+|f(X)|2
+≥E [|f(X)|]2 = ∥f∥2
+1.
+(133)
+Taking the square root of both sides gives:
+∥f∥1 ≤∥f∥2,
+(134)
+as required.
+34
+
+Published as a conference paper at ICLR 2021
+Lemma A.11. Let M be an MDP\R with ﬁnite state and action spaces S and A. Let RA, RB :
+S × A × S →R be rewards. Let π∗
+A and π∗
+B be policies optimal for rewards RA and RB in M. Let
+Dπ(t, st, at, st+1) denote the distribution over trajectories that policy π induces in M at time step t.
+Let D(s, a, s′) be the (stationary) coverage distribution over transitions S × A × S used to compute
+DEPIC. Suppose that there exists some K > 0 such that KD(st, at, s′t+1) ≥Dπ(t, st, at, s′t+1)
+for all time steps t ∈N, triples st, at, st+1 ∈S × A × S and policies π ∈{π∗
+A, π∗
+B}. Then the
+regret under RA from executing π∗
+B optimal for RB instead of π∗
+A is at most:
+GRA(π∗
+A) −GRA(π∗
+B) ≤
+2K
+1 −γ DL1,D(RA, RB).
+(135)
+Proof. Noting GRA(π) is maximized when π = π∗
+A, it is immediate that
+GRA(π∗
+A) −GRA(π∗
+B) = |GRA(π∗
+A) −GRA(π∗
+B)|
+(136)
+= |(GRA(π∗
+A) −GRB(π∗
+B)) + (GRB(π∗
+B) −GRA(π∗
+B))|
+(137)
+≤|GRA(π∗
+A) −GRB(π∗
+B)| + |GRB(π∗
+B) −GRA(π∗
+B)| .
+(138)
+We will show that both these terms are bounded above by
+K
+1−γ DL1,D(RA, RB), from which the
+result follows.
+First, we will show that for policy π ∈{π∗
+A, π∗
+B}:
+|GRA(π) −GRB(π)| ≤
+K
+1 −γ DL1,D(RA, RB).
+(139)
+Let T be the horizon of M. This may be inﬁnite (T = ∞) when γ < 1; note since S × A × S is
+bounded, so are RA, RB so the discounted inﬁnite returns GRA(π), GRB(π) converge (as do their
+differences). Writing τ = (s0, a0, s1, a1, · · · ), we have for any policy π:
+∆≜|GRA(π) −GRB(π)|
+(140)
+=
+Eτ∼Dπ
+" T
+X
+t=0
+γt (RA(st, at, st+1) −RB(st, at, st+1))
+#
+(141)
+≤
+E
+τ∼Dπ
+" T
+X
+t=0
+γt |RA(st, at, st+1) −RB(st, at, st+1)|
+#
+(142)
+=
+T
+X
+t=0
+γt
+E
+st,at,st+1∼Dπ [|RA(st, at, st+1) −RB(st, at, st+1)|]
+(143)
+=
+T
+X
+t=0
+γt
+X
+st,at,st+1∈S×A×S
+Dπ(t, st, at, st+1) |RA(st, at, st+1) −RB(st, at, st+1)| .
+(144)
+Let π ∈{π∗
+A, π∗
+B}. By assumption, Dπ(t, st, at, s′t+1) ≤KD(st, at, s′t+1), so:
+∆≤K
+T
+X
+t=0
+γt
+X
+st,at,st+1∈S×A×S
+D(st, at, st+1) |RA(st, at, st+1) −RB(st, at, st+1)|
+(145)
+= K
+T
+X
+t=0
+γtDL1,D(RA, RB)
+(146)
+=
+K
+1 −γ DL1,D(RA, RB),
+(147)
+as required.
+In particular, substituting π = π∗
+B gives:
+|GRB(π∗
+B) −GRA(π∗
+B)| = |GRA(π∗
+B) −GRB(π∗
+B)| ≤
+K
+1 −γ DL1,D(RA, RB).
+(148)
+35
+
+Published as a conference paper at ICLR 2021
+Rearranging gives:
+GRA(π∗
+B) ≥GRB(π∗
+B) −
+K
+1 −γ DL1,D(RA, RB).
+(149)
+So certainly:
+GRA(π∗
+A) = max
+π
+GRA(π) ≥GRB(π∗
+B) −
+K
+1 −γ DL1,D(RA, RB).
+(150)
+By a symmetric argument, substituting π = π∗
+A gives:
+GRB(π∗
+B) = max
+π
+GRB(π) ≥GRA(π∗
+A) −
+K
+1 −γ DL1,D(RA, RB).
+(151)
+Eqs. 150 and 151 respectively give GRB(π∗
+B)−GRA(π∗
+A) ≤
+K
+1−γ and GRA(π∗
+A)−GRB(π∗
+B) ≤
+K
+1−γ .
+Combining these gives:
+|GRA(π∗
+A) −GRB(π∗
+B)| ≤
+K
+1 −γ DL1,D(RA, RB).
+(152)
+Substituting inequalities 148 and 152 into eq. 138 yields the required result.
+Note that if D = Dunif, uniform over S × A × S, then K ≤|S|2|A|.
+Lemma A.12. Let M be an MDP\R with state and action spaces S and A. Let RA, RB : S×A×S →
+R be bounded rewards. Let π∗
+A and π∗
+B be policies optimal for rewards RA and RB in M. Suppose
+the regret under the standardized reward RS
+A from executing π∗
+B instead of π∗
+A is upper bounded by
+some U ∈R:
+GRS
+A(π∗
+A) −GRS
+A(π∗
+B) ≤U.
+(153)
+Then the regret under the original reward RA is bounded by:
+GRA(π∗
+A) −GRA(πB) ≤4U∥RA∥2.
+(154)
+Proof. Recall that
+RS =
+CDS,DA (R)
+∥CDS,DA (R)∥2
+,
+(155)
+where CDS,DA (R) is simply R shaped with some (bounded) potential Φ. It follows that:
+GRS(π) =
+1
+∥CDS,DA (R)∥2
+GCDS ,DA(R)(π)
+(156)
+=
+1
+∥CDS,DA (R)∥2
+(GR(π) −Es0∼d0 [Φ(s0)]) ,
+(157)
+where s0 depends only on the initial state distribution d0. † Since s0 does not depend on π, the terms
+cancel when taking the difference in returns:
+GRS
+A(π∗
+A) −GRS
+A(π∗
+B) =
+1
+∥CDS,DA (RA)∥2
+(GRA(π∗
+A) −GRA(π∗
+B)) .
+(158)
+Combining this with eq 153 gives
+GRA(π∗
+A) −GRA(π∗
+B) ≤U∥CDS,DA (RA)∥2.
+(159)
+Finally, we will bound ∥CDS,DA (RA)∥2 in terms of ∥RA∥2, completing the proof. Recall:
+CDS,DA (R) (s, a, s′) = R(s, a, s′) + E [γR(s′, A, S′) −R(s, A, S′) −γR(S, A, S′)] ,
+(160)
+where S and S′ are random variables independently sampled from DS and A sampled from DA. By
+the triangle inequality on the L2 norm and linearity of expectations, we have:
+∥CDS,DA (R)∥2 ≤∥R∥2 + γ∥f∥2 + ∥g∥2 + γ|c|,
+(161)
+†In the ﬁnite-horizon case, there is also a term γT Φ(sT ), where sT is the ﬁxed terminal state. Since
+sT is ﬁxed, it also cancels in eq. 158. This term can be neglected in the discounted inﬁnite-horizon case as
+γT Φ(sT ) →0 as T →∞for any bounded Φ.
+36
+
+Published as a conference paper at ICLR 2021
+where f(s, a, s′) = E [R(s′, A, S′)], g(s, a, s′) = E [R(s, A, S′)] and c = E [R(S, A, S′)]. Letting
+X′ be a random variable sampled from DS independently from S and S′, have
+∥f∥2
+2 = EX′
+h
+E [R(X′, A, S′)]2i
+(162)
+≤EX′ 
+E
+
+R(X′, A, S′)2
+(163)
+= E
+
+R(X′, A, S′)2
+(164)
+= ∥R∥2
+2.
+(165)
+So ∥f∥2 ≤∥R∥2 and, by an analogous argument, ∥g∥2 ≤∥R∥2. Similarly
+|c| = |E [R(S, A, S′)]|
+(166)
+≤E [|R(S, A, S′)|]
+(167)
+= ∥R∥1
+(168)
+≤∥R∥2
+lemma A.10.
+(169)
+Combining these results, we have
+∥CDS,DA (R)∥2 ≤4∥R∥2.
+(170)
+Substituting eq. 170 into eq. 159 yields:
+GRA(π∗
+A) −GRA(π∗
+B) ≤4U∥RA∥2,
+(171)
+as required.
+Theorem 4.9. Let M be a γ-discounted MDP\R with ﬁnite state and action spaces S and A.
+Let RA, RB : S × A × S →R be rewards, and π∗
+A, π∗
+B be respective optimal policies. Let
+Dπ(t, st, at, st+1) denote the distribution over transitions S × A × S induced by policy π at time t,
+and D(s, a, s′) be the coverage distribution used to compute DEPIC. Suppose there exists K > 0 such
+that KD(st, at, st+1) ≥Dπ(t, st, at, st+1) for all times t ∈N, triples (st, at, st+1) ∈S × A × S
+and policies π ∈{π∗
+A, π∗
+B}. Then the regret under RA from executing π∗
+B instead of π∗
+A is at most
+GRA(π∗
+A) −GRA(π∗
+B) ≤16K∥RA∥2 (1 −γ)−1 DEPIC(RA, RB),
+where GR(π) is the return of policy π under reward R.
+Proof. Recall from section A.4 that:
+DEPIC(RA, RB) = 1
+2
+RS
+A(S, A, S′) −RS
+B(S, A, S′)
+
+2 .
+(172)
+Applying lemma A.10 we obtain:
+DL1,D(RS
+A, RS
+B) =
+RS
+A(S, A, S′) −RS
+B(S, A, S′)
+
+1 ≤2DEPIC(RA, RB).
+(173)
+Note that π∗
+A is optimal for RS
+A and π∗
+B is optimal for RS
+B since the set of optimal policies for RS is
+the same as for R. Applying lemma A.11 and eq. 173 gives
+GRS
+A(π∗
+A) −GRS
+A(π∗
+B) ≤
+2K
+1 −γ DL1,D(RS
+A, RS
+B) ≤
+4K
+1 −γ DEPIC(RA, RB).
+(174)
+Since S × A × S is bounded, RA and RB must be bounded, so we can apply lemma A.12, giving:
+GRA(π∗
+A) −GRA(π∗
+B) ≤16K∥RA∥2
+1 −γ
+DEPIC(RA, RB),
+(175)
+completing the proof.
+37
+
+Published as a conference paper at ICLR 2021
+A.6
+LIPSCHITZ REWARD FUNCTIONS
+In this section, we generalize the previous results to MDPs with continuous state and action spaces.
+The challenge is that even though the spaces may be continuous, the distribution Dπ∗induced by an
+optimal policy π∗may only have support on some measure zero set of transitions B. However, the
+expectation over a continuous distribution D is unaffected by the reward at any measure zero subset
+of points. Accordingly, the reward can be varied arbitrarily on transitions B – causing arbitrarily
+small or large regret – while leaving the EPIC distance ﬁxed. To rule out this pathological case, we
+assume the rewards are Lipschitz smooth. This guarantees that if the expected difference between
+rewards is small on a given region, then all points in this region have bounded reward difference.
+We start by deﬁning a relaxation of the Wasserstein distance Wα in deﬁnition A.13. In lemma A.14
+we then bound the expected value under distribution µ in terms of the expected value under alternative
+distribution ν plus Wα(µ, ν). Next, in lemma A.15 we bound the regret in terms of the L1 distance
+between the rewards plus Wα; this is analogous to lemma A.11 in the ﬁnite case. Finally, in
+theorem A.16 we use the previous results to bound the regret in terms of the EPIC distance plus Wα.
+Deﬁnition A.13. Let S be some set and let µ, ν be probability measures on S with ﬁnite ﬁrst moment.
+We deﬁne the relaxed Wasserstein distance between µ and ν by:
+Wα(µ, ν) ≜
+inf
+p∈Γα(µ,ν)
+Z
+∥x −y∥dp(x, y),
+(176)
+where Γα(µ, ν) is the set of probability measures on S × S satisfying for all x, y ∈S:
+Z
+S
+p(x, y)dy = µ(x),
+(177)
+Z
+S
+p(x, y)dx ≤αν(y).
+(178)
+Note that W1 is equal to the (unrelaxed) Wasserstein distance (in the ℓ1 norm).
+Lemma A.14. Let S be some set and let µ, ν be probability measures on S. Let f : S →R be an
+L-Lipschitz function on the ℓ1 norm ∥·∥1. Then, for any α ≥1:
+EX∼µ [|f(X)|] ≤αEY ∼ν [|f(Y )|] + LWα(µ, ν).
+(179)
+Proof. Let p ∈Γα(µ, ν). Then:
+EX∼µ [|f(X)|] ≜
+Z
+|f(x)|dµ(x)
+deﬁnition of E (180)
+=
+Z
+|f(x)|dp(x, y)
+µ is a marginal of p (181)
+≤
+Z
+|f(y)| + L ∥x −y∥dp(x, y)
+f L-Lipschitz (182)
+=
+Z
+|f(y)|dp(x, y) + L
+Z
+∥x −y∥dp(x, y)
+(183)
+=
+Z
+|f(y)|
+Z
+p(x, y)dxdy + L
+Z
+∥x −y∥dp(x, y)
+(184)
+≤
+Z
+|f(y)|αν(y)dy + L
+Z
+∥x −y∥dp(x, y)
+eq. 178 (185)
+= αEY ∼ν [|f(Y )|] + L
+Z
+∥x −y∥dp(x, y)
+deﬁnition of E. (186)
+Since this holds for all choices of p, we can take the inﬁmum of both sides, giving:
+EX∼µ [|f(X)|] ≤αEY ∼ν [|f(Y )|] + L
+inf
+p∈Γα(µ,ν)
+Z
+∥x −y∥dp(x, y)
+(187)
+= αEY ∼ν [|f(Y )|] + LWα(µ, ν).
+38
+
+Published as a conference paper at ICLR 2021
+Lemma A.15. Let M be an MDP\R with state and action spaces S and A. Let RA, RB : S×A×S →
+R be L-Lipschitz, bounded rewards on the ℓ1 norm ∥·∥1. Let π∗
+A and π∗
+B be policies optimal for
+rewards RA and RB in M. Let Dπ,t(st, at, st+1) denote the distribution over trajectories that policy
+π induces in M at time step t. Let D(s, a, s′) be the (stationary) coverage distribution over transitions
+S × A × S used to compute DEPIC. Let α ≥1, and let Bα(t) = maxπ∈{π∗
+A,π∗
+B} Wα (Dπ,t, D).
+Then the regret under RA from executing π∗
+B optimal for RB instead of π∗
+A is at most:
+GRA(π∗
+A) −GRA(π∗
+B) ≤
+2α
+1 −γ DL1,D(RA, RB) + 4L
+∞
+X
+t=0
+γtBα(t).
+(188)
+Proof. By the same argument as lemma A.11 up to eq. 144, we have for any policy π:
+|GRA(π) −GRB(π)| ≤
+∞
+X
+t=0
+γtDL1,Dπ,t(RA, RB).
+(189)
+Let f(s, a, s′) = RA(s, a, s′) −RB(s, a, s′), and note f is 2L-Lipschitz and bounded since RA and
+RB are both L-Lipschitz and bounded. Now, by lemma A.14, letting µ = Dπ,t and ν = D, we have:
+DL1,Dπ,t(RA, RB) ≤αDL1,D(RA, RB) + 2LWα(Dπ,t, D).
+(190)
+So, for π ∈{π∗
+A, π∗
+B}, it follows that
+|GRA(π) −GRB(π)| ≤
+α
+1 −γ DL1,D(RA, RB) + 2L
+∞
+X
+t=0
+γtBα(t).
+(191)
+By the same argument as for eq. 148 to 152 in lemma A.11, it follows that
+GRA(π∗
+A) −GRA(π∗
+B) ≤
+2α
+1 −γ DL1,D(RA, RB) + 4L
+∞
+X
+t=0
+γtBα(t),
+(192)
+completing the proof.
+Theorem A.16. Let M be an MDP\R with state and action spaces S and A. Let RA, RB : S × A ×
+S →R be bounded, L-Lipschitz rewards on the ℓ1 norm ∥·∥1. Let π∗
+A and π∗
+B be policies optimal for
+rewards RA and RB in M. Let Dπ(t, st, at, st+1) denote the distribution over trajectories that policy
+π induces in M at time step t. Let D(s, a, s′) be the (stationary) coverage distribution over transitions
+S × A × S used to compute DEPIC. Let α ≥1, and let Bα(t) = maxπ∈π∗
+A,π∗
+B Wα (Dπ,t, D). Then
+the regret under RA from executing π∗
+B optimal for RB instead of π∗
+A is at most:
+GRA(π∗
+A) −GRA(π∗
+B) ≤16 ∥RA∥2
+ 
+α
+1 −γ DEPIC(RA, RB) + L
+∞
+X
+t=0
+γtBα(t)
+!
+.
+(193)
+Proof. The proof for theorem 4.9 holds in the general setting up to eq. 173. Applying lemma A.15 to
+eq. 173 gives
+GRS
+A(π∗
+A) −GRS
+A(π∗
+B) ≤
+2α
+1 −γ DL1,D(RS
+A, RS
+B) + 4L
+∞
+X
+t=0
+γtBα(t)
+(194)
+≤
+4α
+1 −γ DEPIC(RA, RB) + 4L
+∞
+X
+t=0
+γtBα(t).
+(195)
+Applying lemma A.12 yields
+GRA(π∗
+A) −GRA(π∗
+B) ≤16 ∥RA∥2
+ 
+α
+1 −γ DEPIC(RA, RB) + L
+∞
+X
+t=0
+γtBα(t)
+!
+,
+(196)
+as required.
+39
+
+Published as a conference paper at ICLR 2021
+A.7
+LIMITING BEHAVIOR OF REGRET
+The regret bound for ﬁnite MDPs, Theorem 4.9, directly implies that, as EPIC distance tends to 0,
+the regret also tends to 0. By contrast, our regret bound in theorem A.16 for (possibly continuous)
+MDPs with Lipschitz reward functions includes the relaxed Wasserstein distance Wα as an additive
+term. At ﬁrst glance, it might therefore appear possible for the regret to be positive even with a
+zero EPIC distance. However, in this section we will show that in fact the regret tends to 0 as
+DEPIC(RA, RB) →0 in the Lipschitz case as well as the ﬁnite case.
+We show in lemma A.17 that if the expectation of a non-negative function over a totally bounded
+measurable metric space M tends to zero under one distribution with adequate support, then it also
+tends to zero under all other distributions. For example, taking M to be a hypercube in Euclidean
+space with the Lebesque measure satisﬁes these assumptions. We conclude in theorem A.18 by
+showing the regret tends to 0 as the EPIC distance tends to 0.
+Lemma A.17. Let M = (S, d) be a totally bounded metric space, where d(x, y) = ∥x −y∥. Let
+(S, A, µ) be a measure space on S with the Borel σ-algebra A and measure µ. Let p, q ∈∆(S) be
+probability density functions on S. Let δ > 0 such that p(s) ≥δ for all s ∈S. Let fn : S →R
+be a sequence of L-Lipschitz functions on norm ∥·∥. Suppose limn→∞EX∼p [|fn(X)|] = 0. Then
+limn→∞EY ∼q [|fn(Y )|] = 0.
+Proof. Since M is totally bounded, for each r > 0 there exists a ﬁnite collection of open balls in S
+of radius r whose union contains M. Let Br(c) = {s ∈S | ∥s −c∥< r}, the open ball of radius r
+centered at c. Let C(r) denote some ﬁnite collection of Q(r) open balls:
+C(r) = {Br(cr,n) | n ∈{1, · · · , Q(r)}} ,
+(197)
+such that S
+B∈C(r) B = S.
+It is possible for some balls Br(cn) to have measure zero, µ(Br(cn)) = 0, such as if S contains an
+isolated point cn. Deﬁne P(r) to be the subset of C(r) with positive measure:
+P(r) = {B ∈C(r) | µ(B) > 0} ,
+(198)
+and let pr,1, · · · , pr,Q′(r) denote the centers of the balls in P. Since P(r) is a ﬁnite collection, it must
+have a minimum measure:
+α(r) = min
+B∈P µ(B).
+(199)
+Moreover, by construction of P, α(r) > 0.
+Let S′(r) be the union only over balls of positive measure:
+S′(r) =
+[
+B∈P (r)
+B.
+(200)
+Now, let D(r) = S \ S′(r), comprising the (ﬁnite number of) measure zero balls in C(r). Since mea-
+sures are countably additive, it follows that D(r) is itself measure zero: µ (D(r)) = 0. Consequently:
+Z
+S
+g(s)dµ =
+Z
+S′(r)
+g(s)dµ,
+(201)
+for any measurable function g : S →R.
+Since limn→∞EX∼p [|fn(X)|] = 0, for all r > 0 there exists some Nr ∈N such that for all n ≥Nr:
+EX∼p [|fn(X)|] < δLrα(r).
+(202)
+By Lipschitz continuity, for any s, s′ ∈S:
+|fn(s′)| ≥|fn(s)| −L ∥s′ −s∥.
+(203)
+In particular, since any point s ∈S′(r) is at most r distance from some ball center pr,i, then
+|fn(pr,i)| ≥|fn(s)| −Lr. So if there exists s ∈S′(r) such that |fn(s)| ≥3Lr, then there must
+exist a ball center pr,i with |fn(pr,i)| ≥2Lr. Then for any point s′ ∈Br(pr,i):
+|fn(s′)| ≥|fn(pr,i)| −Lr ≥Lr.
+(204)
+40
+
+Published as a conference paper at ICLR 2021
+Now, we have:
+EX∼p [|fn(X)|] ≜
+Z
+s∈S
+|fn(s)|p(s)dµ(s)
+(205)
+=
+Z
+s∈S′(r)
+|fn(s)|p(s)dµ(s)
+eq. 201
+(206)
+≥
+Z
+s∈Br(pr,i)
+|fn(s)|p(s)dµ(s)
+non-negativity of |fn(s)|
+(207)
+≥δ
+Z
+s∈Br(pr,i)
+|fn(s)|dµ(s)
+p(s) ≥δ
+(208)
+≥δ · Lr
+Z
+s∈Br(pr,i)
+1dµ(s)
+eq. 204
+(209)
+= δLrµ(Br(pr,i))
+integrating w.r.t. µ
+(210)
+≥δLrα(r)
+α(r) minimum of µ(Br(pr,i)).
+(211)
+But this contradicts eq. 202, and so can only hold if n < Nr. It follows that for all n ≥Nr and
+s ∈S′(r), we have |fn(s)| < 3Lr, and so in particular:
+EY ∼q [|fn(Y )|] < 3Lr.
+(212)
+Let ϵ > 0. Choose r =
+ϵ
+3L. Then for all n ≥Nr, EY ∼q [|fn(Y )|] < ϵ. It follows that:
+lim
+n→∞EY ∼q [|fn(Y )|] = 0,
+(213)
+completing the proof.
+Theorem A.18. Let M be an MDP\R with state and action spaces S and A. Let RA, RB : S × A ×
+S →R be bounded rewards on some norm ∥·∥on S × A × S. Let π∗
+A and π∗
+B be policies optimal
+for rewards RA and RB in M. Let Dπ(t, st, at, st+1) denote the distribution over trajectories that
+policy π induces in M at time step t. Let D(s, a, s′) be the (stationary) coverage distribution over
+transitions S × A × S used to compute DEPIC.
+Suppose that either:
+1. Discrete: S and A are discrete. Moreover, suppose that there exists some K > 0 such
+that KD(st, at, s′t+1) ≥Dπ(t, st, at, s′t+1) for all time steps t ∈N, triples st, at, st+1 ∈
+S × A × S and policies π ∈{π∗
+A, π∗
+B}.
+2. Lipschitz: (S × A × S, d) is a totally bounded measurable metric space where d(x, y) =
+∥x −y∥. Moreover, RA and RB are L-Lipschitz on ∥·∥. Furthermore, suppose there
+exists some δ > 0 such that D(s, a, s′) ≥δ for all s, a, s′ ∈S × A × S, and that
+Dπ(t, st, at, st+1) is a non-degenerate probability density function (i.e. no single point has
+positive measure).
+Then as DEPIC(RA, RB) →0, GRA(π∗
+A) −GRA(π∗
+B) →0.
+Proof. In case (1) Discrete, by theorem 4.9:
+GRA(π∗
+A) −GRA(π∗
+B) ≤16K∥RA∥2
+1 −γ
+DEPIC(RA, RB).
+(214)
+Moreover, by optimality of π∗
+A we have 0 ≤GRA(π∗
+A) −GRA(π∗
+B). So by the squeeze theorem, as
+DEPIC(RA, RB) →0, GRA(π∗
+A) −GRA(π∗
+B) →0.
+From now on, suppose we are in case (2) Lipschitz. By the same argument as lemma A.11 up to
+eq. 144, we have for any policy π:
+GRS
+A(π) −GRS
+B(π)
+ ≤
+∞
+X
+t=0
+γtDL1,Dπ,t(RS
+A, RS
+B).
+(215)
+41
+
+Published as a conference paper at ICLR 2021
+Applying lemma A.12 we have:
+|GRA(π) −GRB(π)| ≤4 ∥RA∥2
+∞
+X
+t=0
+γtDL1,Dπ,t(RS
+A, RS
+B).
+(216)
+By equation 173, we know that DL1,D(RS
+A, RS
+B) →0 as DEPIC(RA, RB) →0. By lemma A.17,
+we know that DL1,Dπ,t(RS
+A, RS
+B) →0 as DL1,D(RS
+A, RS
+B) →0. So we can conclude that as
+DEPIC(RA, RB) →0:
+|GRA(π) −GRB(π)| →0,
+(217)
+as required.
+42
+

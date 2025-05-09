@@ -1,0 +1,3087 @@
+Causal normalizing flows: from theory to practice
+Adri´an Javaloy 1,∗Pablo S´anchez-Mart´ın 1,2
+Isabel Valera 1,3
+1Department of Computer Science of Saarland University, Saarbr¨ucken, Germany
+2Max Planck Institute for Intelligent Systems, T¨ubingen, Germany
+3Max Planck Institute for Software Systems, Saarbr¨ucken, Germany
+Abstract
+In this work, we deepen on the use of normalizing flows for causal inference.
+Specifically, we first leverage recent results on non-linear ICA to show that causal
+models are identifiable from observational data given a causal ordering, and thus
+can be recovered using autoregressive normalizing flows (NFs). Second, we
+analyse different design and learning choices for causal normalizing flows to
+capture the underlying causal data-generating process. Third, we describe how to
+implement the do-operator in causal NFs, and thus, how to answer interventional
+and counterfactual questions. Finally, in our experiments, we validate our design
+and training choices through a comprehensive ablation study; compare causal NFs
+to other approaches for approximating causal models; and empirically demonstrate
+that causal NFs can be used to address real-world problems—where mixed discrete-
+continuous data and partial knowledge on the causal graph is the norm. The code
+for this work can be found at https://github.com/psanch21/causal-flows.
+1
+Introduction
+Negative
+Average
+High
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+Probability
+German Credit - Checking account
+real data
+estimated
+observational
+do(xS = 0)
+do(xS = 1)
+Figure 1: Observational and interventional
+distributions of the categorical variable check-
+ing account of the German Credit dataset [8],
+and their estimated values according to a
+causal normalizing flow. xS is a binary vari-
+able representing the users’ sex.
+Deep learning is increasingly used for causal reas-
+oning, that is, for finding the underlying causal rela-
+tionships among the observed variables (causal dis-
+covery), and answering what-if questions (causal
+inference) from available data [28]. Our focus in
+this paper is to solve causal inference problems us-
+ing only observational data and (potentially partial)
+knowledge on the causal graph of the underlying
+structural causal model (SCM). This is exemplified
+in Fig. 1, where our proposed framework is able to
+estimate the (unobserved) causal effect of externally
+intervening on the sensitive attribute (red and yellow
+distributions), using solely observed data (blue dis-
+tribution) and partial information about the causal
+relationship between features.
+In this context, previous works have mostly relied on
+different deep neural networks (DNNs)—e.g., nor-
+malizing flows (NFs) [23, 26, 27], generative adversarial networks (GANs) [20, 39], variational
+autoencoders (VAEs) [15, 40], Gaussian processes (GPs) [15], or denoising diffusion probabilistic
+models (DDPMs) [2]—to iteratively estimate the conditional distribution of each observed variable
+given its causal parents, thus using an independent DNN per observed variable. Hence, to predict the
+effect of an intervention in the causal data-generating process, these approaches fix the value of the
+intervened variables when computing the new value for their children. However, they may also suffer
+∗Correspondence to ajavaloy@cs.uni-saarland.de.
+37th Conference on Neural Information Processing Systems (NeurIPS 2023).
+
+from error propagation—which worsens with long causal paths—and a high number of parameters,
+which is addressed in practice with ad-hoc parameter amortization techniques [26, 27]. Moreover,
+several approaches also rely on implicit distributions [2, 20, 27, 32], and thus do not allow evaluating
+the learnt distribution.
+In contrast, and similar to [16, 32, 34, 41], we here aim at learning the full causal-generating process
+using a single DNN and, in particular, using a causal normalizing flow. To this end, we first
+theoretically demonstrate that causal NFs are a natural choice to approximate a broad class of causal
+data-generating processes (§3). Then, we design causal NFs that inherently satisfy the necessary
+conditions to capture the underlying causal dependencies (§4), and introduce an implementation of
+the do-operator that allows us to efficiently solve causal inference tasks (§5). Importantly, our causal
+NF framework allows us to deal with mixed continuous-discrete data and partial knowledge on the
+causal graph, which is key for real-world applications. Finally, we empirically validate our findings
+and show that causal NFs outperform competing methods also using a single DNN to approximate
+the causal data-generating process (§6).
+Related work
+To the best of our knowledge, the closest works to ours are [16, 34, 41], as they all
+capture the whole causal data-generating process using a single DNN. Our approach generalizes the
+result from Khemakhem et al. [16], which also relies on autoregressive normalizing flows (ANF),
+but only considers affine ANFs and data with additive noise. In contrast, our work provides a tighter
+connection between ANFs and SCMs (affine or not), more general identifiability results, and sound
+ways to both embed causal knowledge in the ANF, and to apply the do-operator. Another relevant line
+of works connect SCMs with GNNs [32, 41], and despite making little assumptions on the underlying
+SCM, they lack identifiability guarantees, and interventions on the GNN are performed by severing
+the graph, which we show in App. C may not work in general. Nevertheless, it is worth noting that
+the way we use A in the network design (§4) is inspired by these works.
+2
+Preliminaries and background
+2.1
+Structural causal models, interventions, and counterfactuals
+A structural causal model (SCM) [28] is a tuple M = (˜f, Pu) describing a data-generating process
+that transforms a set of d exogenous random variables, u ∼Pu, into a set of d (observed) endogenous
+random variables, x, according to ˜f. Specifically, the endogenous variables are computed as follows:
+u := (u1, u2, . . . , ud) ∼Pu ,
+xi = ˜fi(xpai, ui) ,
+for i = 1, 2, . . . , d .
+(1)
+In other words, each i-th component of ˜f maps the i-th exogenous variable ui to the i-th endogenous
+variable xi, given the subset of the endogenous variables that directly cause xi, xpai (causal parents).
+x1
+x2
+x3
+π = (1
+2
+3)
+A =
+ 0
+0
+0
+1
+0
+0
+0
+1
+0
+!
+Figure 2: Causal graph,
+and its causal ordering π
+and adjacency matrix A.
+An SCM also induces a causal graph, a powerful tool to reason about the
+causal dependencies of the system. Namely, the causal graph of an SCM
+M = (˜f, Pu) is the directed graph that describes the functional depend-
+encies of the causal mechanism. We can define the adjacency matrix of
+the causal graph as A := ∇x˜f(x, u) ̸= 0, where 0 is the constant zero
+function, and the comparisons are made elementwise. Furthermore, the
+direct causes of the i-th variable (pai in Eq. 1) are the parent nodes of
+the i-th node in A, and the ancestors of this node (which we denoted by
+ani) are its (in)direct causes. See Fig. 2 for an example of a causal chain.
+In the case that A is acyclic, we can pick a causal ordering describing
+which variables do not cause others, and which ones may cause them. Namely, a permutation π is said
+to be a causal ordering of an SCM M if, for every xi that directly causes xj, we have π(i) < π(j).
+Note that this definition equals that of a topological ordering and, without loss of generality, we will
+assume throughout this work that the variables are sorted according to a causal ordering.
+Importantly, besides describing the (observational) data-generating process, SCMs enable causal
+inference by allowing us to answer what-if questions regarding: i) how the distribution over the
+observed variables would be if we force a fixed value on one of them (interventional queries); and
+ii) what would have happened to a specific observation, if one of its dimensions would have taken a
+different value (counterfactual queries).
+2
+
+Structural equivalence
+To reason about causal dependencies, we introduce the notion of structural
+equivalence. We say that two matrices S and R are structurally equivalent, denoted S ≡R, if both
+matrices have zeroes exactly in the same positions. Similarly, we say that S is structurally sparser
+than R, denoted as S ⪯R, if whenever an element of R is zero, the same element of S is zero.
+2.2
+Autoregressive normalizing flows
+Normalizing flows (NFs) [25] are a model family that express the probability density of a set of
+observations using the change-of-variables rule. Given an observed random vector x of size d, a
+normalizing flow is a neural network with parameters θ that takes x as input, and outputs
+Tθ(x) =: u ∼Pu
+with log-density
+log p(x) = log p(Tθ(x)) + log|det(∇xTθ(x))| ,
+(2)
+where Pu is a base distribution that is easy to evaluate and sample from. Since Eq. 2 provides the log-
+likelihood expression, it naturally leads to the use of maximum likelihood estimation (MLE) [1] for
+learning the network parameters θ. While many approaches have been proposed in the literature [25],
+here we focus on autoregressive normalizing flows (ANFs) [18, 24]. Specifically, in ANFs the i-th
+output of each layer l of the network, denoted by zl
+i, is computed as
+zl
+i := τ l
+i(zl−1
+i
+; hl
+i) ,
+where
+hl
+i := cl
+i(zl−1
+1:i−1) ,
+(3)
+and where τi and ci are termed the transformer and the conditioner, respectively. The transformer is a
+strictly monotonic function of zl−1
+i
+, while the conditioner can be arbitrarily complex, yet it only takes
+the variables preceding zi as input. As a result, ANFs have triangular Jacobian matrices, ∇xTθ(x).
+3
+Causal normalizing flows
+Problem statement
+Assume that we have a sequence of i.i.d. observations X = {x1, x2, . . . , xN}
+generated according to an unknown SCM M, from which we have partial knowledge of its causal
+structure. Specifically, we know at least its causal ordering π, and at most the whole causal graph A.
+Our objective in this work is to design and learn an ANF Tθ, with parameters θ, that captures M by
+maximizing the observational likelihood (MLE), i.e.,
+maximize
+θ
+1
+N
+N
+X
+n=1
+h
+log p (Tθ (xn)) + log|det(∇xTθ (xn))|
+i
+,
+(4)
+and that can successfully answer interventional and counterfactual queries during deployment, thus
+enabling causal inference. We refer to such a model as a causal normalizing flow.
+Assumptions
+We restrict the class of SCMs considered by making the following fairly common
+assumptions: i) diffeomorphic data-generating process, i.e., ˜f is invertible, and both ˜f and its inverse
+are differentiable; ii) no feedback loops, i.e., the induced causal graph is acyclic; and iii) causal
+sufficiency, i.e., the exogenous variables are mutually independent, p(u) = Q
+i p(ui).
+SCMs as TMI maps
+To achieve our objective, and bridge the gap between SCMs and normalizing
+flows, we resort to triangular monotonic increasing (TMI) maps, which are autoregressive functions
+whose i-th component is strictly monotonic increasing with respect to its i-th input. TMI maps hold a
+number of useful properties, such as being closed under composition and inversions. Conveniently, a
+layer of an ANF (Eq. 3) is a parametric TMI map that can approximate any other TMI map arbitrarily
+well, which makes ANFs also TMI maps approximators;2 a fact that has been exploited in the past to
+prove that ANFs are universal density approximators [25].
+We now show that any SCM can be rewritten as a tuple (f, Pu) ∈F × Pu, where F is the set of all
+TMI maps, and Pu is the set of all fully-factorized distributions, p(u) = Q
+i p(ui). First, given an
+acyclic SCM M = (˜f, Pu) with ˜f : X × U →X as in Eq. 1, we can always unroll ˜f by recursively
+replacing each xi in the causal equation by its function ˜fi (see Fig. 4b for an example), obtaining
+an equivalent non-recursive function ˆf : U →X. This function ˆf writes each xi as a function of its
+exogenous ancestors uani and, since M is acyclic, ˆf is a triangular map. For simplicity, assume that
+Pu is a standard uniform distribution. Then, following the causal ordering, we can apply a Darmois
+2While it is a common to shuffle the inputs for each layer, we keep the same order across the network.
+3
+
+construction [7, 13] and replace each function ˆfi by the conditional quantile function of the variable
+xi given xpai (which depends on uani) eventually arriving to a TMI map f. This procedure follows
+the proof for non-identifiability in ICA [13], but restricted to one ordering. The case for a general Pu
+follows a similar construction, but using a Kn¨othe-Rosenblatt (KR) transport [19, 31] instead.
+Isolating the exogenous variables
+Now that we have SCMs and causal NFs under the same family
+class—i.e., the family F × Pu of TMI maps with fully-factorized distributions—we leverage existing
+results on identifiability to show that we can find a causal NF Tθ such that the i-th component of
+Tθ(x) is a function of the true exogenous variable ui that generated the observed data. More precisely,
+note that, since we can rewrite M as an element of the family F ×Pu, identifying the true exogenous
+variables of an SCM M is equivalent to solving a non-linear ICA problem with TMI generators, for
+which Xi and Bloem-Reddy [38] proved the following (re-stated to match our setting):
+Theorem 1 (Identifiability). If two elements of the family F × Pu (as defined above) produce
+the same observational distribution, then the two data-generating processes differ by an invertible,
+component-wise transformation of the variables u.
+Px
+Pθ
+PM
+T −1
+θ
+Tθ
+f
+f −1
+h
+h−1
+Figure 3: Thm. 1 as a
+commutative diagram
+Thm. 1 implies that, if we can find a causal NF (Tθ, Pθ) ∈F × Pu that
+matches the observational distribution generated by M = (f, PM) ∈
+F × Pu, then we know that the exogenous variables of the flow dif-
+fer from the real ones by a function of each component independ-
+ently, i.e., Tθ(f(u)) ∼Pθ with u ∼PM and Tθ(f(u)) = h(u) =
+(h1(u1), h2(u2), . . . , hd(ud)), where each hi is an invertible function.
+Fig. 3 graphically illustrates Thm. 1. Furthermore, Thm. 1 also implies
+that the functional dependencies of the causal NF must agree with that
+of the SCM, i.e., that Tθ needs to be causally consistent with M. We
+formally present this result in the following corollary (proof can be found
+in App. A), where I denotes the identity matrix:
+Corollary 2 (Causal consistency). If a causal NF Tθ isolates the exogenous variables of an SCM
+M, then ∇xTθ(x) ≡I −A and ∇uT −1
+θ (u) ≡I + Pdiam(A)
+n=1
+An, where A is the causal adjacency
+matrix of M. In other words, Tθ is causally consistent with the true data-generating process, M.
+A sketch of the proof goes as follows: since Fig. 3 is a commutative diagram, we can write the result
+of Tθ and T −1
+θ
+in terms of the true f, h, and their inverses. Then, we can use the chain rule to compute
+their Jacobian matrices, and since h has a diagonal Jacobian matrix, it preserves the structure of the
+Jacobian matrices of f and its inverse. To sum up, we have shown that causal NFs are a natural
+choice to estimate an unknown SCM by showing that: i) both SCMs and causal NFs fall within the
+same family F × Pu; ii) any two elements of this family with identical observational distributions
+are causally consistent; and iii) they differ by an invertible component-wise transformation.
+3.1
+Causal NFs for real-world problems
+To bring theory closer to practice, we need to extend causal NFs to handle mixed discrete-continuous
+data and partial knowledge on the causal graph, which are common properties of real-world problems.
+Due to space limitations, we provide here a brief explanation, and formalize these ideas in App. A.2.
+Discrete data
+To extend our results to also account for discrete data, we take advantage of the
+general model considered by Xi and Bloem-Reddy [38] that includes observational noise (independent
+of the exogenous variables), and consider a continuous version of the observed discrete variables
+by adding to them independent noise ε ∈[0, 1] (e.g., from a standard uniform), such that the real
+distribution is still recoverable. Intuitively, our approach assumes that discrete variables correspond
+to the integer part of (noisy) continuous variables generated according to an SCM fulfilling our
+assumptions, such that both our theoretical and practical insights still apply.
+Partial knowledge
+While we rarely know the entire causal graph A, we often have a good grasp
+on causal relationships between a subset of observed variables—e.g., sex and age are not causally
+related—while missing the rest. When only partial knowledge on the graph is available—i.e., we only
+know the causal relationship between a subset of the observed variables, we can instead work with a
+modified acyclic graph ˜
+A obtained by finding the strongly connected components as in [35], where
+subsets of variables with unknown causal relationships are treated as a block (see §7 for an example).
+4
+
+x = Gx + Iu
+x = G3(G2(G1u))
+x = (G2+G+I)u
+u = (I −G)x
+u
+x
+1
+2
+1
+3
+1
+(a) Recursive.
+u
+x
+1
+0
+2
+1
+0
+1
+1
+0
+0
+1
+3
+1
+1
+1
+1
+(b) Unrolled.
+u
+x
+1
+2
+6
+1
+3
+1
+(c) Compacted.
+u
+x
+1
+−2
+1
+−3
+1
+(d) Inverted.
+Figure 4: Example of the linear SCM {x1:=u1 ; x2:=2x1+u2 ; x3:=3x2+u3} written (a) in its usual recursive
+formulation; (b) without recursions, with each step made explicit; (c) without recursions, as a single
+function; and (d) writing u as a function of x. The red dashed arrows show the influence of u1 on x3
+for all equations from u to x, with the compacted version exhibiting shortcuts (see §4). Note that in
+the linear case we have A := G ̸= 0, and that G1, G2, G3 ⪯G + I are any three matrices such
+that their product equals G2 + G + I.
+This allows us to reuse our theoretical results for known parts of the graph, thus generalizing the
+block identifiability results from von K¨ugelgen et al. [36].
+4
+Effective design of causal normalizing flows
+We showed in §3 that causal NFs are a natural choice to learn the underlying SCM generating the data.
+Importantly, Thm. 1 assumes that we can find a causal NF whose observational distribution perfectly
+matches the true data distribution (according to the underlying SCM). In practice, however, reaching
+the optimal parameters may be tricky as: i) we only have access to a finite amount of training data;
+and ii) the optimization process for causal NFs (like for any neural network) may converge to a local
+optima. In this section, we analyse different design choices for causal NFs to guide the optimization
+towards solutions that do not only provide an accurate fit of the observational distribution, but allow
+us to also accurately answer to interventional and counterfactual queries.
+Let us start with an illustrative example. Suppose that we are given the linear SCM in Fig. 4a, and we
+want to write the SCM equations as a TMI map to approximate them with a causal NF. As discussed
+in §3, we can unroll the causal equations (Fig. 4b)—resulting in a composition of functions structurally
+as sparse as I + A. These functions can be compacted into a single transformation (Fig. 4c), such
+that each xi depends on its ancestors, uani. However, note that in this step shortcuts appear, making
+direct and indirect causal paths in this representation indistinguishable—in our example, the indirect
+causal path from u1 to x3 present in Fig. 4a and Fig. 4b does not go anymore through the path that
+generates x2, but instead via a shortcut that directly connects u1 to x3. Alternatively, we can invert
+the equations to write u as a function of x (Fig. 4d), which is structurally equivalent to I −A.
+We remark that the above steps can be applied to any considered acyclic SCM (refer to App. B for
+a more detailed discussion). In particular, we can unroll the equations in a finite number of steps,
+and we can similarly reason about the causal dependencies through the Jacobian matrices of the
+generators, ∇xTθ(x) and ∇uT −1
+θ (u). Moreover, note that the diffeomorphic assumption implies
+that we can invert the causal equations. Next, inspired by the different representations of an SCM
+(exemplified in Fig. 4), we consider the following design choices for causal NFs:
+Generative model
+The first architecture imitates the unrolled equations (Fig. 4b), i.e., the causal
+NF is defined as a function from u to x. Importantly, when full knowledge of the causal graph A
+is assumed, we also replicate the structural sparsity per layer by adequately masking the flow with
+I + A. In this way, the information from u to x is restricted to flow as if we were unrolling the causal
+model [34] and, as a result, the output of the l −1-th layer of the causal NF is given by:3
+zl−1
+i
+= τi(zl
+i; hl−1
+i
+) ,
+where
+hl−1
+i
+= ci(zl
+pai) .
+(5)
+Note that, by restricting each layer such that ∇zlτ(zl) ≡I + A, there cannot exist shortcuts at the
+optima. For example, in Fig. 4, the (indirect) information of u1 to generate x3 by first generating
+3The order has been reversed w.r.t. the causal NF definition from Eq. 3.
+5
+
+x2 needs to go through the middle nodes in Fig. 4b. However, as shown by S´anchez-Martin et al.
+[34], we need at least L = diam(A) layers in our causal NF to avoid shortcuts and thus differentiate
+between the different direct and indirect causal paths connecting a pair of observed variables.
+In contrast, if we only know the causal ordering, then the causal NF will need to rule out the spurious
+correlations by learning during training the necessary zeroes to fulfil causal consistency (Cor. 2), i.e.,
+such that ∇xTθ(x) ≡I + A and ∇uT −1
+θ (u) ≡I + Pdiam(A)
+n=1
+An.
+Abductive model
+Reminiscent to the abduction step [30], another natural choice is to model the
+inverse equations of the SCM as in Fig. 4d, hence building a causal NF from x to u. Under a known
+causal graph, we can again use extra masking in the causal NF to force each layer l to be structurally
+equivalent to I −A, such that
+zl
+i = τi(zl−1
+i
+; hl
+i) ,
+where
+hl
+i = ci(zl−1
+pai ) .
+(6)
+Remarkably, this architecture is capable of capturing all indirect dependencies of u on x, even with a
+single layer. This is a result of the autoregressive nature of the ANFs used here to build causal NFs,
+as they compute the inverse sequentially. In the example of Fig. 4, the indirect influence of u1 on
+x3 via x2 has to necessarily generate x2 first (Fig. 4a). Similar to the previous architecture, in the
+absence of a causal graph (i.e., when only the causal ordering is known), the causal NF will need to
+rely on optimization to discard all spurious correlations.
+4.1
+Necessary conditions
+We next analyse the necessary conditions for the design of a causal NF to be able to accurately
+approximate and manipulate an SCM. A summary of the analysis can be found in Tab 1.
+Expressiveness
+The least restrictive condition is that the causal NF should be able to reach the
+optima and, as mentioned in §3, a single ANF layer (Eq. 3) is a universal TMI approximator [25].
+Identifiability
+In order to perform interventions as we describe later in §5, we need the causal NF
+to isolate the exogenous variables, so that we can associate them with their respective endogenous
+variables. As we saw in §3, if the causal NF is expressive enough, and if it follows a valid causal
+ordering w.r.t. the true causal graph A, then Thm. 1 ensures that we can isolate the exogenous
+variables up to elementwise transformations.
+Causal consistency
+As stated in Cor. 2, the causal NF needs to share the causal dependencies of
+the SCM at the optima, meaning that their Jacobian matrices need to be structurally equivalent, i.e.,
+∇xTθ(x) ≡I −A (Fig. 4d), and ∇uT −1
+θ (u) ≡Pdiam(A)
+n=1
+An + I (Fig. 4c). Given the (partial)
+causal graph A, the generative model in Eq. 5 by design holds ∇uT −1
+θ (u) ≡Pdiam(A)
+n=1
+An + I
+for any sufficient number of layers L ≥diam A (see [34, Prop. 1]), however, there might still exist
+spurious paths from x to u. Similarly, the abductive model in Eq. 6, while may not remove all
+spurious paths from x to u if L > 1, ensures causal consistency when L = 1. In cases where the
+selected architecture for the causal NF does not ensure causal consistency by design, but we have
+access to the causal graph, we can use this extra information to regularize our MLE problem as
+minimize
+θ
+Ex [−log p(Tθ(x)) + ∥∇xTθ(x) ⊙(1 −A)∥2] ,
+(7)
+where 1 is a matrix of ones, thus penalizing spurious correlations from x to Tθ(x).
+Tab 1 summarizes the discussed properties of the considered design choices. Remarkably, the
+abductive model with a single layer (similar to Fig. 4d) enjoys all the necessary properties of a causal
+NF by design. That is, the abductive model with L = 1 is expressive, and causally consistent w.r.t.
+the provided causal graph A, greatly simplifying the optimization process.
+Remark. It is not straightforward why abductive models can be causally consistent by design, but
+generative models cannot. The answer lies on the structure of the problem. Intuitively, this is a
+consequence of the mapping x →u being structurally sparser (ui depends on pai, see Fig. 4d) than
+that of u →x (xi depends on ani, see Fig. 4c). Therefore, ensuring causal consistency from u to x
+does not necessarily imply causal consistency from x to u.
+6
+
+Table 1: Summary of the considered design choices, their induced properties, and their time complex-
+ity for density evaluation and sampling. Generative models design their forward pass as u →x, and
+abductive models as x →u. See §4 for an in-depth discussion.
+Design Choices
+Model Properties
+Time Complexity
+Network Type
+Causal
+Asumption
+Causal Consistency
+Sampling
+Evaluation
+u →x
+x →u
+u →x
+Generative
+Ordering
+✗
+✗
+O(L)
+O(dL)
+Generative
+Graph A
+✓
+✗
+O(L)
+O(dL)
+x →u
+(Abductive
+Ordering
+✗
+✗
+O(dL)
+O(L)
+Abductive (L > 1)
+Graph A
+✗
+✗
+O(dL)
+O(L)
+Abductive (L = 1)
+Graph A
+✓
+✓
+O(dL)
+O(L)
+5
+Do-operator: enabling interventions and counterfactuals
+In this section, we propose an implementation of the do-operator well-suited for causal NFs, such
+that we can evaluate the effect of interventions and counterfactuals [28]. The do-operator [30],
+denoted as do(xi = α), is a mathematical operator that simulates a physical intervention on an
+SCM M, inducing an alternative model MI that fixes the observational value xi = α, and thus
+removes any causal dependency on xi. Usually, the do-operator is implemented by yielding an SCM
+MI = (˜f I, Pu) result of replacing the i-th component of ˜f with a constant function, ˜f I
+i
+:= α.
+Unfortunately, this implementation of the do-operator only works for the recursive representation of
+the SCM (Fig. 4a), thus not generalizing to the different architecture designs of causal NFs discussed
+in §4 the previous section.
+We instead propose to manipulate the SCM by modifying the exogenous distribution Pu, while
+keeping the causal equations ˜f untouched. Specifically, an intervention do(xi = α) updates Pu,
+restricting the set of plausible u to those that yield the intervened value α. We define the intervened
+SCM as MI = (˜f, P I
+u ), where the density of P I
+u is of the form
+pI(u) = δ
+n
+˜fi(xpai, ui) = α
+o
+·
+Y
+j̸=i
+pj(uj),
+(8)
+and where δ is the Dirac delta located at the unique value of ui that yields xi = α after applying
+the causal mechanism ˜fi. This approach resembles the one proposed for soft interventions [10] and
+backtracking counterfactuals [37]. Moreover, as shown in App. C, it can be generalized for non-
+bijective causal equations. Note also that Eq. 8 is well-defined only if the set {u ∼Pu |˜fi(x, u) = α}
+is non-empty, i.e., if the intervened variable takes a plausible value (i.e., with positive density in the
+original causal model). Remarkably, this implementation works directly on the distribution of the
+exogenous variables and can be applied to any SCM representation (see Fig. 4), and therefore any of
+the architectures for the causal NF in §4.
+Implementation details
+We take advantage of the autoregressive nature of causal NFs, and gen-
+erate samples from Eq. 8 by: i) obtaining the exogenous variables u := Tθ(x); ii) replacing the
+observational value by its intervened value, xi := α; and iii) by setting ui to the value of the i-th
+component of Tθ(x). If the causal NF has successfully isolated the exogenous variables (§3), and
+it preserves the true causal paths (§4), then the causal NF ensures that xi = α independently of the
+value of its ancestors, since ui can be seen in Eq. 8 as a deterministic function of the given α and
+the value of its parents (and therefore its ancestors). We provide further details and the step-by-step
+algorithms to compute interventions and counterfactuals with causal NFs in App. C.
+6
+Empirical evaluation
+In this section, we empirically validate the insights from §4, and compare causal NFs with previous
+works. Additional results and in-depth descriptions can be found in App. D.
+7
+
+Direction:
+x →u
+u →x
+Model:
+Ordering
+Ordering⋆
+Graph
+Graph⋆
+1
+2
+3
+5
+10
+L
+0.00
+0.50
+1.00
+L (∇xTθ(x))
+1
+2
+3
+5
+10
+L
+10−3
+10−2
+10−1
+KL forward
+1
+2
+3
+5
+10
+L
+0.00
+1.00
+2.00
+RMSE ATE
+1
+2
+3
+5
+10
+L
+0.00
+0.03
+0.05
+0.08
+L (∇xTθ(x))
+1
+2
+3
+5
+10
+L
+10−3
+10−2
+KL forward
+1
+2
+3
+5
+10
+L
+0.10
+0.15
+0.20
+0.25
+RMSE ATE
+(a) Ablation study on a 4-node chain SCM, as we vary the number of layers L.
+Top: generative models (u →x). Bottom: abductive models (x →u).
+KL forward
+RMSE ATE
+RMSE CF
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+(b) Comparison of the two
+best models of each row.
+Figure 5: Ablation of different choices of the causal NF to be causally consistent, and capture the
+observational and interventional distributions. The use of regularization on the Jacobian (Eq. 7)
+is indicated with the ⋆superscript. The abductive causal NF with information on A and L = 1
+outperforms the rest of models across all metrics, demonstrating its efficacy and simplicity.
+6.1
+Ablation study
+Experimental setup
+We evaluate every network combination described in Tab 1 on a 4-chain SCM
+(which has diameter 3 and a very sparse Jacobian) and assess the extent to which these models:
+i) capture the observational distribution, using KL(pM∥pθ); ii) remain causally consistent w.r.t. the
+original SCM, measured via L(∇xTθ(x)) := ∥∇xTθ(x) · (1 −A)∥2 from Eq. 7; and iii) perform
+at interventional tasks, such as estimating the Average Treatment Effect (ATE) [29] and computing
+counterfactuals, both of which we measure with the RMSE w.r.t. the original SCM. Every experiment
+is repeated 5 times, and every causal NF uses Mask Autoregressive Flows (MAFs) [24] as layers.
+Results
+Fig. 5 shows the result for different design choices of causal NFs. Specifically, we show:
+network design (generative u →x vs. abductive x →u), causal knowledge (ordering vs. graph),
+number of layers L, and whether to use MLE with regularization (Eq. 4 vs. 7).
+First, we see in Fig. 5a (top) that, as expected, the generative models (u →x) using the causal graph
+cannot capture the SCM with L < diam A = 3. Furthermore, we observe that abductive models
+x →u (Fig. 5a, bottom) accurately fit the observational distribution, and that embedding the causal
+graph in the architecture significantly improves the ATE estimation.
+Second, we now compare the two network designs in Fig. 5b, and observe that in general abductive
+models results in more accurate estimates of the observational distribution, as well as of interventional
+and counterfactual queries. Finally, we observe that regularization works well in all cases, yet it
+renders useless for the abductive model with L = 1 and knowledge on the graph, since it is causally
+consistent by design. In summary, our experiments confirm that, despite its simplicity, the causal
+abductive model with L = 1 outperforms the rest of design choices. As a consequence, in the
+following sections we will stick to this particular design choice, and refer to it as causal NF.
+6.2
+Non-linear SCMs
+Experimental setup
+We compare our causal NF (causal, abductive, and with L = 1) with two
+relevant works: i) CAREFL [16], an abductive NF with knowledge on the causal ordering and affine
+layers; and ii) VACA [34], a variational auto-encoding GNN with knowledge on the graph. For
+fair comparison, every model uses the same budget for hyperparameter tuning, our causal NF uses
+affine layers, and CAREFL has been modified to use the proposed do-operator from §5 (as the
+original implementation only works in root nodes). We increase the complexity of the SCMs and
+consider: i) TRIANGLE, a 3-node SCM with a dense causal graph; ii) LARGEBD [11], a 9-node
+SCM with non-Gaussian Pu and made out of two chains with common initial and final nodes; and
+iii) SIMPSON [11], a 4-node SCM simulating a Simpson’s paradox [33], where the relation between
+two variables changes if the SCM is not properly approximated.
+Results
+The results are summarized in Tab 2. In a nutshell: the proposed causal NF outperforms
+both CAREFL and VACA in terms of performance and computational efficiency. VACA shows poor
+performance, and is considerably slower due to the complexity of GNNs. Our causal NF outperforms
+8
+
+Table 2: Comparison, on three non-linear SCMs, of the proposed causal NF, VACA [34], and
+CAREFL [16] with the do-operator proposed in §5. Results averaged over five runs.
+Performance
+Time Evaluation (µs)
+Dataset
+Model
+KL
+ATERMSE
+CFRMSE
+Training
+Evaluation
+Sampling
+TRIANGLE
+NLIN
+[34]
+Causal NF
+0.000.00
+0.120.03
+0.130.02
+0.520.07
+0.580.07
+1.070.12
+CAREFL†
+0.000.00
+0.120.03
+0.170.03
+0.570.18
+0.830.26
+1.680.62
+VACA
+7.710.60
+4.780.01
+4.190.04
+28.821.21
+23.000.55
+70.653.70
+LARGEBD
+NLIN
+[11]
+Causal NF
+1.510.04
+0.020.00
+0.010.00
+0.520.10
+0.600.17
+3.050.66
+CAREFL†
+1.510.05
+0.050.01
+0.080.01
+0.840.47
+1.180.17
+8.251.29
+VACA
+53.662.07
+0.390.00
+0.820.02
+164.9211.10
+137.8815.72
+167.9425.75
+SIMPSON
+SYMPROD
+[11]
+Causal NF
+0.000.00
+0.070.01
+0.120.02
+0.590.17
+0.600.11
+1.510.30
+CAREFL†
+0.000.00
+0.100.02
+0.170.04
+0.490.15
+0.810.19
+1.910.33
+VACA
+13.850.64
+0.890.00
+1.500.04
+49.264.09
+37.783.41
+79.2014.60
+Table 3: Accuracy, F1-score, and counterfactual unfairness of the audited classifiers. Causal NFs
+enable both fair classifiers and accurate unfairness metrics. Results are averaged on five runs.
+Logistic classifier
+SVM classifier
+full
+unaware
+fair x
+fair u
+full
+unaware
+fair x
+fair u
+f1
+72.286.16
+72.374.90
+59.668.57
+73.084.38
+76.042.86
+76.805.82
+68.285.74
+77.391.52
+accuracy
+67.003.83
+66.752.63
+54.755.91
+66.503.70
+69.503.11
+71.003.83
+59.252.99
+69.751.26
+unfairness
+5.842.93
+2.810.72
+0.000.00
+0.000.00
+6.652.45
+2.780.40
+0.000.00
+0.000.00
+CAREFL in counterfactual estimation tasks with identical observational fitting, showing once more
+the importance of being causally consistent. Even more, our causal NF is also quicker than CAREFL,
+as best-performing CAREFL architectures have in general more than one layer.
+7
+Use-case: fairness auditing and classification
+To show the potential practical impact of our work, we follow the fairness use-case of S´anchez-Martin
+et al. [34] on the German Credit dataset [8]—a dataset from the UCI repository where the likelihood
+of individuals repaying a loan is predicted based on a small set of features, including sensitive
+attributes such as their sex. Extra details and results appear in App. E.
+Experimental setup
+As proposed by Chiappa [3], we use a partial graph which groups the 7
+discrete features of the dataset in 4 different blocks with known causal relationships, putting in
+practice the results from §3.1. For the causal NF, we use the abductive model with a single non-affine
+neural spline layer [9]. Our ultimate goal is to train a causal NF that captures well the underlying
+SCM, and use it to train and evaluate classifiers that predict the (additional) binary feature credit risk,
+while remaining counterfactually fair w.r.t. the binary variable sex, xS.
+In this setting, we call a binary classifier κ : X →{0, 1} counterfactually fair [21] if, for all
+possible factual values xf ∈X, the counterfactual unfairness remains zero. That is, if we have
+that Exf
+
+P(κ(xcf) = 1 | do(xS = 1), xf) −P(κ(xcf) = 1 | do(xS = 0), xf)
+
+= 0, where xcf is a
+counterfactual sample coming from the distribution P(xcf | do(xS = s), xf), for s = 0, 1.
+Following S´anchez-Martin et al. [34], we audit: a model that takes all observed variables (full);
+an unaware model that leaves the sensitive attribute xS out; a fair model that only considers non-
+descendant variables of xS (fair x); and, to demonstrate the ability to learn a counterfactually fair
+classifier, we include a classifier that takes u = Tθ(x) as input, but leaves uS out (fair u).
+Results
+Tab 3 summarizes the performance and unfairness of the classifiers, using logistic regres-
+sion [6] and SVMs [5]. Here, we observe that by taking the non-sensitive exogenous variables from
+the causal NF, the obtained classifiers achieve comparable or better accuracy than the rest of the
+classifiers, while at the same time being counterfactually fair. Moreover, the estimations of unfairness
+obtained with the causal NF match our expectations [21], with full being the most unfair, followed by
+aware and the two fair models. With this use-case, we demonstrate that Causal NFs may indeed be a
+valuable asset for real-world causal inference problems.
+9
+
+8
+Concluding remarks
+In this work, we have shown—both theoretically and empirically—that causal NFs are a natural
+choice to learn a broad class of causal data-generating processes in a principled way. Specifically, we
+have proven that causal NFs can match the observational distribution of an underlying SCM, and that
+in doing so the ANF needs to be causally consistent. However, as limited data availability and local
+optima may hamper reaching these solutions in practice, we have explored different network designs,
+exploiting the available knowledge on the causal graph. Moreover, we have provided causal NFs with
+a do-operator to efficiently solve causal inference tasks. Finally, we have empirically validated our
+findings, and demonstrated that our causal NF framework: i) outperforms competing methods; and
+ii) can deal with mixed data and partial knowledge on the causal graph.
+Practical limitations
+Despite considering a broad class of SCMs, we have made several assump-
+tions that, while being standard, may not hold in some application scenarios. With regard to our
+causal assumptions, the presence of unmeasured hidden confounders may break our causal sufficiency
+assumption; mismatches between the true causal graph (e.g., it may contain cycles) and our assumed
+graph/ordering may lead to poor estimates of interventional and counterfactual queries; and the
+non-bijective true causal dependencies may invalidate our theoretical and thus practical findings.
+Besides, we have focused on MLE estimation for learning the causal NF. However, MLE does not
+test the independency of the exogenous variables during training, which would also break our causal
+sufficiency assumption.
+Future work
+We firmly believe that our work opens a number of interesting directions to explore.
+Naturally, we would like to address current limitations by, e.g., using interventional data to address
+the existence of hidden confounders [14, 23], explore alternative losses other than MLE (e.g., flow
+matching [22]). Moreover, it would be exciting to see causal NFs applied to other problems such as
+causal discovery [11], fair decision-making [21], or neuroimaging [12], among others. However, we
+would like to stress that, in the above contexts, it would be essential to validate the suitability of our
+framework (e.g., using experimental data) to prevent potential harms.
+Acknowledgements
+We would like to thank Batuhan Koyuncu and Jonas Klesen for their invaluable feedback, as well as
+the anonymous reviewers whose feedback helped us improve this manuscript. This project is funded
+by DFG grant 389792660 as part of TRR 248 – CPEC. Pablo S´anchez Mart´ın thanks the German
+Research Foundation through the Cluster of Excellence “Machine Learning – New Perspectives
+for Science”, EXC 2064/1, project number 390727645 for generous funding support. The authors
+also thank the International Max Planck Research School for Intelligent Systems (IMPRS-IS) for
+supporting Pablo S´anchez Mart´ın.
+Bibliography
+[1] Christopher M Bishop and Nasser M Nasrabadi. Pattern recognition and machine learning,
+volume 4. Springer, 2006. (page 3)
+[2] Patrick Chao, Patrick Bl¨obaum, and Shiva Prasad Kasiviswanathan. Interventional and coun-
+terfactual inference with diffusion models. ArXiv preprint, abs/2302.00860, 2023. URL
+https://arxiv.org/abs/2302.00860. (page 1, 2, 29)
+[3] Silvia Chiappa. Path-specific counterfactual fairness. In The Thirty-Third AAAI Conference
+on Artificial Intelligence, AAAI 2019, The Thirty-First Innovative Applications of Artificial
+Intelligence Conference, IAAI 2019, The Ninth AAAI Symposium on Educational Advances in
+Artificial Intelligence, EAAI 2019, Honolulu, Hawaii, USA, January 27 - February 1, 2019,
+pages 7801–7808. AAAI Press, 2019. doi: 10.1609/aaai.v33i01.33017801. URL https:
+//doi.org/10.1609/aaai.v33i01.33017801. (page 9)
+[4] Djork-Arn´e Clevert, Thomas Unterthiner, and Sepp Hochreiter. Fast and accurate deep network
+learning by exponential linear units (elus). In Proc. of ICLR, 2016. URL http://arxiv.org/
+abs/1511.07289. (page 27)
+[5] Corinna Cortes and Vladimir Vapnik. Support-vector networks. Machine learning, 20(3):
+273–297, 1995. (page 9)
+10
+
+[6] David R Cox. The regression analysis of binary sequences. Journal of the Royal Statistical
+Society: Series B (Methodological), 20(2):215–232, 1958. (page 9)
+[7] G. Darmois. Analyse g´en´erale des liaisons stochastiques: etude particuli`ere de l’analyse
+factorielle lin´eaire. Revue de l’Institut International de Statistique / Review of the International
+Statistical Institute, 21(1/2):2–8, 1953. ISSN 03731138. URL http://www.jstor.org/
+stable/1401511. (page 4)
+[8] Dheeru Dua and Casey Graff.
+UCI machine learning repository, 2021.
+URL https://
+arxiv.org/abs/2103.04786. (page 1, 9, 29, 31)
+[9] Conor Durkan, Artur Bekasov, Iain Murray, and George Papamakarios. Neural spline flows.
+In Advances in Neural Information Processing Systems 32: Annual Conference on Neural
+Information Processing Systems 2019, NeurIPS 2019, December 8-14, 2019, Vancouver, BC,
+Canada, pages 7509–7520, 2019. URL https://proceedings.neurips.cc/paper/2019/
+hash/7ac71d433f282034e088473244df8c02-Abstract.html. (page 9, 28, 29)
+[10] Frederick Eberhardt and Richard Scheines. Interventions and causal inference. Philosophy of
+Science, 74(5):981–995, 2007. ISSN 00318248, 1539767X. URL http://www.jstor.org/
+stable/10.1086/525638. (page 7)
+[11] Tomas Geffner, Javier Antor´an, Adam Foster, Wenbo Gong, Chao Ma, Emre Kıcıman, Ajay
+Sharma, A. Lamb, Martin Kukla, Nick Pawlowski, Miltiadis Allamanis, and Cheng Zhang.
+Deep end-to-end causal inference.
+ArXiv preprint, abs/2202.02195, 2022.
+URL https:
+//arxiv.org/abs/2202.02195. (page 8, 9, 10, 27, 29)
+[12] Krzysztof Gorgolewski, Christopher Burns, Cindee Madison, Dav Clark, Yaroslav Halchenko,
+Michael Waskom, and Satrajit Ghosh. Nipype: A flexible, lightweight and extensible neuroima-
+ging data processing framework in python. Frontiers in Neuroinformatics, 5, 2011. ISSN 1662-
+5196. doi: 10.3389/fninf.2011.00013. URL https://www.frontiersin.org/articles/
+10.3389/fninf.2011.00013. (page 10)
+[13] Aapo Hyv¨arinen and Petteri Pajunen. Nonlinear independent component analysis: Existence
+and uniqueness results. Neural Networks, 12(3):429–439, 1999. ISSN 0893-6080. doi:
+https://doi.org/10.1016/S0893-6080(98)00140-3. URL https://www.sciencedirect.com/
+science/article/pii/S0893608098001403. (page 4)
+[14] Maximilian Ilse, Patrick Forr´e, Max Welling, and Joris M Mooij. Combining interventional
+and observational data using causal reductions. ArXiv preprint, abs/2103.04786, 2021. URL
+https://arxiv.org/abs/2103.04786. (page 10)
+[15] Amir-Hossein Karimi, Bodo Julius von K¨ugelgen, Bernhard Sch¨olkopf, and Isabel
+Valera.
+Algorithmic recourse under imperfect causal knowledge:
+a probabilistic ap-
+proach.
+In Advances in Neural Information Processing Systems 33:
+Annual Con-
+ference on Neural Information Processing Systems 2020, NeurIPS 2020, December 6-
+12, 2020, virtual, 2020.
+URL https://proceedings.neurips.cc/paper/2020/hash/
+02a3c7fb3f489288ae6942498498db20-Abstract.html. (page 1)
+[16] Ilyes Khemakhem, Ricardo Pio Monti, Robert Leech, and Aapo Hyv¨arinen. Causal autore-
+gressive flows. In The 24th International Conference on Artificial Intelligence and Statistics,
+AISTATS 2021, April 13-15, 2021, Virtual Event, volume 130 of Proceedings of Machine Learn-
+ing Research, pages 3520–3528. PMLR, 2021. URL http://proceedings.mlr.press/
+v130/khemakhem21a.html. (page 2, 8, 9, 23, 28, 29)
+[17] Diederik P. Kingma and Jimmy Ba. Adam: A method for stochastic optimization. In Proc. of
+ICLR, 2015. URL http://arxiv.org/abs/1412.6980. (page 24, 29)
+[18] Durk P Kingma, Tim Salimans, Rafal Jozefowicz, Xi Chen, Ilya Sutskever, and
+Max Welling.
+Improved variational inference with inverse autoregressive flow.
+In
+Advances in Neural Information Processing Systems, volume 29. Curran Associates,
+Inc., 2016. URL https://proceedings.neurips.cc/paper_files/paper/2016/file/
+ddeebdeefdb7e7e7a697e1c3e3d8ef54-Paper.pdf. (page 3)
+[19] Herbert Knothe. Contributions to the theory of convex bodies. Michigan Mathematical Journal,
+4:39–52, 1957. (page 4, 18)
+[20] Murat Kocaoglu, Christopher Snyder, Alexandros G. Dimakis, and Sriram Vishwanath. Causal-
+gan: Learning causal implicit generative models with adversarial training. In Proc. of ICLR.
+11
+
+OpenReview.net, 2018. URL https://openreview.net/forum?id=BJE-4xW0W. (page 1,
+2)
+[21] Matt J. Kusner, Joshua R. Loftus, Chris Russell, and Ricardo Silva. Counterfactual fair-
+ness. In Advances in Neural Information Processing Systems 30: Annual Conference on
+Neural Information Processing Systems 2017, December 4-9, 2017, Long Beach, CA, USA,
+pages 4066–4076, 2017. URL https://proceedings.neurips.cc/paper/2017/hash/
+a486cd07e4ac3d270571622f4f316ec5-Abstract.html. (page 9, 10)
+[22] Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matthew Le. Flow
+matching for generative modeling. In The Eleventh International Conference on Learning Rep-
+resentations, 2023. URL https://openreview.net/forum?id=PqvMRDCJT9t. (page 10)
+[23] Arash Nasr-Esfahany, MohammadIman Alizadeh, and Devavrat Shah. Counterfactual iden-
+tifiability of bijective causal models. ArXiv preprint, abs/2302.02228, 2023. URL https:
+//arxiv.org/abs/2302.02228. (page 1, 10)
+[24] George Papamakarios, Iain Murray, and Theo Pavlakou. Masked autoregressive flow for density
+estimation. In Advances in Neural Information Processing Systems 30: Annual Conference
+on Neural Information Processing Systems 2017, December 4-9, 2017, Long Beach, CA, USA,
+pages 2338–2347, 2017. URL https://proceedings.neurips.cc/paper/2017/hash/
+6c1da886822c67822bcf3679d04369fa-Abstract.html. (page 3, 8, 27, 28)
+[25] George Papamakarios, Eric T. Nalisnick, Danilo Jimenez Rezende, Shakir Mohamed, and Balaji
+Lakshminarayanan. Normalizing flows for probabilistic modeling and inference. J. Mach. Learn.
+Res., 22:57:1–57:64, 2021. URL http://jmlr.org/papers/v22/19-1028.html. (page 3,
+6, 16)
+[26] ´Alvaro Parafita and Jordi Vitri`a. Estimand-agnostic causal query estimation with deep causal
+graphs. IEEE Access, 10:71370–71386, 2022. doi: 10.1109/ACCESS.2022.3188395. (page 1,
+2)
+[27] Nick Pawlowski, Daniel Coelho de Castro, and Ben Glocker. Deep structural causal models for
+tractable counterfactual inference. In Advances in Neural Information Processing Systems 33:
+Annual Conference on Neural Information Processing Systems 2020, NeurIPS 2020, December
+6-12, 2020, virtual, 2020. URL https://proceedings.neurips.cc/paper/2020/hash/
+0987b8b338d6c90bbedd8631bc499221-Abstract.html. (page 1, 2)
+[28] J. Pearl. Causality. Cambridge University Press, 2009. ISBN 9781139643986. URL https:
+//books.google.de/books?id=LLkhAwAAQBAJ. (page 1, 2, 7)
+[29] Judea Pearl. Causal inference in statistics: An overview. 2009. (page 8)
+[30] Judea Pearl.
+The do-calculus revisited.
+In Proceedings of the Twenty-Eighth Con-
+ference on Uncertainty in Artificial Intelligence, Catalina Island, CA, USA, August
+14-18, 2012, pages 3–11. AUAI Press, 2012.
+URL https://dslpitt.org/uai/
+displayArticleDetails.jsp?mmnu=1&smnu=2&article_id=2330&proceeding_id=
+28. (page 6, 7, 21)
+[31] Murray Rosenblatt. Remarks on a multivariate transformation. The Annals of Mathematical
+Statistics, 23(3):470–472, 1952. ISSN 00034851. URL http://www.jstor.org/stable/
+2236692. (page 4, 18)
+[32] Pedro Sanchez and Sotirios A. Tsaftaris. Diffusion causal models for counterfactual estimation.
+In CLEaR, 2022. (page 2)
+[33] Edward H Simpson. The interpretation of interaction in contingency tables. Journal of the
+Royal Statistical Society: Series B (Methodological), 13(2):238–241, 1951. (page 8)
+[34] Pablo S´anchez-Martin, Miriam Rateike, and Isabel Valera. Vaca: Designing variational graph
+autoencoders for causal queries. Proceedings of the AAAI Conference on Artificial Intelligence,
+36(7):8159–8168, Jun. 2022. doi: 10.1609/aaai.v36i7.20789. URL https://ojs.aaai.org/
+index.php/AAAI/article/view/20789. (page 2, 5, 6, 8, 9, 23, 27, 28, 29)
+[35] Robert Tarjan. Depth-first search and linear graph algorithms. SIAM Journal on Computing,
+1(2):146–160, 1972. doi: 10.1137/0201010. URL https://doi.org/10.1137/0201010.
+(page 4, 17)
+[36] Julius von K¨ugelgen, Yash Sharma, Luigi Gresele, Wieland Brendel, Bernhard Sch¨olkopf,
+Michel Besserve, and Francesco Locatello. Self-supervised learning with data augmentations
+12
+
+provably isolates content from style. In Advances in Neural Information Processing Systems 34:
+Annual Conference on Neural Information Processing Systems 2021, NeurIPS 2021, December
+6-14, 2021, virtual, pages 16451–16467, 2021. URL https://proceedings.neurips.cc/
+paper/2021/hash/8929c70f8d710e412d38da624b21c3c8-Abstract.html. (page 5)
+[37] Julius Von K¨ugelgen, Abdirisak Mohamed, and Sander Beckers. Backtracking counterfactuals.
+In Conference on Causal Learning and Reasoning, pages 177–196. PMLR, 2023. (page 7)
+[38] Quanhan Xi and Benjamin Bloem-Reddy. Indeterminacy in generative models: Characterization
+and strong identifiability. In Proceedings of The 26th International Conference on Artificial Intel-
+ligence and Statistics, volume 206 of Proceedings of Machine Learning Research, pages 6912–
+6939. PMLR, 25–27 Apr 2023. URL https://proceedings.mlr.press/v206/xi23a.html.
+(page 4, 15, 16)
+[39] Kevin Xia, Yushu Pan, and Elias Bareinboim. Neural causal models for counterfactual identific-
+ation and estimation. ArXiv preprint, abs/2210.00035, 2022. URL https://arxiv.org/abs/
+2210.00035. (page 1)
+[40] Mengyue Yang, Furui Liu, Zhitang Chen, Xinwei Shen, Jianye Hao, and Jun Wang.
+Causalvae: Disentangled representation learning via neural structural causal models.
+In
+IEEE Conference on Computer Vision and Pattern Recognition, CVPR 2021, virtual,
+June 19-25, 2021, pages 9593–9602. Computer Vision Foundation / IEEE, 2021.
+doi:
+10.1109/CVPR46437.2021.00947.
+URL https://openaccess.thecvf.com/content/
+CVPR2021/html/Yang_CausalVAE_Disentangled_Representation_Learning_via_
+Neural_Structural_Causal_Models_CVPR_2021_paper.html. (page 1)
+[41] Matej Zeˇcevi´c, Devendra Singh Dhami, Petar Veliˇckovi´c, and Kristian Kersting. Relating graph
+neural networks to structural causal models. ArXiv preprint, abs/2109.04173, 2021. URL
+https://arxiv.org/abs/2109.04173. (page 2)
+13
+
+Appendix
+Table of Contents
+A Theory of causal normalizing flows
+15
+A.1
+Identifiability results . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+15
+A.2
+Extension to real-world settings . . . . . . . . . . . . . . . . . . . . . . . . . .
+15
+B
+The multiple representations of SCMs
+19
+B.1
+Illustrative example . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+19
+B.2
+Non-linear SCM representations . . . . . . . . . . . . . . . . . . . . . . . . . .
+20
+C Do-operator: interventions and counterfactuals
+21
+C.1
+Definition and algorithms . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+21
+C.2
+Interventions in previous works . . . . . . . . . . . . . . . . . . . . . . . . . .
+23
+D Experimental details and extra results
+24
+D.1 Ablation: Time complexity
+. . . . . . . . . . . . . . . . . . . . . . . . . . . .
+26
+D.2 Ablation: Base distribution
+. . . . . . . . . . . . . . . . . . . . . . . . . . . .
+27
+D.3 Ablation: Flow architecture . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+27
+D.4
+Comparison: Extra non-linear SCMs
+. . . . . . . . . . . . . . . . . . . . . . .
+28
+E
+Details on the fairness use-case
+29
+14
+
+A
+Theory of causal normalizing flows
+A.1
+Identifiability results
+First, we provide a more detailed explanation on the connection between the results from §3 and those
+from the work of Xi and Bloem-Reddy [38]. We consider it important to clarify that the definition of
+identifiability that we use is the same as [38, Def. 2]. Specifically, this definition is one better suited
+for deep learning models, which is concerned with recovering the variables u and one parametrization
+that perfectly matches the original generator. In other words, with this definition we aim to recover
+one parametrization of a neural network which provides the generator function, but not the exact
+parametrization of the generator that generated the data.
+We also want to clarify that Thm. 1 from the main paper corresponds to [38, Prop. 5.2], which we
+rewrote (without changing its content) to plain English and to match our particular setting. We now
+provide the proof for Cor. 2:
+Corollary 2 (Causal consistency). If a causal NF Tθ isolates the exogenous variables of an SCM
+M, then ∇xTθ(x) ≡I −A and ∇uT −1
+θ (u) ≡I + Pdiam(A)
+n=1
+An, where A is the causal adjacency
+matrix of M. In other words, Tθ is causally consistent with the true data-generating process, M.
+Proof. Assume that we have a flow Tθ that does indeed isolate the exogenous variables, meaning
+that the i-th output of the flow, Tθ(x)i, is related with the true exogenous variable, ui, by an invertible
+function that only depends on it.
+As explained in §3, this means that for a variable u ∼PM, we have that Tθ(f(u)) ∼Pθ and
+Tθ(f(u)) = h(u) = (h1(u1), h2(u2), . . . , hd(ud)).
+But we know the true generator, whose i-th exogenous variable is given by ui = f −1
+i
+(xpai, xi) (the
+inverse of fi w.r.t ui) and, putting all together,
+Tθ(x)i = hi(ui) = hi(f −1
+i
+(xpai, xi)) ,
+(9)
+which is a function of only the parents of xi and xi itself.
+If we call u = f −1(x) := (f −1
+1 (xpa1, x1), f −1
+2 (xpa2, x2), . . . , f −1
+d (xpad, xd)) the inverse of the
+SCM M that writes u as a function of x (see App. B for an example), then it is clear that
+∇xTθ(x) = ∇x(h ◦f −1)(x) = ∇uh(u) · ∇xf −1(x) = D · ∇xf −1(x) ≡I −A ,
+(10)
+where D is a diagonal matrix and A the adjacency matrix of the causal graph induced by M.
+Similarly, T −1
+θ (h(u)) = x = f(u) and T −1
+θ (h(u))i = xi = fi(uani, ui), which again implies that:
+∇˜uT −1
+θ (˜u) ≡(I −A)−1 = I +
+diam(A)
+X
+n=1
+An ,
+(11)
+where we call ˜u = h(u) the variable u recovered by Tθ, and where we have omitted h as its Jacobian
+matrix is diagonal. Note that the infinite sum above vanishes at n = diam A since A is triangular
+with diagonal zero.
+Q.E.D.
+A.2
+Extension to real-world settings
+A.2.1
+Discrete data
+In this section, we describe how to extend the results presented in the main text for the case where
+one observed variable, xi, is discrete. To this end, we restate the more general data-generative process
+assumed by Xi and Bloem-Reddy [38], which we used for the theoretical part of the manuscript.
+Following the notation of the manuscript, say that we have a data-generating process without
+recursions, that is, we have a function f that maps u to x. Let us assume, without loss of generality,
+that only the i-th observed variable is discrete, and let us focus on the way this variable is generated,
+dropping the subindex i along the way to avoid clutter. Now, Xi and Bloem-Reddy [38] additionally
+15
+
+consider the existence of a fixed noise distribution Pε and mechanism g, such that the observed
+variable xi is generated as,
+u := (u1, u2, . . . , ud) ∼Pu ,
+ε ∼Pε ,
+xi = g(fi(uani, ui), ε) ,
+(12)
+with ε⊥⊥u, and where they study the noiseless case under the following assumption: if for two
+generative processes with εa
+d= εb, then g(fi(ua), εa)
+d= g(fi(ub), εb) if and only if fi(ua)
+d= fi(ub),
+where
+d= denotes equal in distribution.
+Just as we do with the rest of variables, we also make the assumption that the observed variable
+˜xi is the transformation of a continuous exogenous variable, ui, with a function ˜fi that fulfils
+our assumptions (i.e., that ˜fi is a diffeomorphism) that has undergone a quantization process, i.e.,
+xi = fi(uani, ui) := ⌊˜fi(uani, ui)⌋. Therefore, it is clear that fi is no longer bijective, as we are
+clamping real numbers into integers, and that the observational distribution of xi is discrete.
+We take advantage of the noise assumption above, and dequantize the observed variable xi by
+assuming an additive noise mechanism such that xi := fi(uani, ui) + ε, with ε distributed between
+the unit interval with any continuous distribution (we take in our experiments Pε = U(0, 1)). With this
+process: i) we have made ˜xi again a continuous random variable, as the sum of independents discrete
+and continuous random variables is a continuous random variable; and ii) the original distribution of
+the noiseless observed variables is always recoverable P(˜xi = c) = P(c ≤xi ≤c + 1).
+More importantly, all the theoretical insights from the work of Xi and Bloem-Reddy [38] can still be
+used, working with the noisy case rather than the noiseless one. Indeed, as for their analysis they
+assume a single u in the domain of the generator, we can merge the generator and noise mechanism
+g ◦fi : R →R (rather than g ◦fi : R×[0, 1] →R), by mapping the non-injective part of u to ε itself,
+i.e., by using the function (g ◦fi)(uani, ui) = ⌊˜fi(uani, ui)⌋+ F −1
+ε
+( ˜fi(uani, ui) −⌊˜fi(uani, ui)⌋),
+where F −1
+ε
+is the quantile function of Pε. This new function is a diffeomorphism almost everywhere,
+as it is a composition of a.e. diffeomorphisms, and we have effectively replaced the noise variable
+by the floating part of ˜fi(uani, ui) before quantization. Moreover, note that if the noise is uniformly
+distributed, Pε = U(0, 1), we have that g ◦fi = ˜fi (if xi were discretized by taking its integer part).
+In short, by adding noise to discrete variables while keeping them recoverable, we can learn a mapping
+between continuous variables that learns a version of the generator function before the observed
+values were somehow discretized. Importantly, the observed discrete distribution is always recover-
+able, independently of whether we learn the (unknown and unrecoverable) underlying continuous
+distribution before being discretized.
+A.2.2
+Partial knowledge
+In this section, we explain how to expand our framework to settings in which we have partial
+information about the causal graph of M. That is, we know the causal ordering π (so we know that
+half of the causal relationships, the upper diagonal), and we are certain about some other causal
+relationships (edges on A), but not all of them.
+To this end, first let us first introduce the way we deal with partial knowledge, and then clarify the
+theoretical implications that it has with respect to the theory introduced in §5.
+The method
+Similar to §4, let us motivate the method with an illustrative example. Suppose that
+we are given an SCM such as the one in Fig. 6a, where we know all relationships but the one between
+x2 and x3. Note that, in this case, we lack even information about the causal ordering. Indeed, there
+are three possible outcomes: i) the edge x2 →x3 could exist (Fig. 6b); ii) the edge x3 →x2 could
+exist (Fig. 6c); or iii) both could exist simultaneously (Fig. 6d), and hence there is a confounder
+between them. However, we do not know which of the three options is the correct one.
+Let us switch now to Fig. 7. To solve the original problem (Fig. 7a, one natural approach is to
+group the nodes with unknown relationships—assuming that all unknown edges may exist—and
+maximize the observed likelihood (Fig. 7b). This, effectively, is equivalent to applying an ANF to
+the known relationships, and using a general-Jacobian NF to learn the joint of the block variables.
+However, if we want to keep using exclusively ANFs (Fig. 7c), we can learn the joint distribution
+within the blocks with an ANF using a fixed ordering (which it can always do, as it is a universal
+density approximator [25]). The only subtle detail here is that, in that case, we need to increase the
+16
+
+
+
+
+0
+0
+0
+0
+1
+0
+?
+0
+1
+?
+0
+0
+0
+1
+0
+0
+
+
+
+
+
+
+0
+0
+0
+0
+1
+0
+0
+0
+1
+1
+0
+0
+0
+1
+0
+0
+
+
+
+
+
+
+0
+0
+0
+0
+1
+0
+1
+0
+1
+0
+0
+0
+0
+1
+0
+0
+
+
+
+
+
+
+0
+0
+0
+0
+1
+0
+1
+0
+1
+1
+0
+0
+0
+1
+0
+0
+
+
+
+x3
+x1
+x2
+x4
+?
+(a) Partial knowledge.
+x3
+x1
+x2
+x4
+(b) Option 1.
+x3
+x1
+x2
+x4
+(c) Option 2.
+x3
+x1
+x2
+x4
+(d) Option 3.
+Figure 6: Example of an SCM with partial knowledge about the causal graph (a) and possible
+outcomes: (b) in the actual SCM only the edge x2 →x3 exists; (c) only the edge x3 →x2 exists; (d)
+both edges exist (and therefore there exists a confounder between them).
+
+
+
+0
+0
+0
+0
+1
+0
+?
+0
+1
+?
+0
+0
+0
+1
+0
+0
+
+
+
+
+
+
+0
+0
+0
+0
+1
+0
+1
+0
+1
+1
+0
+0
+0
+1
+0
+0
+
+
+
+
+
+
+0
+0
+0
+0
+1
+0
+0
+0
+1
+1
+0
+0
+0
+1
+1
+0
+
+
+
+x3
+x1
+x2
+x4
+?
+(a) Partial-knowledge SCM.
+x3
+x1
+x4
+x2
+(b) Solved with a general NF.
+x3
+x1
+x4
+x2
+(c) Solved with an ANF.
+Figure 7: Illustrative example (same as in Fig. 6) applying our method for partial information. First,
+we apply Tarjan’s algorithm [35] to find the SCCs of the graph (rectangles) and build a new DAG
+where each node is a subset of the original nodes. If, for the SCCs, we use an NF with a general
+Jacobian matrix (b), we keep the individual edges and treat each SCC as a block. If we instead use an
+ANF (c), we pick an arbitrary order within each SCC, and merge the individual edges into SCC-wide
+edges. Red represents intra-SCC edges, and green inter-SCC edges. See App. A.2.2 for more details.
+granularity of all inter-block edges from node- to block-wise relationships, assuming that an edge
+exists if it exists for at least one of the elements of the block. To see why this is necessary, assume
+that the real graph of the example is Fig. 6c, yet we use an ANF with the ordering π = (1 2 3 4) and
+the graph A without inter-block modifications (i.e., the adjacency matrix of Fig. 6b). In that case, we
+would have that x4 depends on x3 through x2. However, a causally consistent NF w.r.t. A would not
+be able to model that dependency, and thus x4 would depend on u1, u2, and u4 but not on u3. With
+this approach, the ANF can model every case from Fig. 6, and it would need to remove the extra
+spurious relationships through optimization.
+Therefore, to reuse our existing results from §5, the method that we have adopted is the one from
+Fig. 7c, which can be described in the following steps:
+1. Run Tarjan’s algorithm [35] to group all nodes by their SCCs (note that, unlike in the given
+example, there could be more than one cluster of unknown relationships).
+2. Choose an ordering that is consistent with the known inter-SCC edges, fixing the edges within the
+SCCs.
+3. Move from node-edges to SCC-edges. In practice, this means introducing edges between every
+pair of edges of two SCCs, if there exists at least one edge between them.
+4. Solve the MLE problem with an ANF as in the main manuscript.
+The theory
+Very conveniently, the method described above fits almost-perfectly into the already-
+covered theory in §3. To see this, note that our identifiability theory and following results required
+a fixed ordering, but it does not need to be the causal one: we can always find an equivalent SCM
+following the selected ordering by applying KR transports as described in §3. Therefore, the technical
+17
+
+implications of both Thm. 1 and Cor. 2 still apply to this fixed ordering, we only need to re-state their
+implications with respect to the true causal data-generating process M.
+To this end, we only need to note that all possible graphs, once reduced into a DAG using the partition
+of SCCs (as in Fig. 7c), are exactly equal. In other words, every possible graph shares the same
+causal dependencies between SCCs with the other possible graphs. If we start treating them like
+block, calling {xi} ⊂Si ⊂{1, 2, . . . , d} the SCC of the i-th node, and paSi and anSi the parents
+and ancestors of every node in the SCC Si, then it is clear that we can write for every graph ˜
+A
+its observed variables as xi = ˜fi(xpaSi, ˜uSi) and, more importantly, we can write its “exogenous”
+variables as a function of the true ones, i.e., ˜uSi = KR(uSi), where KR is the Kn¨othe-Rosenblatt
+transport [19, 31]. Note also that it does not depend on the data, i.e., ˜uSi⊥⊥x|uSi.
+Theorem 3 (Identifiability – Partial knowledge). If an element of F × Pu, and another from ˜F × Pu,
+where F and ˜F are TMI maps with different intra-SCC orders (see above), generate the same
+observational distribution, then the two processes differ by an invertible, SCC-wise transformation of
+the variables u.
+Proof. Call M and ˜
+M the elements from F × Pu and ˜F × Pu, respectively.
+W.l.o.g. pick M, and apply a KR transport to write it down as another element of ˜F × Pu, call it ˆ
+M,
+with identical observational distribution as both M and ˜
+M.
+Using Thm. 1, we know that the elements of ˜
+M and ˆ
+M differ by an invertible, component-wise
+transformation h. Moreover, we can write ˆuSi as a function of uSi, as argued above, where
+{i} ⊂Si ⊂{1, 2, . . . , d} are the indexes of the SCC that contains ui. Putting it all together:
+˜ui = hi(ˆui) = hi(KRi(uSi)) ,
+(13)
+and, in vectorial form, for each SCC Si,
+˜uSi = hSi(KRSi(uSi)) = (hSi ◦KRSi)(uSi)
+(14)
+Q.E.D.
+Corollary 4 (Causal consistency – Partial knowledge). If a causal NF Tθ, with partial knowledge
+of the causal graph, SCC-wise isolates the exogenous variables of an SCM M, then Tθ is causally
+consistent with the true data-generating process, M, with respect to each SCC.
+Proof. The proof is identical to the one for Cor. 2, but using arguments with respect to the reduced
+graph after grouping all nodes in their respective SCCs.
+Specifically, we can write using Thm. 3 the output of the flow as a function of the exogenous variables,
+Tθ(x)i = h(uSi), and using the true causal generator, we have
+Tθ(x)i = h(uSi) = h(fSi(xpaSi, xSi)) ,
+(15)
+and hence the gradients agree with those from M, when looking at the reduced graph.
+Q.E.D.
+Thm. 3 and Cor. 4 provide analogues to those results from the main manuscript. It is important to
+note, however, that causal consistency refers to the causal relationships between SCCs as a whole, i.e.,
+not at the causal relationships between individual nodes. The reason behind this is the same as why
+we had to introduced spurious edges in Fig. 7c: as we fix an ordering within each SCC, we may not be
+able to model indirect dependencies of nodes of one SCC to another unless we artificially introduce
+shortcuts. As such, every result from the main paper holds, if we treat each SCC (or block) as a whole.
+That is, when we reason about SCCs instead of individual nodes (note that if the whole causal graph
+is known every SCC contains a single node), we can safely talk about SCC-identifiability, causal
+SCC-consistency, and we can perform interventions and compute counterfactuals on SCCs.
+18
+
+x = Gx + Iu
+x = G3(G2(G1u))
+x = (G2+G+I)u
+u = (I −G)x
+u
+x
+1
+2
+1
+3
+1
+(a) Recursive.
+u
+x
+1
+0
+2
+1
+0
+1
+1
+0
+0
+1
+3
+1
+1
+1
+1
+(b) Unrolled.
+u
+x
+1
+2
+6
+1
+3
+1
+(c) Compacted.
+u
+x
+1
+−2
+1
+−3
+1
+(d) Inverted.
+Figure 8: Example of the linear SCM {x1:=u1 ; x2:=2x1+u2 ; x3:=3x2+u3} written (a) in its usual recursive
+formulation; (b) without recursions, with each step made explicit; (c) without recursions, as a single
+function; and (d) writing u as a function of x. The red dashed arrows show the influence of u1 on x3
+for all equations from u to x, with the compacted version exhibiting shortcuts (see §4). Note that in
+the linear case we have A := G ̸= 0, and that G1, G2, G3 ⪯G + I are any three matrices such
+that their product equals G2 + G + I.
+B
+The multiple representations of SCMs
+B.1
+Illustrative example
+In this section, we delve a bit deeper into the illustrative example from the main paper (§4), and write
+down the maths to understand how are these different models equivalent. For convenience to the
+reader, we have replicated Fig. 4 in the appendix as Fig. 8.
+Recursive SCM
+As explained in the manuscript, the usual way of describing an SCM M is by
+providing its recursive equations. In our example (Fig. 8a), we have a linear SCM of the form
+
+
+
+x1 = u1
+x2 = 2x1 + u2
+x3 = 3x2 + u3
+,
+(16)
+which we can compactly write as x = Gx + Iu. However, the recursive equations are not the most
+convenient ones, as they entail solving the system iteratively according to its causal dependencies.
+Unrolled SCM
+Instead, we can write the equations as a function from u to x directly. To do this,
+we can proceed and unroll the equations:
+
+
+
+x1 = u1
+x2 = 2x1 + u2
+x3 = 3x2 + u3
+⇒
+
+
+
+x1 = u1
+x2 = 2u1 + u2
+x3 = 3(2x1 + u2) + u3
+⇒
+
+
+
+x1 = u1
+x2 = 2u1 + u2
+x3 = 3(2u1 + u2) + u3
+,
+(17)
+which we can write as a multi-step function:
+
+
+
+z1
+1 = u1
+z1
+2 = u2
+z1
+3 = u3
+⇒
+
+
+
+z2
+1 = z1
+1
+z2
+2 = 2z1
+1 + z1
+2
+z2
+3 = z1
+3
+⇒
+
+
+
+x1 = z2
+1
+x2 = z2
+2
+x3 = 3z2
+2 + z2
+3
+,
+(18)
+that we can once again compactly write as a series of linear operations x = G3(G2(G1u)). Note
+that the matrices G1, G2, G3 are not unique, and that they are valid as long as they are at most as
+sparse as G, and produce the same final output.
+Compacted SCM
+Another natural step here is to compress this sequence of linear equations into a
+single operation. That is, use directly the linear operation described at the end of Eq. 17:
+
+
+
+x1 = u1
+x2 = 2u1 + u2
+x3 = 6u1 + 3u2 + u3
+.
+(19)
+19
+
+And we can derive the same result in vectorial form:
+x = Gx + Iu ⇒x = G(Gx + Iu) + Iu ⇒x = G(G(Gx + Iu) + Iu) + Iu ⇒
+x = 
+>0
+G3x + G2u + Gu + Iu = (G2 + G + I)u .
+Unfortunately, as described in §4, in this form we cannot longer distinguish indirect paths: we have
+collapsed all paths into direct paths. Even worse, if there were more than one path between two given
+nodes, we have combined their contributions into a single path, making it quite difficult to disentangle.
+This effect can be seen as analogous to the common process in cryptography for sharing secrets: if
+you have two primes (paths), it is fairly easy to multiply them and obtain their product, but if you
+have their product (collapsed paths), performing prime factorization of the number is prohibitive.
+Inverted SCM
+Finally, we can take any of these different representations and invert the equations
+to go from x to u. In this case, it is easier to work with the original equations:
+
+
+
+x1 = u1
+x2 = 2x1 + u2
+x3 = 3x2 + u3
+⇒
+
+
+
+u1 = x1
+u2 = x2 −2x1
+u3 = x3 −3x2
+,
+(20)
+and, in vectorial form:
+x = Gx + Iu ⇒u = (I −G)x .
+(21)
+As discussed in the main manuscript, this turns out to be a really convenient SCM representation to
+work with, as we can obtain the exogenous variables in one go while being causally consistent.
+B.2
+Non-linear SCM representations
+In this section, we discuss how the same representation and reasoning about the causal relationships
+of a linear SCM from App. B.1 can be to the general case.
+To this end, assume that we have a non-linear SCM M of the form x = ˜f(x, u) where, to ease the
+reader, imagine that it has the same causal graph as the linear example, so that the reader can use
+Fig. 8 as a reference again, i.e., assume that
+
+∇x˜f(x, u) ̸= 0
+
+=
+ 0
+0
+0
+1
+0
+0
+0
+1
+0
+!
+and
+
+∇u˜f(x, u) ̸= 0
+
+=
+ 1
+0
+0
+0
+1
+0
+0
+0
+1
+!
+,
+(22)
+where 0 is the constant zero function with the same domain and codomain as the Jacobian matrices.
+Recursive SCM
+Already extensively discussed. This is the representation an SCM is given as.
+Unrolled SCM
+Just as before, we can unroll the equations by having multiple functions zl =
+fl(zl−1), and in each one we unroll those equations for which we already know the non-recursive
+equation of its parents, leaving all the other fixed (identity functions). As before, we can write these
+multiple layers in different ways, as long as they produce the same final function (after composing
+them, f1 ◦f2 ◦· · · ◦fL = f), and that they respect the causal dependencies provided by I + A. This
+is similar to the linear example, and what we used to design the generative model in Eq. 5 of §4.
+Collapsed SCM
+Just as before, we can expand all the different layers and write a (probably complex)
+formula that encompasses all changes in a single step. It is easy to show that the composition of these
+functions has, in general, a Jacobian matrix structurally equivalent to I + Pdiam(A)
+l
+Al. Specifically,
+their composition will be of the form Q
+l(I + A).
+Reverse SCM
+Since we assume that each ˜fi(xpai, ui) is bijective with respect to ui, we can always
+compute its inverse to obtain ui as a function of the observed values, ui = ˜f −1
+i
+(xpai, xi). Clearly, its
+Jacobian matrix will be structurally equivalent to I + A ≡I −A.
+Therefore, we can always reason as we did with the linear case, but using Jacobian matrices to talk
+about causal dependencies between variables, and possibly having a complex and/or non-closed
+formulation of the generative/abductive functions.
+20
+
+C
+Do-operator: interventions and counterfactuals
+C.1
+Definition and algorithms
+In this section, we extend on the do-operator implementation described in §5, and provide the
+step-by-step algorithms to perform interventions (Alg. 1) and compute counterfactuals (Alg. 2).
+Semantics
+Recalling §5, the do-operator [30], denoted as do(xi = α), is defined as a mathematical
+operator that simulates a physical intervention on an SCM M, inducing an alternative model MI
+that fixes the observational value xi = α, and thus removes any causal dependency on xi. However,
+the definition does not describe the specifics on how to implement such an operation.
+Usual implementation
+Traditionally, we are given the recursive representation of an SCM (Fig. 8a),
+as discussed in App. B. As such, the do-operator do(xi = α) is usually carried out by replacing the i-th
+equation, i.e., the i-th component of˜f, with a constant function. That is, by doing ˜f I
+i := α. This yields
+an intervened SCM MI = (˜f I, Pu) reflecting the data-generating process after such an intervention.
+Unfortunately, this implementation of the do-operator is quite specific to the recursive representation
+of the SCM (Fig. 4a), and does not translate well to the other equivalent representations discussed in
+§4 and App. B. The reason for this is that these representations compute the observational values
+x as a vector function of u, without the iterative sampling process that goes through the intervened
+value that we replace. The only exception is the abductive model with knowledge on the causal graph
+and L = 1 (see §4), as it corresponds to the exact same case of Fig. 8d. If we have L > 1 however,
+whether this implementation works or not comes down to the specific implementation to compute the
+inverse of the network.
+Proposed implementation
+As discussed in §4, we instead propose to manipulate the SCM by
+modifying the exogenous distribution Pu, while keeping the causal generator ˜f untouched. Specific-
+ally, an intervention do(xi = α) updates Pu, to have positive density mass on only those values
+that, when transformed to endogenous variables, the intervened variable yields the intervened value,
+xi = α, while keeping the rest of distributions unaltered.
+In other words, we define the intervened SCM as MI = (˜f, P I
+u ), where the density of the updated
+distribution P I
+u is of the form
+pI(u) ∝p(u) · δ{˜fi(x,u)=α}(u) ,
+(23)
+and where the distributions of the rest of variables remain the same. Using the acyclic assumption,
+we know that the only way of altering the value of xi without altering those of its parents is through
+ui and, using the causal sufficiency assumption, we can squeeze the Dirac delta directly in the
+distribution of the i-th exogenous variable, such that:
+pI(u) = pI
+i (ui|uj̸=i) ·
+Y
+j̸=i
+pj(uj) ,
+with
+pI
+i (ui|uj̸=i) ∝pi(ui) · δ{˜fi(x,u)=α}(u) .
+(24)
+In the case we consider, where all the generators are bijective given the parent nodes, the set
+δ{˜fi(x,u)=α}(u) contains a single element, and therefore in the main paper we simply write the i-th
+density as pI
+i (ui|uj̸=i) = δ{˜fi(x,u)=α}(u). Note, as discussed in the main paper, that the density at
+this point should be positive, in other words, the element that yields α (and therefore α) should be a
+plausible value.
+Since this implementation does not make any assumption at all in the functional form of the generator,
+but directly works on the distribution of the exogenous variables, it can be implemented on any SCM
+representation (see Fig. 8 in App. B.1) and, hence, on any of the architectures for the causal NF in §4.
+Notice, however, that in order to properly work, that the data-generative process should be causally
+consistent (so that changes are properly propagated), and that it should properly isolate u (so that ui
+accounts only for the stochasticity of xi not explained by its parents).
+Algorithms
+The step-by-step algorithms to perform interventions and compute counterfactuals,
+using the described algorithm, are presented in Alg. 1 and Alg. 2, respectively. It follows the same
+description as the one given at the end of §5, and the only difference between both algorithms is the
+way that we obtain samples from the observed distribution (generated vs. given).
+21
+
+Algorithm 1 Algorithm to sample from the interventional distribution, P(x | do(xi = α)).
+1: function SAMPLEINTERVENEDDIST(i, α)
+2:
+u ∼Pu
+3:
+x ←T −1
+θ (u)
+▷Sample a value from the observational distribution.
+4:
+xi ←α
+▷Set xi to the intervened value α.
+5:
+ui ←Tθ(x)i
+▷Change the i-th value of u.
+6:
+x ←T −1
+θ (u)
+7:
+return x
+▷Return the intervened sample.
+8: end function
+Algorithm 2 Algorithm to sample from the counterfactual distribution, P(xcf | do(xi = α), xf).
+1: function GETCOUNTERFACTUAL(xf, i, α)
+2:
+u ←Tθ(xf)
+▷Get u from the factual sample.
+3:
+xf
+i ←α
+▷Set xi to the intervened value α.
+4:
+ui ←Tθ(xf)i
+▷Change the i-th value of u.
+5:
+xcf ←T −1
+θ (u)
+6:
+return xcf
+▷Return the counterfactual value.
+7: end function
+Theoretical results
+Here, we briefly discuss way this method works, i.e., why the proposed
+implementation removes every dependency from the descendants with respect to the ancestors that
+go through the intervened value, as it is not directly obvious.
+To see why, take the usual recursive representation of an SCM in the illustrative example from
+App. B.1 (Fig. 8a), and assume that we do do(x2 = α), where x2 = 2x1 + u2 in this example. By
+updating the density p2(u2), we have basically fixed the value of u2 to be the only one that keeps
+x2 = α given x1, i.e., u2 = α −2x1 (this can be clearly seen in Fig. 8d). If we now compute the
+dependency of x3 on x1, we get
+d x3
+d x1
+= ∂x3
+∂x2
+d x2
+d x1
+= ∂x3
+∂x2
+∂x2
+∂x1
++ ∂x2
+∂u2
+d u2
+d x1
+
+= ∂x3
+∂x2
+(2 + 1 · (−2)) = 0 .
+(25)
+In layman’s terms, the value of u2 is chosen such that it fixes the value of α, countering any influence
+that the parents could have on x2 (or any of its intermediate values), and consequently in any of its
+descendants.
+The general case can be similarly proven. Suppose that we do do(x2 = α), and that we want to
+compute the indirect influence of an ancestor, x1, on a descendant, x3, passing through x2. Since we
+are fixing the value of u2 (the input of the network) to produce an observed value x2 (the output of
+the network) of α, we can use implicit differentiation to compute the influence of u1 (and therefore
+x1) on x2 via u2:
+α = x2(u1, u2)
+d u1
+==⇒0 = ∂x2
+∂u1
++ ∂x2
+∂u2
+d u2
+d u1
+⇒∂x2
+∂u2
+d u2
+d u1
+= −∂x2
+∂u1
+,
+(26)
+and, similar to Eq. 25, any indirect influence of the ancestor, u1, on the descendant, x3, through this
+intermediate variable, x2, cancels out:
+∂x3
+∂x2
+d x2
+d u1
+= ∂x3
+∂x2
+∂x2
+∂u1
++ ∂x2
+∂u2
+d u2
+d u1
+
+= ∂x3
+∂x2
+· 0 = 0 .
+(27)
+We have proven this result not only theoretically, but also empirically through the accurate inter-
+ventions computed for all the experiments from §6 and App. D. Moreover, this lack of correlation
+between ancestors and descendants through the intervened variables is clearly shown in pair plots
+such as the ones in Figs. 12 and 13.
+22
+
+C.2
+Interventions in previous works
+We now put our implementation of the do-operator (see §5 and App. C) into context, by describing
+how the methods compared in §6, namely CAREFL [16] and VACA [34], proposed to perform
+interventions with their models.
+CAREFL [16]
+Two different algorithms were proposed to sample from an interventional distribu-
+tion in CAREFL: i) a sequential algorithm which mimics the usual implementation of the do-operator
+with the recursive representation of the SCM; and ii) a parallel algorithm that samples the counter-
+factual in a single call. While the first algorithm works, the parallel one—which is the one actually
+implemented—only works when intervening on root nodes.
+This second algorithm for do(x2 = α) is described as follows (see Alg. 2 in [16]): i) sample u from
+Pu; ii) set ui to the i-th value obtained by applying the flow, Tθ, to an observation with xi = α and
+xj = 0 for j ̸= i; and iii) return the value obtained by T −1
+θ
+with u.
+While this algorithm resembles the one we proposed, the proposed method does not have into account
+that the value of ui to fix α does depend on the observed values of its parents, which is clear by looking
+at the linear illustrative example from Fig. 8d. As a consequence, the algorithm only works when the
+node has no parents, which is why we replaced it by the one we proposed for the comparisons in §6
+and App. D.
+VACA [34]
+Based on GNNs, the approach for intervening on VACA is completely reminiscent to
+the traditional implementation. Specifically, the authors propose to sever those edges in every layer
+of the GNN whose endpoints fall in the path generating the intervened variable, so that the ancestors
+have no way to influence it by design.
+While the previous statement is true: ancestors cannot influence the intervened variable nor its
+descendants, here we argue that this process would require us to “recalibrate” the model, as the
+middle computations after an intervention change in more complex ways than removing the ancestors
+from the equation, while keeping the rest unchanged.
+To see this, consider the following non-linear triangle SCM:
+
+
+
+
+
+x1 = u1
+x2 = x2
+1u2
+x3 = 2x1 + x2
+x1 + x2
+x2
+1 + u3
+(28)
+which VACA could learn with two layers through the following operations:
+
+
+
+z1 = u1
+z2 = u1u2
+z3 = u1 + u2 + u3
+
+
+
+x1 = z1
+x2 = z1z2
+x3 = z1 + z2 + z3
+.
+(29)
+Now, if we were to intervene with do(x2 = α), the real SCM would yield:
+
+
+
+
+
+x1 = u1
+x2 = α
+x3 = 2x1 + α
+x1 + α
+x2
+1 + u3
+(30)
+while VACA would yield:
+
+
+
+z1 = u1
+z2 = α
+z3 = u1 + α + u3
+
+
+
+x1 = z1
+x2 = α
+x3 = z1 + α + z3
+⇒
+
+
+
+x1 = u1
+x2 = α
+x3 = 2x1 + 2α + u3
+,
+(31)
+where we can clearly see that the expression for x3 is different. In contrast, our causal NF would keep
+the generator as it is, and set u2 to α/x2
+1, yielding the correct value.
+23
+
+D
+Experimental details and extra results
+In this section, we complement the description of the experimental section from §6, and provide the
+reader with additional results in the following subsections. First, we describe the details common to
+every experiment, and delve into the specifics of each experiment in their respective subsections.
+Hardware
+Every individual experiment shown in this paper ran on a single CPU with 8 GB of
+RAM. To run all experiments, we used a local computing cluster with an automatic job assignment
+system, so we cannot ensure the specific CPU used for each particular experiment. However, we
+know that every experiment used one of the following CPUs picked randomly given the demand when
+scheduled: AMD EPYC 7702 64-Core Processor, AMD EPYC 7662 64-Core Processor, Intel(R)
+Xeon(R) CPU E5-2698 v4 @ 2.20GHz, or Intel(R) Xeon(R) CPU E5-2690 v4 @ 2.60GHz.
+Training and evaluation methodology
+For every experiment, we generated with using synthetic
+SCM a dataset with 20 000 training samples, 2500 validation samples, and 2500 test samples. We
+ran every model for 1000 epochs, and the results shown in the manuscript correspond to the test set
+evaluation at the last epoch. For the optimization, we used Adam [17] with an initial learning rate
+of 0.001, and reduce the learning rate with a decay factor of 0.95 when it reaches a plateau longer
+than 60 epochs. For hyperparameter tuning, we always perform a grid search with similar budget,
+and select the best hyperparameter combination according to validation loss, reporting always results
+from the test dataset in the manuscript. Every experiment is repeated 5 times, and we show averages
+and standard deviations.
+Datasets
+This section provides all the information of the SCMs employed in the empirical evaluation
+of §6 of the main paper, and the following subsections. The exogenous variables always follow a
+standard normal distribution N(0, 1), except for LARGEBD, where a uniform distribution U(0, 1)
+is used instead. Subsequently, we define the 12 SCMs employed—encompassing both linear and
+non-linear equations—and we additionally provide their causal graph in Fig. 9.
+Let us first define the softplus operation as s(x) = log (1.0 + ex).
+3-CHAINLIN:
+˜f1(u1) = u1
+(32)
+˜f2(x1, u2) = 10 · x1 −u2
+(33)
+˜f3(x2, u3) = 0.25 · x2 + 2 · u3
+(34)
+3-CHAINNLIN:
+˜f1(u1) = u1
+(35)
+˜f2(x1, u2) = ex1/2 + u2/4
+(36)
+˜f3(x2, u3) = (x2 −5)3
+15
++ u3
+(37)
+4-CHAINLIN:
+˜f1(u1) = u1
+(38)
+˜f2(x1, u2) = 5 · x1 −u2
+(39)
+˜f3(x2, u3) = −0.5 · x2 −1.5 · u3
+(40)
+˜f4(x3, u4) = x3 + u4
+(41)
+5-CHAINLIN:
+˜f1(u1) = u1
+(42)
+˜f2(x1, u2) = 10 · x1 −u2
+(43)
+˜f3(x2, u3) = 0.25 · x2 + 2 · u3
+(44)
+˜f4(x3, u4) = x3 + u4
+(45)
+24
+
+˜f5(x4, u5) = −x4 + u5
+(46)
+COLLIDERLIN:
+˜f1(u1) = u1
+(47)
+˜f2(u2) = 2 −u2
+(48)
+˜f3(x1, x2, u3) = 0.25 · x2 −0.5 · x1 + 0.5 · u3
+(49)
+FORKLIN:
+˜f1(u1) = u1
+(50)
+˜f2(u2) = 2 −u2
+(51)
+˜f3(x1, x2, u3) = 0.25 · x2 −1.5 · x1 + 0.5 · u3
+(52)
+˜f4(x3, u4) = x3 + 0.25 · u4
+(53)
+FORKNLIN:
+˜f1(u1) = u1
+(54)
+˜f2(u2) = u2
+(55)
+˜f3(x1, x2, u3) =
+4
+1 + e−x1−x2 −x2
+2 + 0.5 · u3
+(56)
+˜f4(x3, u4) =
+20
+1 + e0.5·x2
+3−x3 + u4
+(57)
+LARGEBDNLIN: Let us define
+L(x, y) = s(x + 1) + s(0.5 + y) −3.0 ,
+(58)
+and let us call CDF−1(µ, b, x) the quantile function of a Laplace distribution with location µ, scale b,
+evaluated at x. Then the structural equations are
+˜f1(u1) = s(1.8 · u1) −1
+(59)
+˜f2(x1, u2) = 0.25 · u2 + L(x1, 0) · 1.5
+(60)
+˜f3(x1, u3) = L(x1, u3)
+(61)
+˜f4(x2, u4) = L(x2, u4)
+(62)
+˜f5(x3, u5) = L(x3, u5)
+(63)
+˜f6(x4, u6) = L(x4, u6)
+(64)
+˜f7(x5, u7) = L(x5, u7)
+(65)
+˜f8(x6, u8) = 0.3 · u8 + (s(x6 + 1) −1)
+(66)
+˜f9(x7, x8, u9) = CDF−1
+
+−s
+x7 · 1.3 + x8
+3
++ 1
+
++ 2, 0.6, u9
+
+(67)
+SIMPSONNLIN:
+˜f1(u1) = u1
+(68)
+˜f2(x1, u2) = s(1 −x1) +
+p
+3/20 · u2
+(69)
+˜f3(x1, x2, u3) = tanh(2 · x2) + 1.5 · x1 −1 + tanh(u3)
+(70)
+˜f4(x3, u4) = x3 −4
+5
++ 3 +
+1
+√
+10 · u4
+(71)
+25
+
+SIMPSONSYMPROD:
+˜f1(u1) = u1
+(72)
+˜f2(x1, u2) = 2 · tanh(2 · x1) +
+1
+√
+10 · u2
+(73)
+˜f3(x1, x2, u3) = 0.5 · x1 · x2 + 1
+√
+2 · u3
+(74)
+˜f4(x1, u4) = tanh(1.5 · x1) +
+r
+3
+10 · u4
+(75)
+TRIANGLELIN:
+˜f1(u1) = u1 + 1
+(76)
+˜f2(x1, u2) = 10 · x1 −u2
+(77)
+˜f3(x1, x2, u3) = 0.5 · x2 + x1 + u3
+(78)
+TRIANGLENLIN:
+˜f1(u1) = u1 + 1
+(79)
+˜f2(x1, u2) = 2 · x2
+1 + u2
+(80)
+˜f3(x1, x2, u3) =
+20
+1 + e−x2
+2+x1 + u3
+(81)
+(a) 3-CHAIN
+(b) 4-CHAIN
+(c) 5-CHAIN
+(d) TRIANGLE
+(e) COLLIDER
+(f) FORK
+(g) SIMPSON [NLIN]
+(h) SIMPSON [SYMPROD]
+(i) LARGEBD
+Figure 9: Causal graph of the different SCMs considered in §6 and App. D.
+D.1
+Ablation: Time complexity
+As the first additional ablation study, we evaluate the time complexity of the design choices introduced
+in §4. Fig. 10 summarizes the results, where the x-axis represents the number of nodes in the dataset,
+26
+
+Direction:
+x →u
+u →x
+Model:
+Ordering
+Ordering⋆
+Graph
+Graph⋆
+3
+4
+5
+Size of graph (d)
+0
+5
+10
+15
+Training time (µs)
+Figure 10: Time complexity comparison between the different design choices discussed in §4.
+d, and the y-axis indicates the time (in microseconds) required for a single forward pass of the
+normalizing flow during training. We can find several interesting insights:
+Results
+First, abductive models (x →u, solid lines) train significantly faster compared to generative
+models (u →x, dotted lines). This emphasizes the computational cost associated with inverting
+autoregressive flows during training. Furthermore, it is worth noting that the time complexity of
+abductive models remains constant regardless of the number of nodes d, whereas the complexity of
+generative models increases linearly with d, as indicated in the right-most column of Tab 1. Note that
+we should see the exact opposite behaviour when sampling.
+Second, the inclusion of Jacobian regularization, represented by a star marker, introduces a significant
+time overhead. This observation is clearly depicted in Fig. 10, where plot lines with the star marker
+are consistently above their counterparts.
+Finally, leveraging causal graph information or relying solely on ordering (represented in orange and
+green, respectively) has minimal impact on computational time. This is once again clear in Fig. 10,
+as green and orange pairs largely coincide.
+D.2
+Ablation: Base distribution
+We now assess to which extent a mismatch of the distribution Pu between the SCM and the causal NF
+negatively affects performance. To this end, we consider two more complex SCMs—SIMPSON [11]
+and TRIANGLE [34]—and distributions—Normal and Laplace—for which we either fix or learn their
+parameters during training. Both SCMs use a standard Normal distribution for Pu.
+Hyperparameter tuning
+While we fixed the flow to have a single MAF [24] layer with
+ELU [4] activation functions, we determined through cross-validation the optimal num-
+ber of layers and hidden units of the MLP network within MAF. Specifically, we con-
+sidered the following combinations ([a, b] represents two layers with a and b hidden units):
+[16, 16, 16, 16], [32, 32, 32], [16, 16, 16], [32, 32], [32], [64]. As discussed at the start of the section,
+we report test results for the configuration with the best validation performance at the last epoch.
+Results
+The results, shown in Fig. 11a, reveal a notable distinction between Normal and Laplace
+distributions in terms of density estimation. However, this discrepancy appears to have minimal
+implications for Average Treatment Effect (ATE) and counterfactual estimation. We hypothesize
+that this disparity originates from dissimilarities in their tails, as it can be inferred by the slight
+edge of Normal over Laplace on the last column—which measures per sample differences—where
+bigger errors happen at the outliers elements which are, by definition, scarce. Interestingly, with this
+particular architecture of causal NF, every model struggles to model the denser TRIANGLE SCM.
+D.3
+Ablation: Flow architecture
+Considering the observed challenges faced by the Masked Autoregressive Flow (MAF) [24] layer
+in accurately modelling the TRIANGLE SCM in the previous experiment, we further investigate the
+potential impact of flow architecture on performance.
+27
+
+Dataset
+SIMPSON [NLIN]
+TRIANGLE [LIN]
+Base Distr.
+KL forward
+RMSE ATE
+RMSE CF
+Normal
+Normalθ
+Laplace
+Laplaceθ
+0.0
+0.2
+0.4
+0.6
+(a) Ablation on the base distribution
+Model
+KL forward
+RMSE ATE
+RMSE CF
+NSF
+MAF
+0.0
+0.1
+0.2
+0.3
+(b) Ablation on the flow architecture
+Figure 11: Performance on the SIMPSONNLIN and TRIANGLELIN datasets of causal NFs with
+a) different base distributions (Normal and Laplace), where θ indicates that we learn the parameters of
+the base distribution; and b) flow architectures. Differences in base distribution affect KL divergence,
+while the choice of flow architecture influences the overall performance.
+Hyperparameter Tuning
+We cross-validate again the optimal number of layers and hidden units
+of the MLP internally used by the unique layer of the Causal NF. We consider the following values
+([a, b] represents two layers with a and b hidden units): [32, 32, 32], [16, 16, 16], [32, 32], [32], and
+[64]. As before, test results are reported for the configuration that achieved the best performance on
+the validation set at the final epoch.
+Results
+Fig. 11b summarizes our results, where we consider a Causal NF with one MAF [24] layer
+(depicted in orange), and a Causal NF with a Neural Spline Flow (NSF) [9] as layer (depicted in
+blue). Note that, NSFs are built on top of MAFs and abandoned the realm of affine ANFs, and are
+thus expected to outperform MAFs in general. We employed the same set of SCMs as in App. D.2.
+Our empirical analysis reveals that the NSF consistently outperforms the MAF across the three metrics:
+observational distribution (measured by the KL divergence), ATE estimation, and counterfactual
+estimation. Whilst expected, these findings highlight the practical implications of selecting an
+appropriate flow architecture, which should be taken into consideration by practitioners.
+D.4
+Comparison: Extra non-linear SCMs
+In this section, we complement the results from §6.2 and provide a more extensive comparison of the
+proposed Causal NF, along with CAREFL [16] and VACA [34], on additional datasets.
+Hyperparameter Tuning
+For VACA, we cross-validated the dropout rate with values {0.0, 0.1},
+the GNN layer architecture with {GIN, PNA, PNADisjoint}, (see [34] for details), and the number
+of layers in the MLP prior to the GNN with choices {1, 2}. For CAREFL, we cross-validated
+the number of layers in the flow, {1, diam A}, and the number of layers and hidden units in
+the MLP composing the flow layers (same format as before), {[16, 16, 16], [32, 32], [32], [64]}.
+For Causal NF, we used the abductive model with a single layer, and cross-validated the
+number of layers and hidden units in the MLP composing the layer of the flow with values
+{[16, 16, 16, 16], [32, 32, 32], [16, 16, 16], [32, 32], [32], [64]}. We report test results for the configur-
+ation with the best validation performance at the final epoch.
+Results
+Tab 4 shows the performance of each model for all the considered datasets, further validat-
+ing the conclusions drawn in the main manuscript: the proposed Causal NF consistently outperforms
+both CAREFL and VACA in terms of performance and computational efficiency. The performance
+of VACA is notably inferior, and its computation time is significantly longer, primarily due to the
+complexity of graph neural networks (GNNs). Our Causal NF achieves similar performance to
+CAREFL in terms of observational fitting, while surpassing it on interventional and counterfactual
+estimation tasks. Additionally, Causal NF outperforms CAREFL in computational speed. This is to
+be expected since the optimal CAREFL architectures often have multiple layers, resulting in increased
+computation time. In contrast, Causal NF has a single layer, reducing computational complexity.
+Fig. 12 qualitative proofs the effectiveness of the proposed Causal NF in accurately modelling
+both observational and interventional distributions for the SIMPSONNLIN dataset. In this plot, blue
+represent the real distribution/samples, while orange represents the ones generated by Causal NF.
+Fig. 12a clearly shows that the model successfully captured the correlations among all variables
+in the observational distribution. Furthermore, Fig. 12b displays the interventional distribution
+28
+
+Table 4: Comparison, on different SCMs, of the proposed Causal NF, VACA [34], and CAREFL [16]
+with the do-operator proposed in §5. Results averaged over five runs.
+Performance
+Time Evaluation (µs)
+Dataset
+Model
+KL
+ATERMSE
+CFRMSE
+Training
+Evaluation
+Sampling
+3-CHAIN
+LIN
+[34]
+Causal NF
+0.000.00
+0.050.01
+0.040.01
+0.410.06
+0.480.10
+0.760.06
+CAREFL†
+0.000.00
+0.200.13
+0.200.09
+0.680.24
+0.970.33
+1.940.77
+VACA
+4.441.03
+5.760.07
+4.980.10
+36.191.54
+28.330.72
+75.344.58
+3-CHAIN
+NLIN
+[34]
+Causal NF
+0.000.00
+0.030.01
+0.020.01
+0.520.06
+0.560.03
+1.020.05
+CAREFL†
+0.000.00
+0.050.02
+0.040.02
+0.600.22
+0.840.22
+1.660.41
+VACA
+12.821.00
+1.540.03
+1.320.02
+39.454.12
+30.932.30
+84.369.60
+4-CHAIN
+LIN
+Causal NF
+0.000.00
+0.070.02
+0.040.01
+0.560.08
+0.620.15
+1.540.40
+CAREFL†
+0.000.00
+0.160.07
+0.140.04
+0.700.28
+0.990.20
+2.850.54
+VACA
+13.140.73
+3.820.01
+3.720.05
+61.855.06
+49.314.11
+92.067.93
+5-CHAIN
+LIN
+Causal NF
+0.010.00
+0.120.02
+0.080.01
+0.620.19
+0.690.15
+1.910.44
+CAREFL†
+0.000.00
+0.470.23
+0.460.22
+0.790.41
+1.190.25
+4.210.87
+VACA
+17.310.84
+5.950.05
+6.060.08
+103.7510.04
+80.8111.06
+124.5220.86
+COLLIDER
+LIN
+[34]
+Causal NF
+0.000.00
+0.020.01
+0.010.00
+0.460.12
+0.560.11
+0.950.19
+CAREFL†
+0.000.00
+0.020.01
+0.010.00
+0.390.07
+0.450.05
+0.740.07
+VACA
+13.450.43
+0.220.01
+0.860.02
+37.223.55
+28.774.22
+71.216.73
+FORK
+LIN
+[2]
+Causal NF
+0.000.00
+0.030.01
+0.010.00
+0.520.05
+0.590.08
+1.570.57
+CAREFL†
+0.000.00
+0.040.01
+0.020.00
+0.600.17
+0.780.16
+2.391.06
+VACA
+8.750.73
+0.870.02
+1.430.02
+45.844.64
+34.662.39
+73.294.70
+FORK
+NLIN
+[2]
+Causal NF
+0.000.00
+0.070.02
+0.070.00
+0.630.16
+0.740.31
+1.840.84
+CAREFL†
+0.010.01
+0.110.04
+0.180.07
+0.570.17
+0.770.08
+1.960.17
+VACA
+5.090.60
+2.010.03
+3.190.06
+49.225.48
+42.132.95
+101.0218.94
+LARGEBD
+NLIN
+[11]
+Causal NF
+1.510.04
+0.020.00
+0.010.00
+0.520.10
+0.600.17
+3.050.66
+CAREFL†
+1.510.05
+0.050.01
+0.080.01
+0.840.47
+1.180.17
+8.251.29
+VACA
+53.662.07
+0.390.00
+0.820.02
+164.9211.10
+137.8815.72
+167.9425.75
+SIMPSON
+NLIN
+[11]
+Causal NF
+0.290.01
+0.040.01
+0.020.00
+0.580.18
+0.630.26
+1.570.64
+CAREFL†
+0.290.01
+0.040.01
+0.030.00
+0.690.32
+1.020.26
+2.950.79
+VACA
+18.970.66
+0.600.00
+1.190.02
+54.767.46
+43.697.92
+87.0116.33
+SIMPSON
+SYMPROD
+[11]
+Causal NF
+0.000.00
+0.070.01
+0.120.02
+0.590.17
+0.600.11
+1.510.30
+CAREFL†
+0.000.00
+0.100.02
+0.170.04
+0.490.15
+0.810.19
+1.910.33
+VACA
+13.850.64
+0.890.00
+1.500.04
+49.264.09
+37.783.41
+79.2014.60
+TRIANGLE
+LIN
+[34]
+Causal NF
+0.000.00
+0.240.05
+0.210.05
+0.540.05
+0.560.04
+1.050.07
+CAREFL†
+0.000.00
+0.150.06
+0.140.03
+0.600.20
+0.750.05
+1.500.10
+VACA
+3.820.69
+7.490.07
+7.220.17
+27.461.53
+21.611.00
+67.006.23
+TRIANGLE
+NLIN
+[34]
+Causal NF
+0.000.00
+0.120.03
+0.130.02
+0.520.07
+0.580.07
+1.070.12
+CAREFL†
+0.000.00
+0.120.03
+0.170.03
+0.570.18
+0.830.26
+1.680.62
+VACA
+7.710.60
+4.780.01
+4.190.04
+28.821.21
+23.000.55
+70.653.70
+obtained when we do do(x3 = −1.09), i.e., when we intervene on the 25-th empirical percentile
+of x3. Remarkably, Causal NF accurately learns the distribution of descendant variables, i.e., x4,
+and effectively breaks any dependency between the ancestors of the intervened variable and x4.
+Additionally, Fig. 13 shows a similar analysis for 5-CHAINLIN, when we perform do(x3 = 2.18)—
+which corresponds to intervening on the 75-th percentile of x3—clearly showing that the correlations
+not involving the intervened path (x1 →x2 and x4 →x5) are preserved.
+E
+Details on the fairness use-case
+In this section, we provide additional details on the use-case of fairness auditing and classification
+using the German dataset [8], whose causal graph is shown in Fig. 14.
+Training
+For this section, we performed minimal hyperparameter tuning, and only tested a few
+combinations by hand. We decided to use a Neural Spline Flow (NSF) [9] for the single layer of the
+Causal NF, which internally uses an MLP with 3 layers, and 32 hidden units each. We use Adam [17]
+as the optimizer, with a learning rate of 0.01, along with a plateau scheduler with a decay factor of
+29
+
+−2
+0
+2
+4
+x1
+0
+2
+4
+x2
+−5.0
+−2.5
+0.0
+2.5
+5.0
+x3
+−2.5
+0.0
+2.5
+5.0
+x1
+1
+2
+3
+4
+x4
+0
+2
+4
+x2
+−5
+0
+5
+x3
+2
+4
+x4
+(a) Observational distribution.
+−2
+0
+2
+x1
+0
+2
+4
+x2
+−1.10
+−1.09
+−1.08
+x3
+−2
+0
+2
+4
+x1
+1.0
+1.5
+2.0
+2.5
+3.0
+x4
+0
+2
+4
+x2
+−1.10
+−1.09
+−1.08
+x3
+1
+2
+3
+x4
+(b) Interventional distribution do(x3 = −1.09).
+Figure 12: Pair plot of real (in blue) and generated (in orange) data of SIMPSONNLIN. On the left are
+samples from the true and learnt observational distribution. On the right are samples from the true
+and learnt interventional distribution when do(x3 = −1.09). The plot illustrates that the dependency
+of x4 on the ancestors of x3, namely x1 and x2, is effectively broken.
+−4
+−2
+0
+2
+x1
+−40
+−20
+0
+20
+x2
+−10
+−5
+0
+5
+10
+x3
+−10
+−5
+0
+5
+10
+x4
+−5.0
+−2.5
+0.0
+2.5
+x1
+−10
+−5
+0
+5
+10
+15
+x5
+−25
+0
+25
+x2
+−10
+0
+10
+x3
+−10
+0
+10
+x4
+−10
+0
+10
+x5
+(a) Observational distribution.
+−2
+0
+2
+x1
+−40
+−20
+0
+20
+40
+x2
+2.14
+2.16
+2.18
+2.20
+x3
+−2
+0
+2
+4
+6
+x4
+−2.5
+0.0
+2.5
+x1
+−7.5
+−5.0
+−2.5
+0.0
+2.5
+5.0
+x5
+−25
+0
+25
+x2
+2.150
+2.175
+2.200
+x3
+0.0
+2.5
+5.0
+x4
+−5
+0
+5
+x5
+(b) Interventional distribution do(x3 = 2.18).
+Figure 13: Pair plot of real (in blue) and generated (in orange) data of 5-CHAINLIN. On the left are
+samples from the true and learnt observational distribution. On the right are samples from the true
+and learnt interventional distribution when do(x3 = 2.18). The plot illustrates that the dependency of
+x4 and x5 on the ancestors of x3, namely x1 and x2, is effectively broken.
+0.9 and a patience parameter of 60 epochs. The training is performed for 1000 epochs, and the results
+are reported using 5-fold cross-validation with a 80 −10 −10 split for train, validation, and test data.
+Results
+On addition to the results from §7, Fig. 15 shows two pair plots from one of the 5 runs,
+chosen at random. The true empirical distribution is shown in blue, and the learnt distribution by
+Causal NF is depicted in orange. Specifically, Fig. 15a illustrates the observational distribution,
+and Fig. 15b the interventional distribution, obtained when we intervene on the sex variable and set
+it to 1, i.e., do(x1 = 1). We can observe that Causal NF achieves a remarkable fit in both cases,
+demonstrating its capability to handle discrete data, and partial knowledge of the causal graph.
+30
+
+checking
+account
+credit
+amount
+sex
+savings
+repayment
+history
+age
+housing
+Figure 14: Partial causal graph used for the German Credit dataset [8]. Rectangles show the
+strongly connected components (SCCs) grouping different variables. Solid arrows represent causal
+relationships between SCCs, and dashed arrows represent an arbitrary order picked to learn the joint
+distribution of each SCC with an ANF. See App. A.2.2 for an in-depth explanation on the proposed
+method to deal with partial causal graphs using causal NFs.
+31
+
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Sex
+0
+20
+40
+60
+80
+Age
+0
+5000
+10000
+15000
+Credit amount
+0
+20
+40
+60
+Repayment history
+0
+1
+2
+Checking account
+−2
+0
+2
+4
+6
+Savings
+0
+1
+Sex
+0
+2
+4
+Housing
+0
+25
+50
+75
+Age
+0
+10000
+Credit amount
+0
+25
+50
+75
+Repayment history
+0
+1
+2
+Checking account
+0.0
+2.5
+5.0
+Savings
+0
+1
+2
+3
+Housing
+GERMAN
+(a) Observational distribution.
+0.990
+0.995
+1.000
+1.005
+1.010
+Sex
+20
+40
+60
+80
+Age
+0
+5000
+10000
+15000
+Credit amount
+0
+20
+40
+60
+Repayment history
+0
+1
+2
+Checking account
+−2
+0
+2
+4
+6
+Savings
+0.99
+1.00
+1.01
+Sex
+0
+2
+4
+Housing
+25
+50
+75
+Age
+0
+10000
+Credit amount
+0
+25
+50
+75
+Repayment history
+0
+1
+2
+Checking account
+0.0
+2.5
+5.0
+Savings
+0
+1
+2
+3
+Housing
+GERMAN
+(b) Interventional distribution do(x1 = 1).
+Figure 15: Pair plot of real (in blue) and generated (in orange) data of German dataset. Above, the
+samples from the true and learnt observational distributions. Below, the samples from the true and
+learnt interventional distributions when do(x1 = 1). The plot illustrates that Causal NF is able to
+handle discrete data and correctly intervene.
+32
+

@@ -1,0 +1,1714 @@
+Published as a conference paper at ICLR 2021
+SCALABLE LEARNING AND MAP INFERENCE FOR
+NONSYMMETRIC DETERMINANTAL POINT PROCESSES
+Mike Gartrell
+Criteo AI Lab
+m.gartrell@criteo.com
+Insu Han
+KAIST
+insu.han@kaist.ac.kr
+Elvis Dohmatob
+Criteo AI Lab
+e.dohmatob@criteo.com
+Jennifer Gillenwater
+Google Research
+jengi@google.com
+Victor-Emmanuel Brunel
+ENSAE ParisTech
+victor.emmanuel.brunel@ensae.fr
+ABSTRACT
+Determinantal point processes (DPPs) have attracted signiﬁcant attention in ma-
+chine learning for their ability to model subsets drawn from a large item collection.
+Recent work shows that nonsymmetric DPP (NDPP) kernels have signiﬁcant
+advantages over symmetric kernels in terms of modeling power and predictive
+performance. However, for an item collection of size M, existing NDPP learning
+and inference algorithms require memory quadratic in M and runtime cubic (for
+learning) or quadratic (for inference) in M, making them impractical for many
+typical subset selection tasks. In this work, we develop a learning algorithm with
+space and time requirements linear in M by introducing a new NDPP kernel de-
+composition. We also derive a linear-complexity NDPP maximum a posteriori
+(MAP) inference algorithm that applies not only to our new kernel but also to
+that of prior work. Through evaluation on real-world datasets, we show that our
+algorithms scale signiﬁcantly better, and can match the predictive performance of
+prior work.
+1
+INTRODUCTION
+Determinantal point processes (DPPs) have proven useful for numerous machine learning tasks.
+For example, recent uses include summarization (Sharghi et al., 2018), recommender systems
+(Wilhelm et al., 2018), neural network compression (Mariet & Sra, 2016), kernel approximation
+(Li et al., 2016), multi-modal output generation (Elfeki et al., 2019), and batch selection, both for
+stochastic optimization (Zhang et al., 2017) and for active learning (Bıyık et al., 2019). For subset
+selection problems where the ground set of items to select from has cardinality M, the typical DPP is
+parameterized by an M × M kernel matrix. Most prior work has been concerned with symmetric
+DPPs, where the kernel must equal its transpose. However, recent work has considered the more
+general class of nonsymmetric DPPs (NDPPs) and shown that these have additional useful modeling
+power (Brunel, 2018; Gartrell et al., 2019). In particular, unlike symmetric DPPs, which can only
+model negative correlations between items, NDPPs allow modeling of positive correlations, where
+the presence of item i in the selected set increases the probability that some other item j will also
+be selected. There are many intuitive examples of how positive correlations can be of practical
+importance. For example, consider a product recommendation task for a retail website, where a
+camera is found in a user’s shopping cart, and the goal is to display several other items that might be
+purchased. Relative to an empty cart, the presence of the camera probably increases the probability
+of buying an accessory like a tripod.
+Although NDPPs can theoretically model such behavior, the existing approach for NDPP learning and
+inference (Gartrell et al., 2019) is often impractical in terms of both storage and runtime requirements.
+These algorithms require memory quadratic in M and time quadratic (for inference) or cubic (for
+learning) in M; for the not-unusual M of 1 million, this requires storing 8TB-size objects in memory,
+with runtime millions or billions of times slower than that of a linear-complexity method.
+In this work, we make the following contributions:
+1
+
+Published as a conference paper at ICLR 2021
+Learning: We propose a new decomposition of the NDPP kernel which reduces the storage and run-
+time requirements of learning and inference to linear in M. Fortuitously, the modiﬁed decomposition
+retains all of the previous decomposition’s modeling power, as it covers the same part of the NDPP
+kernel space. The algebraic manipulations we apply to get linear complexity for this decomposition
+cannot be applied to prior work, meaning that our new decomposition is crucial for scalability.
+Inference: After learning, prior NDPP work applies a DPP conditioning algorithm to do subset
+expansion (Gartrell et al., 2019), with quadratic runtime in M. However, prior work does not examine
+the general problem of MAP inference for NDPPs, i.e., solving the problem of ﬁnding the highest-
+probability subset under a DPP. For symmetric DPPs, there exists a standard greedy MAP inference
+algorithm that is linear in M. In this work, we develop a version of this algorithm that is also linear
+for low-rank NDPPs. The low-rank requirement is unique to NDPPs, and highlights the fact that the
+transformation of the algorithm from the symmetric to the nonsymmetric space is non-trivial. To the
+best of our knowledge, this is the ﬁrst MAP algorithm proposed for NDPPs.
+We combine the above contributions through experiments that involve learning NDPP kernels and
+applying MAP inference to these kernels to do subset selection for several real-world datasets.
+These experiments demonstrate that our algorithms are much more scalable, and that the new kernel
+decomposition matches the predictive performance of the decomposition from prior work.
+2
+BACKGROUND
+Consider a ﬁnite set Y = {1, 2, . . . , M} of cardinality M, which we will also denote by [[M]]. A DPP
+on [[M]] deﬁnes a probability distribution over all of its 2M subsets. It is parameterized by a matrix
+L ∈RM×M, called the kernel, such that the probability of each subset Y ⊆[[M]] is proportional to
+the determinant of its corresponding principal submatrix: Pr(Y ) ∝det(LY ). The normalization
+constant for this distribution can be expressed as a single M ×M determinant: P
+Y ⊆[[M]] det(LY ) =
+det(L + I) (Kulesza et al., 2012, Theorem 2.1). Hence, Pr(Y ) = det(LY )/ det(L + I). We will
+use PL to denote this distribution.
+For intuition about the kernel parameters, notice that the probabilities of singletons {i} and {j} are
+proportional to Lii and Ljj, respectively. Hence, it is common to think of L’s diagonal as representing
+item qualities. The probability of a pair {i, j} is proportional to det(L{i,j}) = LiiLjj −LijLji.
+Thus, if −LijLji < 0, this indicates i and j interact negatively. Similarly, if −LijLji > 0, then
+i and j interact positively. Therefore, off-diagonal terms determine item interactions. (The vague
+term “interactions” can be replaced by the more precise term “correlations” if we consider the DPP’s
+marginal kernel instead; see Gartrell et al. (2019, Section 2.1) for an extensive discussion.)
+In order to ensure that PL deﬁnes a probability distribution, all principal minors of L must be
+non-negative: det(LY ) ≥0. Matrices that satisfy this property are called P0-matrices (Fang, 1989,
+Deﬁnition 1). There is no known generative method or matrix decomposition that fully covers the
+space of all P0 matrices, although there are many that partially cover the space (Tsatsomeros, 2004).
+One common partial solution is to use a decomposition that covers the space of symmetric P0 matrices.
+By restricting to the space of symmetric matrices, one can exploit the fact that L ∈P0 if L is positive
+semideﬁnite (PSD)* (Prussing, 1986). Any symmetric PSD matrix can be written as the Gramian
+matrix of some set of vectors: L := V V ⊤, where V ∈RM×K. Hence, the V V ⊤decomposition
+provides an easy means of generating the entire space of symmetric P0 matrices. It also has a nice
+intuitive interpretation: we can view the i-th row of V as a length-K feature vector describing item i.
+Unfortunately, the symmetry requirement limits the types of correlations that a DPP can capture. A
+symmetric model is able to capture only nonpositive interactions between items, since LijLji =
+L2
+ij ≥0, whereas a nonsymmetric L can also capture positive correlations. (Again, see Gartrell et al.
+(2019, Section 2.1) for more intuition.) To expand coverage to nonsymmetric matrices in P0, it is
+natural to consider nonsymmetric PSD matrices. In what follows, we denote by P +
+0 the set of all
+nonsymmetric (and symmetric) PSD matrices. Any nonsymmetric PSD matrix is in P0 (Gartrell et al.,
+2019, Lemma 1), so P +
+0 ⊆P0. However, unlike in the symmetric case, the set of nonsymmetric PSD
+*Recall that a matrix L ∈RM×M is deﬁned to be PSD if and only if x⊤Lx ≥0, for all x ∈RM.
+2
+
+Published as a conference paper at ICLR 2021
+matrices does not fully cover the set of nonsymmetric P0 matrices. For example, consider
+L =
+
+1
+5/3
+1/2
+1
+
+with det(L{1}), det(L{2}), det(L{1,2}) ≥0, but x⊤Lx < 0 for x =
+
+−1
+1
+
+.
+Still, nonsymmetric PSD matrices cover a large enough portion of the P0 space to be useful in
+practice, as evidenced by the experiments of Gartrell et al. (2019). This work covered the P +
+0
+space by using the following decomposition: L := S + A, with S := V V ⊤for V ∈RM×K,
+and A := BC⊤−CB⊤for B, C ∈RM×K. This decomposition makes use of the fact that any
+matrix L can be decomposed uniquely as the sum of a symmetric matrix S = (L + LT )/2 and a
+skew-symmetric matrix A = (L −LT )/2. All skew-symmetric matrices A are trivially PSD, since
+x⊤Ax = 0 for all x ∈RM. Hence, the L here is guaranteed to be PSD simply because its S uses
+the standard Gramian decomposition V V ⊤.
+In this work we will also only consider P +
+0 , and leave to future work the problem of ﬁnding tractable
+ways to cover the rest of P0. We propose a new decomposition of L that also covers the P +
+0 space,
+but allows for more scalable learning. As in prior work, our decomposition has inner dimension
+K that could be as large as M, but is usually much smaller in practice. Our algorithms work well
+for modest values of K. In cases where the natural K is larger (e.g., natural language processing),
+random projections can often be used to signiﬁcantly reduce K (Gillenwater et al., 2012a).
+3
+NEW KERNEL DECOMPOSITION AND SCALABLE LEARNING
+Prior work on NDPPs proposed a maximum likelihood estimation (MLE) algorithm (Gartrell et al.,
+2019). Due to that work’s particular kernel decomposition, this algorithm had complexity cubic in
+the number of items M. Here, we propose a kernel decomposition that reduces this to linear in M.
+We begin by showing that our new decomposition covers the space of P +
+0 matrices. Before diving in,
+let us deﬁne Σi :=
+
+0
+λi
+−λi
+0
+
+as shorthand for a 2 × 2 block matrix with zeros on-diagonal and
+opposite values off-diagonal. Then, our proposed decomposition is as follows:
+L := S + A, with S := V V ⊤and A := BCB⊤,
+(1)
+where V , B ∈RM×K, and C ∈RK×K is a block-diagonal matrix with some diagonal blocks of
+the form Σi, with λi > 0, and zeros elsewhere. The following lemma shows that this decomposition
+covers the space of P +
+0 matrices.
+Lemma 1. Let A ∈RM×M be a skew-symmetric matrix with rank ℓ≤M. Then, there exist
+B ∈RM×ℓand positive numbers λ1, . . . , λ⌊ℓ/2⌋, such that A = BCB⊤, where C ∈Rℓ×ℓis the
+block-diagonal matrix with ⌊ℓ/2⌋diagonal blocks of size 2 given by Σi, i = 1, . . . , ⌊ℓ/2⌋and zero
+elsewhere.
+The proof of Lemma 1 and all subsequent results can be found in Appendix F. With this decomposition
+in hand, we now proceed to show that it can be used for linear-time MLE learning. To do so, we must
+show that corresponding NDPP log-likelihood objective and gradient can be computed in time linear
+in M. Given a collection of n observed subsets {Y1, ..., Yn} composed of items from Y = [[M]], the
+full formulation of the regularized log-likelihood is:
+φ(V , B, C) = 1
+n
+n
+X
+i=1
+log det
+
+VYiV ⊤
+Yi + BYiCB⊤
+Yi
+
+−log det
+
+V V ⊤+ BCB⊤+ I
+
+−R(V , B),
+(2)
+where VYi ∈R|Yi|×K denotes a matrix composed of the rows of V that correspond to the items in
+Yi. The regularization term, R(V , B), is deﬁned as follows:
+R(V , B) = α
+M
+X
+i=1
+1
+µi
+∥vi∥2
+2 + β
+M
+X
+i=1
+1
+µi
+∥bi∥2
+2,
+(3)
+where µi counts the number of occurrences of item i in the training set, vi and bi are rows of V and
+B, respectively, and α, β > 0 are tunable hyperparameters. This regularization is similar to that of
+prior works (Gartrell et al., 2017; 2019). We omit regularization for C.
+3
+
+Published as a conference paper at ICLR 2021
+Theorem 1 shows that computing the regularized log-likelihood and its gradient both have time
+complexity linear in M. The complexities also depend on K, the rank of the NDPP, and K′, the size
+of the largest observed subset in the data. For many real-world datasets we observe that K′ ≪M,
+and we set K = K′. Hence, linearity in M means that we can efﬁciently perform learning for
+datasets with very large ground sets, which is impossible with the cubic-complexity L decomposition
+in prior work (Gartrell et al., 2019).
+Theorem 1. Given an NDPP with kernel L = V V ⊤+ BCB⊤, parameterized by V of rank K, B
+of rank K, and a K × K matrix C, we can compute the regularized log-likelihood (Eq. 2) and its
+gradient in O(MK2 + K3 + nK′3) time, where K′ is the size of the largest of the n training subsets.
+4
+MAP INFERENCE
+After learning an NDPP, one can then use it to infer the most probable item subsets in various
+situations. Several inference algorithms have been well-studied for symmetric DPPs, including
+sampling (Kulesza & Taskar, 2011; Anari et al., 2016; Li et al., 2016; Launay et al., 2018; Gillenwater
+et al., 2019; Poulson, 2019; Derezi´nski, 2019) and MAP inference (Gillenwater et al., 2012b; Han
+et al., 2017; Chen et al., 2018; Han & Gillenwater, 2020). We focus on MAP inference:
+argmax
+Y ⊆Y
+det(LY )
+such that
+|Y | = k,
+(4)
+for cardinality budget k ≤M. MAP inference is a better ﬁt than sampling when the end application
+requires the generation of a single output set, which is usually the case in practice (e.g., this is
+usually true for recommender systems). MAP inference for DPPs is known to be NP-hard even
+in the symmetric case (Ko et al., 1995; Kulesza et al., 2012). For symmetric DPPs, one usually
+approximates the MAP via the standard greedy algorithm for submodular maximization (Nemhauser
+et al., 1978). First, we describe how to efﬁciently implement this for NDPPs. Then, in Section 4.1
+we prove a lower bound on its approximation quality. To the best of our knowledge, this is the ﬁrst
+investigation of how to apply the greedy algorithm to NDPPs.
+Greedy begins with an empty set and repeatedly adds the item that maximizes the marginal gain until
+the chosen set is size k. Here, we design an efﬁcient greedy algorithm for the case where the NDPP
+kernel is low-rank. For generality, in what follows we write the kernel as L = BCB⊤, since one can
+easily rewrite our matrix decomposition (Eq. 1), as well as that of Gartrell et al. (2019), to take this
+form. For example, for our decomposition: L = V V ⊤+ BCB⊤= (V
+B)
+
+I
+0
+0
+C
+ 
+V ⊤
+B⊤
+
+.
+Using Schur’s determinant identity, we ﬁrst observe that, for Y ⊆[[M]] and i ∈[[M]], the marginal
+gain of a NDPP can be written as
+det(LY ∪{i})
+det(LY )
+= Lii −LiY (LY )−1LY i = biCb⊤
+i −biC
+ B⊤
+Y (BY CB⊤
+Y )−1BY
+
+Cb⊤
+i ,
+(5)
+where bi ∈R1×K and BY ∈R|Y |×K. A naïve computation of Eq. 5 is O(K2 + k3), since we must
+invert a |Y | × |Y | matrix, where |Y | ≤k. However, one can compute Eq. 5 more efﬁciently by
+observing that its B⊤
+Y (BY CB⊤
+Y )−1BY component can actually be expressed without an inverse, as
+a rank-|Y | matrix, that can be computed in O(K2) time.
+Lemma 2. Given B ∈RM×K, C ∈RK×K, and Y = {a1, . . . , ak} ⊆[[M]], let bi ∈R1×K be the
+i-th row in B and BY ∈R|Y |×K be a matrix containing rows in B indexed by Y . Then, it holds that
+B⊤
+Y (BY CB⊤
+Y )−1BY =
+k
+X
+j=1
+p⊤
+j qj,
+(6)
+where row vectors pj, qj ∈R1×K for j = 1, . . . , k satisfy p1 = ba1/(ba1Cb⊤
+a1), q1 = ba1, and
+pj+1 =
+baj −bajC⊤Pj
+i=1 q⊤
+i pi
+bajC(baj −bajC⊤Pj
+i=1 q⊤
+i pi)⊤,
+qj+1 = baj −bajC
+j
+X
+i=1
+p⊤
+i qi.
+(7)
+4
+
+Published as a conference paper at ICLR 2021
+Algorithm 1 Greedy MAP inference/conditioning for low-rank NDPPs
+1: Input: B ∈RM×K, C ∈RK×K, the cardinality k
+▷And {a1, . . . , ak} for conditioning
+2: initialize P ←[ ], Q ←[ ] and Y ←∅
+3: ∆i ←biCb⊤
+i for i ∈[[M]] where bi ∈R1×K is the i-th row in B
+4: a ←argmaxi ∆i and Y ←Y ∪{a}
+▷a ←a1 for conditioning
+5: while |Y | ≤k do
+6:
+p ←
+ ba −baC⊤Q⊤P
+
+/∆a
+7:
+q ←ba −baCP ⊤Q
+8:
+P ←[P ; p] and Q ←[Q; q]
+9:
+∆i ←∆i −
+ biCp⊤  biC⊤q⊤
+for i ∈[[M]], i /∈Y
+10:
+a ←argmaxi ∆i and Y ←Y ∪{a}
+▷a ←a|Y |+1 for conditioning
+11: end while
+12: return Y
+▷return {∆i}M
+i=1 for conditioning
+Table 1: Algorithm complexities for several DPP models. Our model and the symmetric DPP model
+(Gartrell et al., 2017) can perform both tasks in time linear in the size of ground set M, but ours is a
+more general model that can capture positive as well as negative item correlations.
+Low-rank DPP Models
+MLE Learning
+Runtime
+MAP Inference
+Runtime
+MLE Learning
+Memory
+MAP Inference
+Memory
+Symmetric DPP
+(Gartrell et al., 2017)
+O(MK2 + nK3)
+O(MKk + MK2)
+O(MK)
+O(MK)
+Nonsymmetric DPP
+(Gartrell et al., 2019)
+O(M 3 + MK2 + nK3)
+O(MKk + MK2)
+O(M 2)
+O(MK)†
+Scalable nonsymmetric DPP
+(this work)
+O(MK2 + nK3)
+O(MKk + MK2)
+O(MK + K2)
+O(MK + K2)
+Plugging Eq. 6 into Eq. 5, the marginal gain with respect to Y ∪{a} can be computed by simply
+updating from the previous gain with respect to Y . That is,
+det(LY ∪{a,i})
+det(LY ∪{a}) = biCb⊤
+i −
+|Y |+1
+X
+j=1
+ biCp⊤
+j
+  biC⊤q⊤
+j
+
+(8)
+= det(LY ∪{i})
+det(LY )
+−
+
+biCp⊤
+|Y |+1
+ 
+biC⊤q⊤
+|Y |+1
+
+.
+(9)
+The marginal gains when Y = ∅are equal to diagonals of L and require O(MK2) operations. Then,
+computing the update terms in Eq. 9 for all i ∈[[M]] needs O(MK) operations. Since the total
+number of updates is k, the overall complexity becomes O(MK2 + MKk). We provide a full
+description of the implied greedy algorithm for low-rank NDPPs in Algorithm 1.
+Table 1 summarizes the complexitiy of our methods and those of previous work. Note that the full
+M × M L + I matrix is used to compute the DPP normalization constant in Gartrell et al. (2019),
+which is why this approach has memory complexity of O(M 2) for MLE learning.
+4.1
+APPROXIMATION GUARANTEE FOR GREEDY NDPP MAP INFERENCE
+As mentioned above, Algorithm 1 is an instantiation of the standard greedy algorithm used for
+submodular maximization (Nemhauser et al., 1978). This algorithm has a (1 −1/e)-approximation
+guarantee for the problem of maximizing nonnegative, monotone submodular functions. While
+the function f(Y ) = log det(LY ) is submodular for a symmetric PSD L (Kelmans & Kimelfeld,
+1983), it is not monotone. Often, as in Han & Gillenwater (2020), it is assumed that the smallest
+eigenvalue of L is greater than 1, which guarantees montonicity. There is no particular evidence
+that this assumption is true for practical models, but nevertheless the greedy algorithm tends to
+†The exact memory complexity for MAP inference is 3MK, since V , B, and C used in this model are all
+M × K matrices.
+5
+
+Published as a conference paper at ICLR 2021
+perform well in practice for symmetric DPPs. Here, we prove a similar approximation guarantee that
+covers NDPPs as well, even though the function f(Y ) = log det(LY ) is non-submodular when L is
+nonsymmetric. In Section 5.5, we further observe that, as for symmetric DPPs, the greedy algorithm
+seems to work well in practice for NDPPs.
+We leverage a recent result of Bian et al. (2017), who proposed an extension of greedy algorithm
+guarantees to non-submodular functions. Their result is based on the submodularity ratio and
+curvature of the objective function, which measure to what extent it has submodular properties.
+Theorem 2 extends this to provide an approximation ratio for greedy MAP inference of NDPPs.
+Theorem 2. Consider a nonsymmetric low-rank DPP L = V V ⊤+ BCB⊤, where V , B are of
+rank K, and C ∈RK×K. Given a cardinality budget k, let σmin and σmax denote the smallest and
+largest singular values of LY for all Y ⊆[[M]] and |Y | ≤2k. Assume that σmin > 1. Then,
+log det(LY G) ≥
+4(1 −e−1/4)
+2(log σmax/log σmin) −1 log det(LY ∗)
+(10)
+where Y G is the output of Algorithm 1 and Y ∗is the optimal solution of MAP inference in Eq. 4.
+Thus, when the kernel has a small value of log σmax/ log σmin, the greedy algorithm ﬁnds a near-
+optimal solution. In practice, we observe that the greedy algorithm ﬁnds a near-optimal solution
+even for large values of this ratio (see Section 5.5). As remarked above, there is no evidence that the
+condition σmin > 1 is usually true in practice. While this condition can be achieved by multiplying
+L by a constant, this leads to a (potentially large) additive term in Eq. 10. We provide Corollary 1 in
+Appendix D, which excludes the σmin > 1 assumption, and quantiﬁes this additive term.
+4.2
+GREEDY CONDITIONING FOR NEXT-ITEM PREDICTION
+We brieﬂy describe here a small modiﬁcation to the greedy algorithm that is necessary if one wants
+to use it as a tool for next-item prediction. Given a set Y ⊆[[M]], Kulesza et al. (2012) showed
+that a DPP with L conditioned on the inclusion of the items in Y forms another DPP with kernel
+LY := L ¯Y −L ¯Y ,Y L−1
+Y L ¯Y ,Y where ¯Y = [[M]]\Y . The singleton probability Pr(Y ∪{i} | Y ) ∝LY
+ii
+can be useful for doing next-item prediction. We can use the same machinery from the greedy
+algorithm’s marginal gain computations to effectively compute these singletons. More concretely,
+suppose that we are doing next-item prediction as a shopper adds items to a digital cart. We predict
+the item that maximizes the marginal gain, conditioned on the current cart contents (the set Y ).
+When the shopper adds the next item to the cart, we update Y to include this item, rather than our
+predicted item (line 10 in Algorithm 1). We then iterate until the shopper checks out. The comments
+on the righthand side of Algorithm 1 summarize this procedure. The runtime of this prediction is
+the same that of the greedy algorithm, O(MK2 + MK|Y |). We note that this cost is comparable
+to that of an approach based on the DPP dual kernel from prior work (Mariet et al., 2019), which
+has O(MK2 + K3 + |Y |3) complexity. However, since it is non-trivial to deﬁne the dual kernel for
+NDPPs, the greedy algorithm may be the simpler choice for next-item prediction for NDPPs.
+5
+EXPERIMENTS
+To further simplify learning and MAP inference, we set B = V , which results in L = V V ⊤+
+V CV ⊤= V (I + C)V ⊤. This change also simpliﬁes regularization, so that we only perform
+regularization on V , as indicated in the ﬁrst term of Eq. 3, leaving us with the single regularization
+hyperparameter of α. While setting B = V restricts the class of nonsymmetric L kernels that can
+be represented, we compensate for this restriction by relaxing the block-diagonal structure imposed
+on C, so that we learn a full skew-symmetric K × K matrix C. To ensure that C and thus A is
+skew-symmetric, we parameterize C by setting C = D −DT , were D varies over RK×K.
+Code for all experiments is available at
+https://github.com/cgartrel/scalable-nonsymmetric-DPPs.
+5.1
+DATASETS
+We perform experiments on several real-world public datasets composed of subsets:
+6
+
+Published as a conference paper at ICLR 2021
+1. Amazon Baby Registries: This dataset consists of registries or "baskets" of baby products, and
+has been used in prior work on DPP learning (Gartrell et al., 2016; 2019; Gillenwater et al., 2014;
+Mariet & Sra, 2015). The registries contain items from 15 different categories, such as “apparel”,
+with a catalog of up to 100 items per category. Our evaluation mirrors that of Gartrell et al. (2019);
+we evaluate on the popular apparel category, which contains 14,970 registries, as well as on a dataset
+composed of the three most popular categories: apparel, diaper, and feeding, which contains a total
+of 31,218 registries.
+2. UK Retail: This dataset (Chen et al., 2012) contains baskets representing transactions from an
+online retail company that sells unique all-occasion gifts. We omit baskets with more than 100 items,
+leaving us with a dataset containing 19,762 baskets drawn from a catalog of M = 3,941 products.
+Baskets containing more than 100 items are in the long tail of the basket-size distribution of the data,
+so omitting larger baskets is reasonable, and allows us to use a low-rank factorization of the DPP
+with K = 100.
+3. Instacart: This dataset (Instacart, 2017) contains baskets purchased by Instacart users. We omit
+baskets with more than 100 items, resulting in 3.2 million baskets and a catalog of 49,677 products.
+4. Million Song: This dataset (McFee et al., 2012) contains playlists (“baskets”) of songs played by
+Echo Nest users. We trim playlists with more than 150 items, leaving us with 968,674 baskets and a
+catalog of 371,410 songs.
+5.2
+EXPERIMENTAL SETUP AND METRICS
+We use a small held-out validation set, consisting of 300 randomly-selected baskets, for tracking
+convergence during training and for tuning hyperparameters. A random selection of 2000 of the
+remaining baskets are used for testing, and the rest are used for training. Convergence is reached
+during training when the relative change in validation log-likelihood is below a predetermined
+threshold. We use PyTorch with Adam (Kingma & Ba, 2015) for optimization. We initialize C from
+the standard Gaussian distribution with mean 0 and variance 1, and B (which we set equal to V ) is
+initialized from the uniform(0, 1) distribution.
+Subset expansion task. We use greedy conditioning to do next-item prediction, as described in
+Section 4.2. We compare methods using a standard recommender system metric: mean percentile
+rank (MPR) (Hu et al., 2008; Li et al., 2010). MPR of 50 is equivalent to random selection; MPR of
+100 means that the model perfectly predicts the next item. See Appendix A for a complete description
+of the MPR metric.
+Subset discrimination task. We also test the ability of a model to discriminate observed subsets
+from randomly generated ones. For each subset in the test set, we generate a subset of the same
+length by drawing items uniformly at random (and we ensure that the same item is not drawn more
+than once for a subset). We compute the AUC for the model on these observed and random subsets,
+where the score for each subset is the log-likelihood that the model assigns to the subset.
+5.3
+PREDICTIVE PERFORMANCE RESULTS FOR LEARNING
+Since the focus of our work is on improving NDPP scalability, we use the low-rank symmetric
+DPP (Gartrell et al., 2017) and the low-rank NDPP of prior work (Gartrell et al., 2019) as baselines
+for our experiments. Table 2 compares these approaches and our scalable low-rank NDPP. We see
+that NDPPs generally outperform symmetric DPPs. Furthermore, we see that our scalable NDPP
+matches or exceeds the predictive quality of the baseline NDPP. We believe that our model sometimes
+improves upon this baseline NDPP due to the use of a simpler kernel decomposition with fewer
+parameters, likely leading to a simpliﬁed optimization landscape.
+5.4
+TIME COMPARISON FOR LEARNING
+In Fig. 1, we report the wall-clock training time of the decomposition of Gartrell et al. (2019) (NDPP)
+and our scalable NDPP for the Amazon: 3-category (Fig. 1(a)) and UK Retail (Fig. 1(b)) datasets.
+As expected, we observe that the scalable NDPP trains far faster than the NDPP for datasets with
+large ground sets. For the Amazon: 3-category dataset, both approaches show comparable results,
+with the scalable NDPP converging 1.07× faster than NDPP. But for the UK Retail dataset, which
+has a much larger ground set, our scalable NDPP achieves convergence about 8.31× faster. Notice
+7
+
+Published as a conference paper at ICLR 2021
+Table 2: Average MPR, AUC, and test log-likelihood for all datasets, for the low-rank symmetric
+DPP (Gartrell et al., 2017), low-rank NDPP (Gartrell et al., 2019), and our scalable NDPP models.
+MPR and AUC results show 95% conﬁdence estimates obtained via bootstrapping. Bold values
+indicate improvement over the symmetric low-rank DPP outside of the conﬁdence interval. See
+Appendix B for the hyperparameter settings used in these experiments. The baseline NDPP model
+cannot be feasibly trained on the Instacart and Million Song datasets, as memory and computational
+costs are prohibitive due to large ground set sizes.
+Amazon: Apparel (M = 100)
+Amazon: 3-category (M = 300)
+Metric
+Sym
+Nonsym
+Scalable nonsym
+Sym
+Nonsym
+Scalable nonsym
+MPR
+62.63 ± 1.81
+72.20 ± 3.07
+69.02 ± 2.57
+61.0 ± 2.73
+74.10 ± 2.49
+73.04 ± 2.58
+AUC
+0.68 ± 0.05
+0.77 ± 0.03
+0.74 ± 0.03
+0.76 ± 0.03
+0.82 ± 0.02
+0.82 ± 0.02
+test log-likelihood
+-10.02
+-9.64
+-9.63
+-18.11
+-16.96
+-17.14
+UK Retail (M = 3,941)
+Instacart (M = 49,677)
+Metric
+Sym
+Nonsym
+Scalable nonsym
+Sym
+Nonsym
+Scalable nonsym
+MPR
+69.95 ± 1.32
+74.17 ± 1.37
+76.79 ± 1.17
+93.86 ± 0.55
+-
+93.13 ± 0.53
+AUC
+0.58 ± 0.01
+0.66 ± 0.01
+0.73 ± 0.01
+0.83 ± 0.01
+-
+0.85 ± 0.005
+test log-likelihood
+-116.23
+-104.38
+-100.65
+-72.81
+-
+-72.74
+Million Song (M = 371,410)
+Metric
+Sym
+Nonsym
+Scalable nonsym
+MPR
+90.37 ± 0.71
+-
+90.41 ± 0.75
+AUC
+0.69 ± 0.01
+-
+0.77 ± 0.01
+test log-likelihood
+-335.25
+-
+-317.16
+0
+200
+400
+wall clock time (sec)
+0
+50
+100
+150
+200
+negative log-likelihood
+Scalable NDPP
+NDPP
+(a) Amazon: 3-category
+0
+1000
+2000
+wall clock time (sec)
+0
+200
+400
+600
+negative log-likelihood
+Scalable NDPP
+NDPP
+(b) UK Retail
+Figure 1: The negative log-likelihood of the training set for Gartrell et al. (2019)’s NDPP (blue,
+dashed) and our scalable NDPP (red, solid) versus wall-clock time for the (a) Amazon: 3-category
+and (b) UK Retail datasets.
+that our scalable NDPP also opens to the door to training on datasets with large M, such as the
+Instacart and Million Song dataset, which is infeasible for the baseline NDPP due to high memory
+and compute costs. For example, NDPP learning using Gartrell et al. (2019) for the Million Song
+dataset would require approximately 1.1 TB of memory, while using our scalable NDPP approach
+requires approximately 445.9 MB.
+5.5
+PERFORMANCE RESULTS FOR MAP INFERENCE
+We run various approximatation algorithms for MAP inference, including the greedy algorithm (Algo-
+rithm 1), stochastic greedy algorithm (Mirzasoleiman et al., 2015), MCMC-based DPP sampling (Li
+et al., 2016), and greedy local search (Kathuria & Deshpande, 2016). The stochastic greedy algorithm
+computes marginal gains of a few items chosen uniformly at random and selects the best among them.
+The MCMC sampling begins with a random subset Y of size k and picks i ∈Y and j /∈Y uniformly
+at random. Then, it swaps them with probability det(LY ∪{j}\{i})/(det(LY ∪{j}\{i}) + det(LY ))
+and iterates this process. The greedy local search algorithm (Kathuria & Deshpande, 2016) starts from
+the output from the greedy algorithm, Y G, and replaces i ∈Y G with j /∈Y G that gives the maximum
+improvement, if such i, j exist. This replacement process iterates until no improvement exists, or at
+8
+
+Published as a conference paper at ICLR 2021
+Table 3: Average relative error and 95% conﬁdence intervals of MAP inference algorithms on
+NDPPs learned from real-world datasets. For all datasets, we evaluate 10 kernels learned with
+different initializations, and run 100 random trials for stochastic greedy (Mirzasoleiman et al., 2015)
+and MCMC sampling (Li et al., 2016). All errors are relative to greedy local search (Kathuria &
+Deshpande, 2016).
+Algorithms
+Amazon: Apparel
+Amazon: 3-category
+UK Retail
+Instacart
+Million Song
+Greedy (Algorithm 1)
+0.0336 ± 0.0066
+0.0093 ± 0.0015
+0.0446 ± 0.0035
+0.0173 ± 0.0028
+0.0052 ± 0.0017
+Stochastic greedy
+0.1606 ± 0.0133
+0.1838 ± 0.0116
+0.0960 ± 0.0078
+0.1229 ± 0.0091
+0.0823 ± 0.0108
+MCMC sampling
+0.7155 ± 0.0287
+0.7094 ± 0.0207
+0.9365 ± 0.0342
+1.9291 ± 0.047
+1.0493 ± 0.0607
+Table 4: Wall-clock time (in milliseconds) of MAP inference algorithms on NDPPs learned from
+real-world datasets.
+Algorithms
+Amazon: Apparel
+Amazon: 3-category
+UK Retail
+Instacart
+Million Song
+Greedy local search
+5.78 ms
+9.67 ms
+58.74 ms
+1.024 s
+7.277 s
+Greedy (Algorithm 1)
+0.14 ms
+0.34 ms
+1.60 ms
+36.16 ms
+338.09 ms
+Stochastic greedy
+0.25 ms
+0.47 ms
+1.79 ms
+36.94 ms
+348.67 ms
+MCMC sampling
+0.19 ms
+0.35 ms
+2.85 ms
+42.85 ms
+303.20 ms
+most k2 log(10k) steps have been completed, to guarantee a tight approximation (Kathuria & Desh-
+pande, 2016). We use greedy local search as a baseline since it always returns a better solution than
+greedy. However, it is the slowest among all algorithms, as its time complexity is O(MKk4 log k).
+We choose k = 10, and provide more details of all algorithms in Appendix C.
+To evaluate the performance of MAP inference, we report the relative log-determinant ratio deﬁned as
+
+log det(LY ∗) −log det(LY )
+log det(LY ∗)
+
+where Y is the output of benchmark algorithms and Y ∗is the greedy local search result. Results are
+reported in Table 3. We observe that the greedy (Algorithm 1) achieves performance close to that of
+the signiﬁcantly more expensive greedy local search algorithm, with relative errors of up to 0.045.
+Stochastic greedy and MCMC sampling have signiﬁcantly larger errors.
+For completeness, in Appendix E we also present experiments comparing the performance of greedy
+and exact MAP on small synthetic NDPPs, for which the exact MAP can be feasibly computed.
+5.6
+TIME COMPARISON FOR MAP INFERENCE
+We provide the wall-clock time of the above algorithms for real-world datasets in Table 4. Observe
+that the greedy algorithm is the fastest method for all datasets except Million Song. For Million Song,
+MCMC sampling is faster than other approaches, but it has much larger relative errors in terms of
+log-determinant (see Table 3), which is not suitable for our purposes.
+6
+CONCLUSION
+We have presented a new decomposition for nonsymmetric DPP kernels that can be learned in time
+linear in the size of the ground set, which is a signiﬁcant improvement over the complexity of prior
+work. Empirical results indicate that this decomposition matches the predictive performance of the
+prior decomposition. We have also derived the ﬁrst MAP algorithm for nonsymmetric DPPs and
+proved a lower bound on the quality of its approximation. In future work we hope to develop intuition
+about the meaning of the parameters in the C matrix and consider kernel decompositions that cover
+other parts of the nonsymmetric P0 space.
+9
+
+Published as a conference paper at ICLR 2021
+REFERENCES
+Nima Anari, Shayan Oveis Gharan, and Alireza Rezaei. Monte Carlo Markov Chain Algorithms for
+Sampling Strongly Rayleigh Distributions and Determinantal Point Processes. In Conference on
+Learning Theory (COLT), 2016.
+Andrew An Bian, Joachim M. Buhmann, Andreas Krause, and Sebastian Tschiatschek. Guarantees
+for Greedy Maximization of Non-submodular Functions with Applications. In International
+Conference on Machine Learning (ICML), 2017.
+Erdem Bıyık, Kenneth Wang, Nima Anari, and Dorsa Sadigh. Batch Active Learning Using Determi-
+nantal Point Processes. arXiv:1906.07975, 2019.
+Victor-Emmanuel Brunel. Learning Signed Determinantal Point Processes through the Principal
+Minor Assignment Problem. In Neural Information Processing Systems (NeurIPS), 2018.
+Daqing Chen, Sai Laing Sain, and Kun Guo. Data mining for the online retail industry: A case study
+of RFM model-based customer segmentation using data mining. Journal of Database Marketing
+& Customer Strategy Management, 2012.
+Laming Chen, Guoxin Zhang, and Eric Zhou.
+Fast greedy MAP inference for Determinantal
+Point Process to improve recommendation diversity. In Neural Information Processing Systems
+(NeurIPS), 2018.
+Michał Derezi´nski. Fast determinantal point processes via distortion-free intermediate sampling. In
+Conference on Learning Theory (COLT), 2019.
+Mohamed Elfeki, Camille Couprie, Morgane Riviere, and Mohamed Elhoseiny. GDPP: Learning
+Diverse Generations using Determinantal Point Processes. In International Conference on Machine
+Learning (ICML), 2019.
+Li Fang. On the Spectra of P- and P0-Matrices. In Linear Algebra and its Applications, 1989.
+Mike Gartrell, Ulrich Paquet, and Noam Koenigstein. Bayesian low-rank determinantal point
+processes. In Conference on Recommender Systems (RecSys). ACM, 2016.
+Mike Gartrell, Ulrich Paquet, and Noam Koenigstein. Low-Rank Factorization of Determinantal
+Point Processes. In Conference on Artiﬁcial Intelligence (AAAI), 2017.
+Mike Gartrell, Victor-Emmanuel Brunel, Elvis Dohmatob, and Syrine Krichene. Learning Non-
+symmetric Determinantal Point Processes. In Neural Information Processing Systems (NeurIPS),
+2019.
+Jennifer Gillenwater, Alex Kulesza, and Ben Taskar. Discovering Diverse and Salient Threads in
+Document Collections. In Empirical Methods in Natural Language Processing (EMNLP), 2012a.
+Jennifer Gillenwater, Alex Kulesza, and Ben Taskar. Near-Optimal MAP Inference for Determinantal
+Point Processes. In Neural Information Processing Systems (NIPS), 2012b.
+Jennifer Gillenwater, Alex Kulesza, Emily Fox, and Ben Taskar. Expectation-Maximization for
+learning Determinantal Point Processes. In Neural Information Processing Systems (NIPS), 2014.
+Jennifer Gillenwater, Alex Kulesza, Zelda Mariet, and Sergei Vassilvtiskii. A Tree-Based Method
+for Fast Repeated Sampling of Determinantal Point Processes. In International Conference on
+Machine Learning (ICML), 2019.
+Insu Han and Jennifer Gillenwater. MAP Inference for Customized Determinantal Point Processes via
+Maximum Inner Product Search. In Conference on Artiﬁcial Intelligence and Statistics (AISTATS),
+2020.
+Insu Han, Prabhanjan Kambadur, Kyoungsoo Park, and Jinwoo Shin. Faster greedy MAP inference
+for determinantal point processes. In International Conference on Machine Learning (ICML),
+2017.
+10
+
+Published as a conference paper at ICLR 2021
+Yifan Hu, Yehuda Koren, and Chris Volinsky. Collaborative Filtering for Implicit Feedback Datasets.
+In International Conference on Data Mining (ICDM), 2008.
+Instacart.
+The Instacart Online Grocery Shopping Dataset, 2017.
+URL https://www.
+instacart.com/datasets/grocery-shopping-2017. Accessed May 2020.
+Tarun Kathuria and Amit Deshpande.
+On sampling and greedy map inference of constrained
+determinantal point processes. arXiv preprint arXiv:1607.01551, 2016.
+A.K. Kelmans and B.N. Kimelfeld. Multiplicative submodularity of a matrix’s principal minor as a
+function of the set of its rows and some combinatorial applications. Discrete Mathematics, 1983.
+Diederik P Kingma and Jimmy Ba. Adam: A method for stochastic optimization. In International
+Conference on Learning Representations (ICLR), 2015.
+Chun-Wa Ko, Jon Lee, and Maurice Queyranne. An Exact Algorithm for Maximum Entropy Sampling.
+Operations Research, 1995.
+Alex Kulesza and Ben Taskar. Learning determinantal point processes. In Conference on Uncertainty
+in Artiﬁcial Intelligence (UAI), 2011.
+Alex Kulesza, Ben Taskar, et al. Determinantal Point Processes for Machine Learning. Foundations
+and Trends® in Machine Learning, 2012.
+Claire Launay, Bruno Galerne, and Agnès Desolneux. Exact Sampling of Determinantal Point
+Processes without Eigendecomposition. arXiv preprint arXiv:1802.08429, 2018.
+Chengtao Li, Stefanie Jegelka, and Suvrit Sra. Fast DPP Sampling for Nystrom with Application to
+Kernel Methods. In International Conference on Machine Learning (ICML), 2016.
+Yanen Li, Jia Hu, ChengXiang Zhai, and Ye Chen. Improving One-class Collaborative Filtering by
+Incorporating Rich User Information. In Conference on Information and Knowledge Management
+(CIKM), 2010.
+Zelda Mariet and Suvrit Sra. Fixed-point algorithms for learning Determinantal Point Processes. In
+International Conference on Machine Learning (ICML), 2015.
+Zelda Mariet and Suvrit Sra. Diversity Networks: Neural Network Compression Using Determinantal
+Point Processes. In International Conference on Learning Representations (ICLR), 2016.
+Zelda Mariet, Mike Gartrell, and Suvrit Sra. Learning Determinantal Point Processes by Sampling
+Inferred Negatives. In Conference on Artiﬁcial Intelligence and Statistics (AISTATS), 2019.
+Brian McFee, Thierry Bertin-Mahieux, Daniel PW Ellis, and Gert RG Lanckriet. The million song
+dataset challenge. In Proceedings of the 21st International Conference on World Wide Web, 2012.
+Baharan Mirzasoleiman, Ashwinkumar Badanidiyuru, Amin Karbasi, Jan Vondrák, and Andreas
+Krause. Lazier Than Lazy Greedy. In Conference on Artiﬁcial Intelligence (AAAI), 2015.
+G. Nemhauser, L. Wolsey, and M. Fisher. An Analysis of Approximations for Maximizing Submodu-
+lar Set Functions I. Mathematical Programming, 14(1), 1978.
+Jack Poulson. High-performance sampling of generic Determinantal Point Processes. arXiv preprint
+arXiv:1905.00165, 2019.
+John E. Prussing. The Principal Minor Test for Semideﬁnite Matrices. Journal of Guidance, Control,
+and Dynamics, 1986.
+Aidean Sharghi, Ali Borji, Chengtao Li, Tianbao Yang, and Boqing Gong. Improving Sequential
+Determinantal Point Processes for Supervised Video Summarization. In Proceedings of the
+European Conference on Computer Vision (ECCV), 2018.
+G Thompson. Normal forms for skew-symmetric matrices and Hamiltonian systems with ﬁrst
+integrals linear in momenta. In Proceedings of the American Mathematical Society, 1988.
+11
+
+Published as a conference paper at ICLR 2021
+Robert C Thompson.
+Principal submatrices IX: Interlacing inequalities for singular values of
+submatrices. Linear Algebra and its Applications, 1972.
+Michael J. Tsatsomeros. Generating and Detecting Matrices with Positive Principal Minors. In Focus
+on Computational Neurobiology, 2004.
+Mark Wilhelm, Ajith Ramanathan, Alexander Bonomo, Sagar Jain, Ed H. Chi, and Jennifer Gillen-
+water. Practical Diversiﬁed Recommendations on YouTube with Determinantal Point Processes.
+In Conference on Information and Knowledge Management (CIKM), 2018.
+Cheng Zhang, Hedvig Kjellström, and Stephan Mandt. Determinantal Point Processes for Mini-Batch
+Diversiﬁcation. In Conference on Uncertainty in Artiﬁcial Intelligence (UAI), 2017.
+12
+
+Published as a conference paper at ICLR 2021
+A
+MEAN PERCENTILE RANK
+We begin our deﬁnition of MPR by deﬁning percentile rank (PR). First, given a set J, let pi,J =
+Pr(J ∪{i} | J). The percentile rank of an item i given a set J is deﬁned as
+PRi,J =
+P
+i′̸∈J 1(pi,J ≥pi′,J)
+|Y\J|
+× 100%
+where Y\J indicates those elements in the ground set Y that are not found in J.
+For our evaluation, given a test set Y , we select a random element i ∈Y and compute PRi,Y \{i}. We
+then average over the set of all test instances T to compute the mean percentile rank (MPR):
+MPR =
+1
+|T |
+X
+Y ∈T
+PRi,Y \{i}.
+B
+HYPERPARAMETERS FOR EXPERIMENTS IN TABLE 2
+Preventing numerical instabilities: The ﬁrst term on the right side of Eq. 2 will be singular whenever
+|Yi| > K, where Yi is an observed subset. Therefore, to address this in practice we set K to the
+size of the largest subset observed in the data, K′, as in Gartrell et al. (2017). However, this does
+not entirely address the issue, as the ﬁrst term on the right side of Eq. 2 may still be singular even
+when |Yi| ≤K. In this case though, we know that we are not at a maximum, since the value of the
+objective function is −∞. Numerically, to prevent such singularities, in our implementation we add a
+small ϵI correction to each LYi when optimizing Eq. 2 (we set ϵ = 10−5 in our experiments).
+We perform a grid search using a held-out validation set to select the best performing hyperparameters
+for each model and dataset. The hyperparameter settings used for each model and dataset are
+described below.
+Symmetric low-rank DPP (Gartrell et al., 2016). For this model, we use K for the number of item
+feature dimensions for the symmetric component V , and α for the regularization hyperparameter for
+V . We use the following hyperparameter settings:
+• Both Amazon datasets: K = 30, α = 0.
+• UK Retail dataset: K = 100, α = 1.
+• Instacart dataset: K = 100, α = 0.001.
+• Million Song dataset: K = 150, α = 0.0001.
+Baseline NDPP (Gartrell et al., 2019). For this model, to ensure consistency with the notation used
+in Gartrell et al. (2019), we use D to denote the number of item feature dimensions for the symmetric
+component V , and D′ to denote the number of item feature dimensions for the nonsymmetric
+components, B and C. As described in Gartrell et al. (2019), α is the regularization hyperparameter
+for the V , while β and γ are the regularization hyperparameters for B and C, respectively. We use
+the following hyperparameter settings:
+• Both Amazon datasets: D = 30, α = 0.
+• Amazon apparel dataset: D′ = 30.
+• Amazon three-category dataset: D′ = 100.
+• UK Retail dataset: D = 100, D′ = 20, α = 1.
+• All datasets: β = γ = 0.
+Scalable NDPP. As described in Section 3, we use K to denote the number of item feature dimensions
+for the symmetric component V and the dimensionality of the nonsymmetric component C. α is the
+regularization hyperparameter. We use the following hyperparameter settings:
+• Amazon apparel dataset: K = 30, α = 0.
+• Amazon three-category dataset: K = 100, α = 1.
+• UK dataset: K = 100, α = 0.01.
+13
+
+Published as a conference paper at ICLR 2021
+• Instacart dataset: K = 100, α = 0.001.
+• Million Song dataset: K = 150, α = 0.01.
+For all of the above model conﬁgurations we use a batch size of 200 during training, except for the
+scalable NDPPs trained on the Amazon apparel, Amazon three-category, Instacart, and Million Song
+datasets, where a batch size of 800 is used.
+C
+BENCHMARK ALGORITHMS FOR MAP INFERENCE
+We test the following approximate algorithms for MAP inference:
+Greedy local search.
+This algorithm starts from the output of greedy, Y G, and replaces i ∈Y G
+with j /∈Y G that gives the maximum improvement of the determinant, if such i, j exist. Kathuria
+& Deshpande (2016) showed that running the search for such a swap O(k2 log(k/ε)) times with
+an accuracy parameter ε gives a tight approximation guarantee for MAP inference for symmetric
+DPPs. We set the number of swaps to ⌊k2 log(10k)⌋for ε = 0.1 and use greedy local search as a
+baseline, since it is strictly an improvement on the greedy solution. The proposed greedy conditioning
+can be used for fast greedy local search. Speciﬁcally, for each i ∈Y G, Algorithm 1 can compute
+marginal improvements conditioned by Y G \ {i} in time O(MKk), and thus its runtime can be
+O(MKk4 log(k/ε)). However, it is the slowest among all of our benchmark algorithms.
+Stochastic greedy.
+This algorithm computes marginal gains of a few items chosen uniformly at
+random and selects the best among them. Mirzasoleiman et al. (2015) proved that (M/k) log(1/ε)
+samples are enough to guarantee an (1 −1/e −ε)-approximation ratio for submodular functions (i.e.,
+symmetric DPPs). We choose ε = 0.1 and set the number of samples to ⌊(M/k) log(10)⌋. Under
+this setting, the time complexity of stochastic greedy is O(MKk2 log(1/ε)), which is better than
+the naïve exact greedy algorithm. However, we note that it is worse than that of our efﬁcient greedy
+implement (Algorithm 1). This is because the stochastic greedy uses different random samples for
+every iteration and this does not take advantage of the amortized computations in Lemma 2. In our
+experiments, we simply modify line 10 in Algorithm 1 for stochastic greedy (argmax is operated
+on a random subset of marginal gains), hence it can run in O(MKk + (M/k) log(1/ε)) time. In
+practice, we observe that stochastic greedy is slightly slower than exact greedy due to the additional
+costs of the random sampling process.
+MCMC sampling.
+We also compare inference algorithms with sampling from a nonsymmetric
+DPP. To the best of our knowledge, exact sampling of a non-Hermitian DPP was studied in Poulson
+(2019), which requires the Cholesky decomposition with O(M 3) complexity. This is infeasible for a
+large M. To resolve this, Markov Chain Monte-Carlo (MCMC) based sampling is preferred (Li et al.,
+2016) for symmetric DPPs. In particular, we consider a Gibbs sampling for k-DPP, which begins
+with a random subset Y with size k, and picks i ∈Y and j /∈Y uniformly at random. Then, it swaps
+them with probability
+det(LY ∪{j}\{i})
+det(LY ∪{j}\{i}) + det(LY )
+(11)
+and repeat this process for several steps. Li et al. (2016) showed that O(Nk log(k/ε)) swaps are
+enough to approximate the ground-truth distribution under symmetric DPPs. However, for a fair
+runtime comparison to Algorithm 1, we set the number of swaps to ⌊3N/K⌋.
+D
+COROLLARY OF THEOREM 2
+Theorem 2 requires the technical condition σmin > 1, but in practice there is no particular evidence
+that this condition holds. While this condition can be achieved by multiplying L by a constant, this
+leads to a (potentially large) additive term in Eq. 10. Here, we provide Corollary 1 which excludes
+the σmin > 1 assumption from Theorem 2, and quantiﬁes this additive term.
+Corollary 1. Consider a nonsymmetric low-rank DPP L = V V ⊤+ BCB⊤, where V , B are of
+rank K, and C ∈RK×K. Given a cardinality budget k, let σmin and σmax denote the smallest and
+14
+
+Published as a conference paper at ICLR 2021
+10
+20
+30
+40
+0
+0.2
+0.4
+0.6
+0.8
+1
+(a) Symmetric DPP
+10
+20
+30
+40
+0
+0.2
+0.4
+0.6
+0.8
+1
+(b) Nonsymmetric DPP
+0
+10
+20
+30
+10-5
+100
+105
+(c) Singular values
+Figure 2: Approximation ratios of greedy with respect to different values of log(σmax/σmin) from
+Corollary 1 under (a) symmetric DPP and (b) nonsymmetric DPP. (c) The singular values of the
+kernels learned for the “Amazon: 3-category” dataset. We construct 10,000 random P0 matrices
+L ∈R5×5, with rank K = 3, whose singular values are from the learned kernels.
+largest singular values of LY for all Y ⊆[[M]] and |Y | ≤2k. Let κ := σmax/σmin. Then,
+log det(LY G) ≥4(1 −e−1/4)
+2 log κ + 1 log det(LY ∗) −
+
+1 −4(1 −e−1/4)
+2 log κ + 1
+
+k (1 −log σmin)
+(12)
+where Y G is the output of Algorithm 1 and Y ∗is the optimal solution of MAP inference in Eq. 4.
+The proof of Corollary 1 is provided in Appendix F.5. Note that instead of log(σmax)/ log(σmin),
+Corollary 1 has a log(σmax/σmin) term in the denominator.
+E
+PERFORMANCE GUARANTEE FOR GREEDY MAP INFERENCE
+The matrices learned on real datasets are too large to compute the exact MAP solution, but we can
+compute exact MAP for small matrices. In this section, we explore the performance of the greedy
+algorithm studied in Theorem 2 for 5 × 5 synthetic kernel matrices. More formally, we ﬁrst pick
+K = 3 singular values s1, s2, s3 from a kernel learned for the “Amazon: 3-category” dataset (a plot
+of these singular values can be seen in Fig. 2(c)) and generate L = V1diag([s1, s2, s3])V ⊤
+2 , where
+V1, V2 ∈R5×3 are random orthonormal matrices. To ensure that L is a P0 matrix, we repeatedly
+sample V1, V2 until all principal minors of L are nonnegative. We also evaluate the performance of
+the symmetric DPP, where the kernel matrices are generated similarly to the NDPP, except we set
+V1 = V2. We set k = 3 and generate 10,000 random kernels for both symmetric DPPs and NDPPs.
+The results for symmetric and nonsymmetric DPPs are shown in Fig. 2(a) and Fig. 2(b), respectively.
+We plot the approximation ratio of Algorithm 1, i.e., log det(LY G)/ log det(LY ∗), with respect
+to log(σmax/σmin), from Corollary 1. We observe that the greedy algorithm for both often shows
+approximation ratios close to 1. However, the worst-case ratio for NDPPs is worse than that of
+symmetric DPPs; log det(LY ) for L ∈P +
+0 is non-submodular, and the greedy algorithm with a
+nonsubmodular function does not have as tight of a worst-case bound as in the symmetric case.
+15
+
+Published as a conference paper at ICLR 2021
+F
+PROOFS
+F.1
+PROOF OF LEMMA 1
+Lemma 1. Let A ∈RM×M be a skew-symmetric matrix with rank ℓ≤M. Then, there exist
+B ∈RM×ℓand positive numbers λ1, . . . , λ⌊ℓ/2⌋, such that A = BCB⊤, where C ∈Rℓ×ℓis the
+block-diagonal matrix with ⌊ℓ/2⌋diagonal blocks of size 2 given by Σi, i = 1, . . . , ⌊ℓ/2⌋and zero
+elsewhere.
+Proof. First, we note that rank of a nonsingular skew-symmetric matrix is always even, because all
+of its eigenvalues are purely imaginary and come in conjugate pairs. There exists some orthogonal
+matrix P ∈RM×M and
+Σ =
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+0
+λ1
+−λ1
+0
+0
+λ2
+0
+−λ2
+0
+...
+0
+λℓ/2
+0
+−λℓ/2
+0
+0
+...
+0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+(13)
+such that A = PΣP⊤(see, e.g.,(Thompson, 1988, Proposition 2.1)).
+Let C be the ℓ×ℓsupmatrix of Σ obtained by keeping its ﬁrst ℓrows and columns and let Q =
+
+Iℓ
+0
+
+,
+where Iℓis the ℓ× ℓidentity matrix. Then, Σ = QCQ⊤and one can write A = P QCQ⊤P ⊤.
+Setting B = P Q proves the lemma.
+F.2
+PROOF OF THEOREM 1
+Theorem 1. Given an NDPP with kernel L = V V ⊤+ BCB⊤, parameterized by V of rank K, B
+of rank K, and a K × K matrix C, we can compute the regularized log-likelihood (Eq. 2) and its
+gradient in O(MK2 + K3 + nK′3) time, where K′ is the size of the largest of the n training subsets.
+Proof. We ﬁrst show that the log-likelihood can be computed in time linear in M. Using the matrix
+determinant lemma, one can easily verify that the DPP normalization term can be computed as
+det(I + L) = det
+
+I + (V
+BC)
+
+V ⊤
+B⊤
+
+= det
+
+I2K +
+
+V ⊤
+B⊤
+
+(V
+BC)
+
+(14)
+where I2K is the identity matrix with dimension 2K. As Eq. 14 requires a matrix-multiplication
+between (2K)×M matrices and the determinant of (2K)×(2K) matrices, this allows us to transform
+a O(M 3) operation into an O(MK2 + K3) one.
+Having established that the normalization term in the likelihood can be computed in O(MK2 + K3)
+time, we proceed with characterizing the complexity of the other terms in the likelihood. The ﬁrst
+term in Eq. 2 consists of determinants of size |Yi|. Assuming that these never exceed size K′, each
+can be computed in at most O(K′3) time. The regularization term is a simple sum of norms that can
+be computed in O(MK) time. Therefore, the full regularized log-likelihood can be computed in
+O(MK2 + K3 + nK′3) time.
+16
+
+Published as a conference paper at ICLR 2021
+To prove that the gradient of the log-likelihood can be computed in time linear in M, we begin by
+showing that the logarithm of DPP normalization term can be factorized as follows:
+Z = log det(I + L)
+(15)
+= log det
+
+I2K +
+
+V ⊤
+B⊤
+
+(V
+B)
+
+IK
+0
+0
+C
+
+(16)
+= log det
+
+IK
+0
+0
+C−1
+
++
+
+V ⊤
+B⊤
+
+(V
+B)
+
++ log det
+
+IK
+0
+0
+C
+
+(17)
+= log det
+
+IK + V ⊤V
+V ⊤B
+B⊤V
+C−1 + B⊤B
+
++ log det(C)
+(18)
+= log det
+ IK + V ⊤V
+
++ log det
+ C−1 + B⊤(I −V (IK + V ⊤V )−1V ⊤)B
+
++ log det(C)
+(19)
+where Eq. 17 follows from the determinant commutativity (i.e., det(AB) = det(A) det(B))
+and Eq. 18 and Eq. 19 come from the Schur’s determinant identity†. For simplicity, we write
+X = I −V (IK + V ⊤V )−1V ⊤and (C−1)⊤= C−⊤, and note that X depends only on V .
+The gradient of Z has three parts: ∇Z = (∇V Z, ∇BZ, ∇CZ) where each can be computed as
+∇V Z = ∇V log det(IK + V ⊤V ) + ∇V log det(C−1 + B⊤XB)
+(20)
+= 2V (IK + V ⊤V )−1
+−XB((C−1 + B⊤XB)−1 + (C−⊤+ B⊤XB)−1)B⊤XV
+(21)
+∇BZ = ∇B log det(C−1 + B⊤XB)
+(22)
+= XB
+ (C−1 + B⊤XB)−1 + (C−⊤+ B⊤XB)−1
+(23)
+∇CZ = ∇C log det(C) + ∇C log det(C−1 + B⊤XB)
+(24)
+= C−⊤−C−⊤(C−1 + B⊤XB)−⊤C−⊤
+(25)
+Observe that X combines a M × M identity matrix with M × K matrices, hence multiplying it with
+a M ×K matrix (e.g., XV or XB) can be computed in O(MK2) time. Since each of the remaining
+matrix inverses in Eq. 21, Eq. 23, and Eq. 25 involve a K × K matrix inverse, with a cost of O(K3)
+operations, we have a net computational cost of O(MK2 + K3) for computing ∇log det(I + L).
+The gradient of the ﬁrst term in Eq. 2 involves computing gradients of determinants of size at most
+K′, which results in size K′ matrix inverses, since for a matrix A,
+∂
+∂Aij (log det(A)) = (A−1)⊤
+ij.
+Each of these inverses can be computed in O(K′3) time. The gradient of the simple sum-of-norms
+regularization term can be computed in O(MK) time. Therefore, combining these results with the
+results above for the complexity of the gradient of the normalization term, we have the following
+overall complexity of the gradient for the full log-likelihood: O(MK2 + K3 + nK′3).
+F.3
+PROOF OF LEMMA 2
+Lemma 2. Given B ∈RM×K, C ∈RK×K, and Y = {a1, . . . , ak} ⊆[[M]], let bi ∈R1×K be the
+i-th row in B and BY ∈R|Y |×K be a matrix containing rows in B indexed by Y . Then, it holds that
+B⊤
+Y (BY CB⊤
+Y )−1BY =
+k
+X
+j=1
+p⊤
+j qj,
+(6)
+where row vectors pj, qj ∈R1×K for j = 1, . . . , k satisfy p1 = ba1/(ba1Cb⊤
+a1), q1 = ba1, and
+pj+1 =
+baj −bajC⊤Pj
+i=1 q⊤
+i pi
+bajC(baj −bajC⊤Pj
+i=1 q⊤
+i pi)⊤,
+qj+1 = baj −bajC
+j
+X
+i=1
+p⊤
+i qi.
+(7)
+†det
+
+A
+B
+C
+D
+
+= det(A) det(D −CA−1B).
+17
+
+Published as a conference paper at ICLR 2021
+Proof. We prove by induction on k. When k = 1, the result is trivial because
+B⊤
+Y (BY CB⊤
+Y )−1BY = b⊤
+a1(ba1Cb⊤
+a1)−1ba1 = p⊤
+1 q1.
+(26)
+Now we assume that the statement holds for k −1. Let Y := {a1, . . . , ak−1} and a := ak. From the
+inductive hypothesis, it holds
+B⊤
+Y (BY CB⊤
+Y )−1BY =
+k−1
+X
+j=1
+p⊤
+j qj.
+(27)
+Now we write
+B⊤
+Y ∪{a}
+
+BY ∪{a}CB⊤
+Y ∪{a}
+−1
+BY ∪{a}
+(28)
+= B⊤
+Y ∪{a}
+
+BY
+ba
+
+C
+ B⊤
+Y
+b⊤
+a
+−1
+BY ∪{a}
+(29)
+=
+ B⊤
+Y
+b⊤
+a
+ 
+BY CB⊤
+Y
+BY Cb⊤
+a
+baCB⊤
+Y
+baCb⊤
+a
+−1 
+BY
+ba
+
+.
+(30)
+To handle the inverse matrix we employ the Schur complement, which yields
+
+X
+y
+z
+w
+−1
+=
+
+X−1
+0
+0
+0
+
++
+1
+w −zX−1y
+
+X−1yzX−1
+−X−1y
+−zX−1
+1
+
+(31)
+for any non-singular square matrix X ∈Rk×k, column vector y ∈Rk and row vector z ∈R1×k,
+unless (w −zX−1y) = 0. Applying this, we have
+
+BY CB⊤
+Y
+BY Cb⊤
+a
+baCB⊤
+Y
+baCb⊤
+a
+−1
+=
+
+(BY CB⊤
+Y )−1
+0
+0
+0
+
++
+1
+baCb⊤
+a −baCB⊤
+Y (BY CB⊤
+Y )−1BY Cb⊤
+a
+
+(BY CB⊤
+Y )−1BY Cb⊤
+a baCB⊤
+Y (BY CB⊤
+Y )−1
+−(BY CB⊤
+Y )−1BY Cb⊤
+a
+−baCB⊤
+Y (BY CB⊤
+Y )−1
+1.
+
+(32)
+Substituting Eq. 32 into Eq. 30, we obtain
+B⊤
+Y ∪{a}
+
+BY ∪{a}CB⊤
+Y ∪{a}
+−1
+BY ∪{a}
+(33)
+= B⊤
+Y
+ BY CB⊤
+Y
+−1 BY +
+ b⊤
+a −B⊤
+Y (BY CB⊤
+Y )−1BY Cb⊤
+a
+  ba −baCB⊤
+Y (BY CB⊤
+Y )−1BY
+
+baC
+ b⊤
+a −B⊤
+Y (BY CB⊤
+Y )−1BY Cb⊤
+a
+
+(34)
+=
+k−1
+X
+j=1
+p⊤
+j qj +
+
+b⊤
+a −Pk−1
+j=1 p⊤
+j qjCb⊤
+a
+ 
+ba −baC Pk−1
+j=1 p⊤
+j qj
+
+baC
+
+b⊤
+a −Pk−1
+j=1 p⊤
+j qjCb⊤
+a
+
+(35)
+=
+k−1
+X
+j=1
+p⊤
+j qj + p⊤
+k qk
+(36)
+where the third line holds from the inductive hypothesis Eq. 27 and the last line holds from the
+deﬁnition of pk, qk ∈R1×K.
+F.4
+PROOF OF THEOREM 2
+Theorem 2. Consider a nonsymmetric low-rank DPP L = V V ⊤+ BCB⊤, where V , B are of
+rank K, and C ∈RK×K. Given a cardinality budget k, let σmin and σmax denote the smallest and
+largest singular values of LY for all Y ⊆[[M]] and |Y | ≤2k. Assume that σmin > 1. Then,
+log det(LY G) ≥
+4(1 −e−1/4)
+2(log σmax/log σmin) −1 log det(LY ∗)
+(10)
+where Y G is the output of Algorithm 1 and Y ∗is the optimal solution of MAP inference in Eq. 4.
+18
+
+Published as a conference paper at ICLR 2021
+Proof. The proof of Theorem 2 relies on an approximation guarantee for nonsubmodular greedy
+maximization (Bian et al., 2017, Theorem 1). We introduce their result below.
+Theorem 3 ((Bian et al., 2017, Theorem 1)). Consider a set function f deﬁned on all subsets
+of {1, . . . , M} = [[M]] is monotone nondecreasing and nonnegative, i.e., 0 ≤f(Y ) ≤f(X) for
+∀Y ⊆X ⊆[[M]]. Given a cardinality budget k ≥1, let Y ∗be the optimal solution of max|Y |=k f(Y )
+and Y 0 = ∅, Y t := {a1, . . . , at}, t = 1, . . . , k be the successive chosen by the greedy algorithm
+with budget k. Denote γ be the largest scalar such that
+X
+i∈X\Y t
+(f(Y t ∪{i}) −f(Y t)) ≥γ(f(X ∪Y t) −f(Y t)),
+(37)
+for ∀X ⊆[[M]], |X| = k and t = 0, . . . , k −1, and α be the smallest scalar such that
+f(Y t−1 ∪{i} ∪X) −f(Y t−1 ∪X) ≥(1 −α) (f(Y t−1 ∪{i}) −f(Y t−1)).
+(38)
+for ∀X ⊆[[M]], |X| = k and i ∈Y k−1 \ X. Then, it holds that
+f(Y k) ≥1
+α
+ 1 −e−αγ
+f(Y ∗).
+(39)
+In order to apply this result for MAP inference of NDPPs, the objective should be monotone
+nondecreasing and nonnegative. We ﬁrst show that σmin > 1 is a sufﬁcient condition for both
+monotonicity and nonnegativity.
+Lemma 3. Given a P0 matrix L ∈RM×M and the budget k ≥0, a set function f(Y ) = log det(LY )
+deﬁned on Y ⊆[[M]] is monotone nondecreasing and nonnegative for |Y | ≤k when σmin > 1.
+The proof of Lemma 3 is provided in Appendix F.6. Next, we aim to ﬁnd proper bounds on α
+and γ. To resolve this, we provide the following upper and lower bounds of the marginal gain for
+f(Y ) = log det(LY ).
+Lemma 4. Let f(Y ) = log det(LY ) and assume that σmin > 1. Then, for Y ⊆[[M]], |Y | < 2k and
+i /∈Y , it holds that
+f(Y ∪{i}) −f(Y ) ≥log σmin,
+(40)
+f(Y ∪{i}) −f(Y ) ≤2 log σmax −log σmin
+(41)
+where σmin and σmax are the smallest and largest singular values of LY for all Y ⊆[[M]], |Y | ≤2k.
+The proof of Lemma 4 is provided in Appendix F.7. To bound γ, we consider X ⊆[[M]], |X| = k
+and denote X \ Y t = {x1, . . . , xr} ̸= ∅. Then,
+X
+i∈X\Y t
+(f(Y t ∪{i}) −f(Y )) =
+r
+X
+j=1
+f(Y t ∪{xr}) −f(Y t) ≥r log σmin
+(42)
+where the last inequality comes from Eq. 40. Similarly, we get
+f(X ∪Y t) −f(Y t) =
+r
+X
+j=1
+f({x1, . . . , xj} ∪Y t) −f({x1, . . . , xj−1} ∪Y t)
+(43)
+≤r(2 log σmax −log σmin)
+(44)
+where the last inequality comes from Eq. 41. Combining Eq. 42 to Eq. 44, we obtain that
+P
+i∈X\Y t f(Y t ∪{i}) −f(Y t)
+f(X ∪Y t) −f(Y t)
+≥
+log σmin
+2 log σmax −log σmin
+(45)
+which allows us to choose γ =
+
+2 log σmax
+log σmin −1
+−1
+.
+To bound α, we similarly use Lemma 4 to obtain
+f(X ∪Y t−1 ∪{i}) −f(X ∪Y t−1)
+f(Y t−1 ∪{i}) −f(Y t−1)
+≥
+log σmin
+2 log σmax −log σmin
+(46)
+19
+
+Published as a conference paper at ICLR 2021
+and we can choose α = 1 −
+log σmin
+2 log σmax−log σmin = 2(log σmax−log σmin)
+2 log σmax−log σmin .
+Now let κ = log σmax
+log σmin . Then γ =
+1
+2κ−1 and α = 2(κ−1)
+2κ−1 . Putting γ and α into Eq. 39, we have
+1
+α(1 −e−αγ) ≥2κ −1
+2(κ −1)
+
+1 −e
+−2(κ−1)
+(2κ−1)2
+
+(47)
+≥2κ −1
+2(κ −1) 4 exp(−1/4) 2(κ −1)
+(2κ −1)2
+(48)
+= 4 exp(−1/4)
+2κ −1
+(49)
+where the second inequality holds from the fact that maxκ≥1
+2(κ−1)
+(2κ−1)2 =
+1
+4 and 1 −e−x ≥
+4 exp(−1/4)x for x ∈[0, 1/4].
+F.5
+PROOF OF COROLLARY 1
+Corollary 1. Consider a nonsymmetric low-rank DPP L = V V ⊤+ BCB⊤, where V , B are of
+rank K, and C ∈RK×K. Given a cardinality budget k, let σmin and σmax denote the smallest and
+largest singular values of LY for all Y ⊆[[M]] and |Y | ≤2k. Let κ := σmax/σmin. Then,
+log det(LY G) ≥4(1 −e−1/4)
+2 log κ + 1 log det(LY ∗) −
+
+1 −4(1 −e−1/4)
+2 log κ + 1
+
+k (1 −log σmin)
+(12)
+where Y G is the output of Algorithm 1 and Y ∗is the optimal solution of MAP inference in Eq. 4.
+Proof. Now consider L′ = (
+e
+σmin )L where e is the exponential constant.
+Then, σ′
+min =
+σmin(
+e
+σmin ) = e and σ′
+max = σmax(
+e
+σmin ). Using the fact that log det(L′
+Y ) = log det(LY ) −
+|Y | log σmin, we obtain the result.
+F.6
+PROOF OF LEMMA 3
+Before stating the proof, we introduce interlacing properties of singular values.
+Theorem 4 (Interlacing Inequality for Singular Values, (Thompson, 1972, Theorem 1)). Consider
+a real matrix A ∈RM×N with singular values σ1 ≥σ2 ≥· · · ≥σmin(M,N) and its supmatrix
+B ∈RP ×Q with singular values β1 ≥β2 ≥· · · ≥βmin(P,Q). Then, the singular values have the
+following interlacing properties:
+σi ≥βi,
+for i = 1, . . . , min(P, Q),
+(50)
+βi ≥σi+M−P +N−Q,
+for i = 1, . . . , min(P + Q −M, P + Q −N).
+(51)
+Note that when M = N and P = Q = N −1, it holds that βi ≥σi+2 for i = 1, . . . , N −2.
+We are now ready to prove Lemma 3.
+Lemma 3. Given a P0 matrix L ∈RM×M and the budget k ≥0, a set function f(Y ) = log det(LY )
+deﬁned on Y ⊆[[M]] is monotone nondecreasing and nonnegative for |Y | ≤k when σmin > 1.
+Proof. Since L ∈P0, all of its principal submatrices are also in P0. By the deﬁnition of a P0 matrix,
+it holds that
+|det(LY )| = det(LY ) =
+Y
+i
+σi(LY )
+(52)
+where σi(LY ) for i ∈[[|Y |]] are singular values of LY . Then, F(Y ) = P
+i log(σi(LY )) is
+nonnegative for all Y such that |Y | ≤K due to σi(LY ) ≥σmin > 1. Similarly, we have
+F(Y ∪{a}) −F(Y ) = P|Y |+1
+i=1
+log σi(LY ∪{a}) −P|Y |
+i=1 log σi(LY ) ≥log σmin > 0 from
+Eq. 50.
+20
+
+Published as a conference paper at ICLR 2021
+F.7
+PROOF OF LEMMA 4
+Lemma 4. Let f(Y ) = log det(LY ) and assume that σmin > 1. Then, for Y ⊆[[M]], |Y | < 2k and
+i /∈Y , it holds that
+f(Y ∪{i}) −f(Y ) ≥log σmin,
+(40)
+f(Y ∪{i}) −f(Y ) ≤2 log σmax −log σmin
+(41)
+where σmin and σmax are the smallest and largest singular values of LY for all Y ⊆[[M]], |Y | ≤2k.
+Proof. For a P0 matrix, we remark that its determinant is equivalent to the product of all singular
+values. For Y ⊆[[M]] and i /∈Y , from the interlacing inequality of Eq. 50 we have that
+F(Y ∪{i}) −F(Y ) =
+|Y |+1
+X
+j=1
+log σ′
+j −
+|Y |
+X
+j=1
+log σj ≥log σ′
+|Y |+1 ≥log σmin
+(53)
+where σ′
+j and σj are the j-th largest singular value of LY ∪{i} and LY , respectively. Similarly, using
+Eq. 51, we get
+F(Y ∪{i}) −F(Y ) ≤log(σ′
+1σ′
+2) −log σ|Y | ≤2 log σmax −log σmin.
+(54)
+21
+

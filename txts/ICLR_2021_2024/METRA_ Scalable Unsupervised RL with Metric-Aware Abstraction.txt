@@ -1,0 +1,1941 @@
+Published as a conference paper at ICLR 2024
+METRA: SCALABLE UNSUPERVISED RL
+WITH METRIC-AWARE ABSTRACTION
+Seohong Park1
+Oleh Rybkin1
+Sergey Levine1
+1University of California, Berkeley
+seohong@berkeley.edu
+ABSTRACT
+Unsupervised pre-training strategies have proven to be highly effective in natural
+language processing and computer vision. Likewise, unsupervised reinforcement
+learning (RL) holds the promise of discovering a variety of potentially useful be-
+haviors that can accelerate the learning of a wide array of downstream tasks. Pre-
+vious unsupervised RL approaches have mainly focused on pure exploration and
+mutual information skill learning. However, despite the previous attempts, mak-
+ing unsupervised RL truly scalable still remains a major open challenge: pure
+exploration approaches might struggle in complex environments with large state
+spaces, where covering every possible transition is infeasible, and mutual infor-
+mation skill learning approaches might completely fail to explore the environ-
+ment due to the lack of incentives. To make unsupervised RL scalable to com-
+plex, high-dimensional environments, we propose a novel unsupervised RL ob-
+jective, which we call Metric-Aware Abstraction (METRA). Our main idea is,
+instead of directly covering the entire state space, to only cover a compact latent
+space Z that is metrically connected to the state space S by temporal distances.
+By learning to move in every direction in the latent space, METRA obtains a
+tractable set of diverse behaviors that approximately cover the state space, being
+scalable to high-dimensional environments. Through our experiments in five lo-
+comotion and manipulation environments, we demonstrate that METRA can dis-
+cover a variety of useful behaviors even in complex, pixel-based environments,
+being the first unsupervised RL method that discovers diverse locomotion behav-
+iors in pixel-based Quadruped and Humanoid. Our code and videos are available
+at https://seohong.me/projects/metra/
+1
+INTRODUCTION
+Unsupervised pre-training has proven transformative in domains from natural language processing
+to computer vision: contrastive representation learning (Chen et al., 2020) can acquire effective
+features from unlabeled images, and generative autoregressive pre-training (Brown et al., 2020)
+can enable language models that can be adapted to a plethora of downstream applications. If we
+could derive an equally scalable framework for unsupervised reinforcement learning (RL) that au-
+tonomously explores the space of possible behaviors, then we could enable general-purpose unsu-
+pervised pre-trained agents to serve as an effective foundation for efficiently learning a broad range
+of downstream tasks. Hence, our goal in this work is to propose a scalable unsupervised RL ob-
+jective that encourages an agent to explore its environment and learn a breadth of potentially useful
+behaviors without any supervision.
+While this formulation of unsupervised RL has been explored in a number of prior works, making
+fully unsupervised RL truly scalable still remains a major open challenge. Prior approaches to un-
+supervised RL can be categorized into two main groups: pure exploration methods (Burda et al.,
+2019; Pathak et al., 2019; Liu & Abbeel, 2021b; Mendonca et al., 2021; Rajeswar et al., 2023)
+and unsupervised skill discovery methods (Eysenbach et al., 2019a; Sharma et al., 2020; Laskin
+et al., 2022; Park et al., 2022). While these approaches have been shown to be effective in several
+unsupervised RL benchmarks (Mendonca et al., 2021; Laskin et al., 2021), it is not entirely clear
+whether such methods can indeed be scalable to complex environments with high intrinsic dimen-
+sionality. Pure exploration-based unsupervised RL approaches aim to either completely cover the
+entire state space (Burda et al., 2019; Liu & Abbeel, 2021b) or fully capture the transition dynamics
+of the Markov decision process (MDP) (Pathak et al., 2019; Sekar et al., 2020; Mendonca et al.,
+2021; Rajeswar et al., 2023). However, in complex environments with a large state space, it may be
+1
+
+Published as a conference paper at ICLR 2024
+S = R64×64×3 (Pixels)
+Temporally close
+Z = R2
+METRA covers the most 
+“temporally spread-out” manifold
+Temporally distant
+Figure 1: Illustration of METRA. Our main idea for scalable unsupervised RL is to cover only the most
+“important” low-dimensional subset of the state space, analogously to PCA. Specifically, METRA covers the
+most “temporally spread-out” (non-linear) manifold, which would lead to approximate coverage of the state
+space S. In the example above, the two-dimensional Z space captures behaviors running in all directions, not
+necessarily covering every possible leg pose.
+infeasible to attain either of these aims. In fact, we will show that these methods fail to cover the
+state space even in the state-based 29-dimensional MuJoCo Ant environment. On the other hand,
+unsupervised skill discovery methods aim to discover diverse, distinguishable behaviors, e.g., by
+maximizing the mutual information between skills and states (Gregor et al., 2016; Eysenbach et al.,
+2019a). While these methods do learn behaviors that are mutually different, they either do not nec-
+essarily encourage exploration and thus often have limited state coverage in the complete absence of
+supervision (Eysenbach et al., 2019a; Sharma et al., 2020), or are not directly scalable to pixel-based
+control environments (Park et al., 2022; 2023b).
+In this work, we aim to address these challenges and develop an unsupervised RL objective, which
+we call Metric-Aware Abstraction (METRA), that scales to complex, image-based environments
+with high intrinsic dimensionality. Our first main idea is to learn diverse behaviors that maximally
+cover not the original state space but a compact latent metric space defined by a mapping function
+ϕ : S →Z with a metric d. Here, the latent state is connected by the state space by the metric
+d, which ensures that covering latent space leads to coverage of the state space. Now, the question
+becomes which metric to use. Previous metric-based skill learning methods mostly used the Eu-
+clidean distance (or its scaled variant) between two states (He et al., 2022; Park et al., 2022; 2023b).
+However, such state-based metrics are not directly applicable to complex, high-dimensional state
+space (e.g., images). Our second main idea is therefore to use temporal distances (i.e., the num-
+ber of minimum environment steps between two states) as a metric for the latent space. Temporal
+distances are invariant to state representations and thus applicable to pixel-based environments as
+well. As a result, by maximizing coverage in the compact latent space, we can acquire diverse be-
+haviors that approximately cover the entire state space, being scalable to high-dimensional, complex
+environments (Figure 1).
+Through our experiments on five state-based and pixel-based continuous control environments, we
+demonstrate that our method learns diverse, useful behaviors, as well as a compact latent space
+that can be used to solve various downstream tasks in a zero-shot manner, outperforming previous
+unsupervised RL methods. To the best of our knowledge, METRA is the first unsupervised RL
+method that demonstrates the discovery of diverse locomotion behaviors in pixel-based Quadruped
+and Humanoid environments.
+2
+WHY MIGHT PREVIOUS UNSUPERVISED RL METHODS FAIL TO SCALE?
+The goal of unsupervised RL is to acquire useful knowledge, such as policies, world models, or
+exploratory data, by interacting with the environment in an unsupervised manner (i.e., without tasks
+or reward functions). Typically, this knowledge is then leveraged to solve downstream tasks more
+efficiently. Prior work in unsupervised RL can be categorized into two main groups: pure explo-
+ration methods and unsupervised skill discovery methods. Pure exploration methods aim to cover
+the entire state space or fully capture the environment dynamics. They encourage exploration by
+maximizing uncertainty (Pathak et al., 2017; Shyam et al., 2019; Burda et al., 2019; Pathak et al.,
+2019; Sekar et al., 2020; Mazzaglia et al., 2022) or state entropy (Lee et al., 2019; Pong et al.,
+2020; Liu & Abbeel, 2021b; Yarats et al., 2021). Based on the data collected by the exploration
+2
+
+Published as a conference paper at ICLR 2024
+Pure Exploration
+RND, Disag., APT, …
+DIAYN, DADS, …
+METRA (ours)
+I(S; Z)
+IW(S; Z)
+MI vs. WDM
+I(S; Z)
+IW(S; Z)
+=
+<
+Figure 2: Sketch comparing different unsupervised RL objectives. Pure exploration approaches try to
+cover every possible state, which is infeasible in complex environments (e.g., such methods might be “stuck”
+at forever finding novel joint angle configurations of a robot, without fully exploring the environment; see
+Figure 3). The mutual information I(S; Z) has no underlying distance metrics, and thus does not prioritize
+coverage enough, only focusing on skills that are discriminable. In contrast, our proposed Wasserstein de-
+pendency measure IW(S; Z) maximizes the distance metric d, which we choose to be the temporal distance,
+forcing the learned skills to span the “longest” subspaces of the state space, analogously to (temporal, non-
+linear) PCA.
+policy, these methods learn a world model (Rajeswar et al., 2023), train a goal-conditioned pol-
+icy (Pong et al., 2020; Pitis et al., 2020; Mendonca et al., 2021; Hu et al., 2023), learn skills via
+trajectory autoencoders (Campos Cam´u˜nez et al., 2020; Mazzaglia et al., 2023), or directly fine-
+tune the learned exploration policy (Laskin et al., 2021) to accelerate downstream task learning.
+While these pure exploration-based approaches are currently the leading methods in unsupervised
+RL benchmarks (Mendonca et al., 2021; Laskin et al., 2021; Mazzaglia et al., 2023; Rajeswar et al.,
+2023), their scalability may be limited in complex environments with large state spaces because it
+is often computationally infeasible to completely cover every possible state or fully capture the dy-
+namics. In Section 5, we empirically demonstrate that these approaches even fail to cover the state
+space of the state-based 29-dimensional Ant environment.
+Another line of research in unsupervised RL aims to learn diverse behaviors (or skills) that are
+distinguishable from one another, and our method also falls into this category. The most common
+approach to unsupervised skill discovery is to maximize the mutual information (MI) between states
+and skills (Gregor et al., 2016; Eysenbach et al., 2019a; Sharma et al., 2020; Hansen et al., 2020):
+I(S; Z) = DKL(p(s, z)∥p(s)p(z)).
+(1)
+By associating different skill latent vectors z with different states s, these methods learn diverse
+skills that are mutually distinct. However, they share the limitation that they often end up discover-
+ing simple, static behaviors with limited state coverage (Campos Cam´u˜nez et al., 2020; Park et al.,
+2022). This is because MI is defined by a KL divergence (Equation (1)), which is a metric-agnostic
+quantity (e.g., MI is invariant to scaling; see Figure 2). As a result, the MI objective only focuses
+on the distinguishability of behaviors, regardless of “how different” they are, resulting in limited
+state coverage (Campos Cam´u˜nez et al., 2020; Park et al., 2022). To address this limitation, prior
+works combine the MI objective with exploration bonuses (Campos Cam´u˜nez et al., 2020; Strouse
+et al., 2022; Park & Levine, 2023) or propose different objectives that encourage maximizing dis-
+tances in the state space (He et al., 2022; Park et al., 2022; 2023b). Yet, it remains unclear whether
+these methods can scale to complex, high-dimensional environments, because they either attempt
+to completely capture the entire MDP (Campos Cam´u˜nez et al., 2020; Strouse et al., 2022; Park &
+Levine, 2023) or assume a compact, structured state space (He et al., 2022; Park et al., 2022; 2023b).
+Indeed, to the best of our knowledge, no previous unsupervised skill discovery methods have suc-
+ceeded in discovering locomotion behaviors on pixel-based locomotion environments. Unlike these
+approaches, our method learns a compact set of diverse behaviors that are maximally different in
+terms of the temporal distance. As a result, they can approximately cover the state space, even in a
+complex, high-dimensional environment. We discuss further related work in Appendix B.
+3
+PRELIMINARIES AND PROBLEM SETTING
+We consider a controlled Markov process, an MDP without a reward function, defined as M =
+(S, A, µ, p). S denotes the state space, A denotes the action space, µ : ∆(S) denotes the initial
+state distribution, and p : S × A →∆(A) denotes the transition dynamics kernel. We consider a set
+of latent vectors z ∈Z, which can be either discrete or continuous, and a latent-conditioned policy
+π(a|s, z). Following the terminology in unsupervised skill discovery, we refer to latent vectors z
+(and their corresponding policies π(a|s, z)) as skills. When sampling a trajectory, we first sample
+a skill from the prior distribution, z ∼p(z), and then roll out a trajectory with π(a|s, z), where
+z is fixed for the entire episode. Hence, the joint skill-trajectory distribution is given as p(τ, z) =
+3
+
+Published as a conference paper at ICLR 2024
+p(z)p(s0) QT −1
+t=0 π(at|st, z)p(st+1|st, at), where τ denotes (s0, a0, s1, a1, . . . , sT ). Our goal in this
+work is to learn a set of diverse, useful behaviors π(a|s, z), without using any supervision, data, or
+prior knowledge.
+4
+A SCALABLE OBJECTIVE FOR UNSUPERVISED RL
+Desiderata. We first state our two desiderata for a scalable unsupervised RL objective. First, instead
+of covering every possible state in a given MDP, which is infeasible in complex environments, we
+want to have a compact latent space Z of a tractable size and a latent-conditioned policy π(a|s, z)
+that translates latent vectors into actual behaviors. Second, we want the behaviors from different
+latent vectors to be different, collectively covering as much of the state space as possible. In other
+words, we want to maximize state coverage under the given capacity of Z. An algorithm that
+satisfies these two desiderata would be scalable to complex environments, because we only need to
+learn a compact set of behaviors that approximately cover the MDP.
+Objective. Based on the above, we propose the following novel objective for unsupervised RL:
+IW(S; Z) = W(p(s, z), p(s)p(z)),
+(2)
+where IW(S; Z) is the Wasserstein dependency measure (WDM) (Ozair et al., 2019) between states
+and skills, and W is the 1-Wasserstein distance on the metric space (S × Z, d) with a distance
+metric d. Intuitively, the WDM objective in Equation (2) can be viewed as a “Wasserstein variant”
+of the previous MI objective (Equation (1)), where the KL divergence in MI is replaced with the
+Wasserstein distance. However, despite the apparent similarity, there exists a significant difference
+between the two objectives: MI is completely agnostic to the underlying distance metric, while
+WDM is a metric-aware quantity. As a result, the WDM objective (Equation (2)) not only discovers
+diverse skills that are different from one another, as in the MI objective, but also actively maximizes
+distances d between different skill trajectories (Figure 2). This makes them collectively cover the
+state space as much as possible (in terms of the given metric d). The choice of metric for d is
+critical for effective skill discovery, and simple choices like Euclidean metrics on the state space
+would generally not be effective for non-metric state representations, such as images. Therefore,
+instantiating this approach with the right metric is an important part of our contribution, as we will
+discuss in Section 4.2. Until then, we assume that we have a given metric d.
+4.1
+TRACTABLE OPTIMIZATION
+While our objective IW(S; Z) has several desirable properties, it is not immediately straightforward
+to maximize this quantity in practice. In this section, we describe a simple, tractable objective
+that can be used to maximize IW(S; Z) in practice. We begin with the Kantorovich-Rubenstein
+duality (Villani et al., 2009; Ozair et al., 2019), which provides a tractable way to maximize the
+Wasserstein dependency measure:
+IW(S; Z) =
+sup
+∥f∥L≤1
+Ep(s,z)[f(s, z)] −Ep(s)p(z)[f(s, z)],
+(3)
+where ∥f∥L denotes the Lipschitz constant for the function f : S ×Z →R under the given distance
+metric d, i.e., ∥f∥L = sup(s1,z1)̸=(s2,z2) |f(s1, z1) −f(s2, z2)|/d((s1, z1), (s2, z2)). Intuitively, f
+is a score function that assigns larger values to (s, z) tuples sampled from the joint distribution and
+smaller values to (s, z) tuples sampled independently from their marginal distributions. We note
+that Equation (3) is already a tractable objective, as we can jointly train a 1-Lipschitz-constrained
+score function f(s, z) using gradient descent and a skill policy π(a|s, z) using RL, with the reward
+function being an empirical estimate of Equation (3), r(s, z) = f(s, z)−N −1 PN
+i=1 f(s, zi), where
+z1, z2, . . . , zN are N independent random samples from the prior distribution p(z).
+However, since sampling N additional zs for each data point is computationally demanding, we will
+further simplify the objective to enable more efficient learning. First, we consider the parameteri-
+zation f(s, z) = ϕ(s)⊤ψ(z) with ϕ : S →RD and ψ : Z →RD with independent 1-Lipschitz
+constraints1, which yields the following objective:
+IW(S; Z) ≈
+sup
+∥ϕ∥L≤1,∥ψ∥L≤1
+Ep(s,z)[ϕ(s)⊤ψ(z)] −Ep(s)[ϕ(s)]⊤Ep(z)[ψ(z)].
+(4)
+1While ∥ϕ∥L ≤1, ∥ψ∥L ≤1 is not technically equivalent to ∥f∥L ≤1, we use the former as it is
+more tractable. Also, we note that ∥f∥L can be upper-bounded in terms of ∥ϕ∥L, ∥ψ∥L, sups ∥ϕ(s)∥2, and
+supz ∥ψ(z)∥2 under d((s1, z1), (s2, z2)) = (sups ∥ϕ(s)∥2)∥ψ∥Ld(z1, z2) + (supz ∥ψ(z)∥2)∥ϕ∥Ld(s1, s2).
+4
+
+Published as a conference paper at ICLR 2024
+Here, we note that the decomposition f(s, z) = ϕ(s)⊤ψ(z) is universal; i.e., the expressiveness of
+f(s, z) is equivalent to that of ϕ(s)⊤ψ(z) when D →∞. The proof can be found in Appendix C.
+Next, we consider a variant of the Wasserstein dependency measure that only depends on the last
+state: IW(ST ; Z), similarly to VIC (Gregor et al., 2016). This allows us to further decompose the
+objective with a telescoping sum as follows:
+IW(ST ; Z) ≈
+sup
+∥ϕ∥L≤1,∥ψ∥L≤1
+Ep(τ,z)[ϕ(sT )⊤ψ(z)] −Ep(τ)[ϕ(sT )]⊤Ep(z)[ψ(z)]
+(5)
+= sup
+ϕ,ψ
+T −1
+X
+t=0
+ Ep(τ,z)[(ϕ(st+1) −ϕ(st))⊤ψ(z)] −Ep(τ)[ϕ(st+1) −ϕ(st)]⊤Ep(z)[ψ(z)]
+
+,
+(6)
+where we also use the fact that p(s0) and p(z) are independent. Finally, we set ψ(z) to z. While this
+makes ψ less expressive, it allows us to derive the following concise objective:
+IW(ST ; Z) ≈
+sup
+∥ϕ∥L≤1
+Ep(τ,z)
+"T −1
+X
+t=0
+(ϕ(st+1) −ϕ(st))⊤(z −¯z)
+#
+,
+(7)
+where ¯z = Ep(z)[z]. Here, since we can always shift the prior distribution p(z) to have a zero
+mean, we can assume ¯z = 0 without loss of generality. This objective can now be easily maximized
+by jointly training ϕ(s) and π(a|s, z) with r(s, z, s′) = (ϕ(s′) −ϕ(s))⊤z under the constraint
+∥ϕ∥L ≤1. Note that we do not need any additional random samples of z, unlike Equation (3).
+4.2
+FULL OBJECTIVE: METRIC-AWARE ABSTRACTION (METRA)
+So far, we have not specified the distance metric d for the Wasserstein distance in WDM (or equiv-
+alently for the Lipschitz constraint ∥ϕ∥L ≤1). Choosing an appropriate distance metric is crucial
+for learning a compact set of useful behaviors, because it determines the priority by which the be-
+haviors are learned within the capacity of Z. Previous metric-based skill discovery methods mostly
+employed the Euclidean distance (or its scaled variant) as a metric (He et al., 2022; Park et al., 2022;
+2023b). However, they are not directly scalable to high-dimensional environments with pixel-based
+observations, in which the Euclidean distance is not necessarily meaningful.
+In this work, we propose to use the temporal distance (Kaelbling, 1993; Hartikainen et al., 2020; Du-
+rugkar et al., 2021) between two states as a distance metric dtemp(s1, s2), the minimum number of
+environment steps to reach s2 from s1. This provides a natural way to measure the distance between
+two states, as it only depends on the inherent transition dynamics of the MDP, being invariant to
+the state representation and thus scalable to pixel-based environments. Using the temporal distance
+metric, we can rewrite Equation (7) as follows:
+sup
+π,ϕ
+Ep(τ,z)
+"T −1
+X
+t=0
+(ϕ(st+1) −ϕ(st))⊤z
+#
+s.t. ∥ϕ(s) −ϕ(s′)∥2 ≤1, ∀(s, s′) ∈Sadj,
+(8)
+where Sadj denotes the set of adjacent state pairs in the MDP. Note that ∥ϕ∥L ≤1 is equivalently
+converted into ∥ϕ(s) −ϕ(s′)∥2 ≤1 under the temporal distance metric (see Theorem C.3).
+Intuition and interpretation. We next describe how the constrained objective in Equation (8) may
+be interpreted. Intuitively, a policy π(a|s, z) that maximizes our objective should learn to move as
+far as possible along various directions in the latent space (specified by z). Since distances in the
+latent space, ∥ϕ(s1) −ϕ(s2)∥2, are always upper-bounded by the corresponding temporal distances
+in the MDP, given by dtemp(s1, s2), the learned latent space should assign its (limited) dimensions
+to the manifolds in the original state space that are maximally “spread out”, in the sense that shortest
+paths within the set of represented states should be as long as possible. This conceptually resembles
+“principal components” of the state space, but with respect to shortest paths rather than Euclidean
+distances, and with non-linear ϕ rather than linear ϕ. Thus, we would expect ϕ to learn to abstract
+the state space in a lossy manner, preserving temporal distances (Figure 9), and emphasizing those
+degrees of freedom of the state that span the largest possible “temporal” (non-linear) manifolds
+(Figure 1). Based on this intuition, we call our method Metric-Aware Abstraction (METRA). In
+Appendix D, we derive a formal connection between METRA and principal component analysis
+(PCA) under the temporal distance metric under several simplifying assumptions.
+Theorem 4.1 (Informal statement of Theorem D.2). Under some simplifying assumptions, linear
+squared METRA is equivalent to PCA under the temporal distance metric.
+5
+
+Published as a conference paper at ICLR 2024
+Algorithm 1 Metric-Aware Abstraction (METRA)
+1: Initialize skill policy π(a|s, z), representation function ϕ(s), Lagrange multiplier λ, replay buffer D
+2: for i ←1 to (# epochs) do
+3:
+for j ←1 to (# episodes per epoch) do
+4:
+Sample skill z ∼p(z)
+5:
+Sample trajectory τ with π(a|s, z) and add to replay buffer D
+6:
+end for
+7:
+Update ϕ(s) to maximize E(s,z,s′)∼D[(ϕ(s′) −ϕ(s))⊤z + λ · min(ε, 1 −∥ϕ(s) −ϕ(s′)∥2
+2)]
+8:
+Update λ to minimize E(s,z,s′)∼D[λ · min(ε, 1 −∥ϕ(s) −ϕ(s′)∥2
+2)]
+9:
+Update π(a|s, z) using SAC (Haarnoja et al., 2018a) with reward r(s, z, s′) = (ϕ(s′) −ϕ(s))⊤z
+10: end for
+Connections to previous skill discovery methods.
+There exist several intriguing connections
+between our WDM objective (Equation (2)) and previous skill discovery methods, including DI-
+AYN (Eysenbach et al., 2019a), DADS (Sharma et al., 2020), CIC (Laskin et al., 2022), LSD (Park
+et al., 2022), and CSD (Park et al., 2023b). Perhaps the most apparent connections are with LSD and
+CSD, which also use similar constrained objectives to Equation (7). In fact, although not shown by
+the original authors, the constrained inner product objectives of LSD and CSD are also equivalent
+to IW(ST ; Z), but with the Euclidean distance (or its normalized variant), instead of the temporal
+distance. Also, the connection between WDM and Equation (7) provides further theoretical insight
+into the rather “ad-hoc” choice of zero-centered one-hot vectors used in discrete LSD (Park et al.,
+2022); we must use a zero-mean prior distribution due to the z −¯z term in Equation (7). There
+exist several connections between our WDM objective and previous MI-based skill discovery meth-
+ods as well. Specifically, by simplifying WDM (Equation (2)) in three different ways, we can obtain
+“Wasserstein variants” of DIAYN, DADS, and CIC. We refer to Appendix E for detailed derivations.
+Zero-shot goal-reaching with METRA. Thanks to the state abstraction function ϕ(s), METRA
+provides a simple way to command the skill policy to reach a goal state in a zero-shot manner, as
+in LSD (Park et al., 2022). Since ϕ abstracts the state space preserving temporal distances, the
+difference vector ϕ(g) −ϕ(s) tells us the skill we need to select to reach the goal state g from the
+current state s. As such, by simply setting z = (ϕ(g) −ϕ(s))/∥ϕ(g) −ϕ(s)∥2 (for continuous
+skills) or z = arg maxdim (ϕ(g) −ϕ(s)) (for discrete skills), we can find the skill that leads to the
+goal. With this technique, METRA can solve goal-conditioned tasks without learning a separate
+goal-conditioned policy, as we will show in Section 5.3.
+Implementation. We optimize the constrained objective in Equation (8) using dual gradient descent
+with a Lagrange multiplier λ and a small relaxation constant ε > 0, similarly to Park et al. (2023b);
+Wang et al. (2023). We provide a pseudocode for METRA in Algorithm 1.
+Limitations. One potential issue with Equation (8) is that we embed the temporal distance into the
+symmetric Euclidean distance in the latent space, where the temporal distance can be asymmetric.
+This makes our temporal distance abstraction more “conservative” in the sense that it considers the
+minimum of both temporal distances, i.e., ∥ϕ(s1) −ϕ(s2)∥2 ≤min(dtemp(s1, s2), dtemp(s2, s1)).
+While this conservatism is less problematic in our benchmark environments, in which transitions are
+mostly “symmetric”, it might be overly restrictive in highly asymmetric environments. To resolve
+this, we can replace the Euclidean distance ∥ϕ(s1) −ϕ(s2)∥2 in Equation (8) with an asymmetric
+quasimetric, as in Wang et al. (2023). We leave this extension for future work. Another limitation
+is that the simplified WDM objective in Equation (7) only considers behaviors that move linearly
+in the latent space. While this does not necessarily imply that the behaviors are also linear in the
+original state space (because ϕ : S →Z is a nonlinear mapping), this simplification, which stems
+from the fact that we set ψ(z) = z, might restrict the diversity of behaviors to some degree. We
+believe this can be addressed by using the full WDM objective in Equation (4). Notably, the full
+objective (Equation (4)) resembles contrastive learning, and we believe combining it with scalable
+contrastive learning techniques is an exciting future research direction (see Appendix E.3). We refer
+to Appendix A for practical limitations regarding our implementation of METRA.
+5
+EXPERIMENTS
+Through our experiments in benchmark environments, we aim to answer the following questions:
+(1) Can METRA scale to complex, high-dimensional environments, including domains with image
+observations? (2) Does METRA discover meaningful behaviors in complex environments with no
+supervision? (3) Are the behaviors discovered by METRA useful for downstream tasks?
+6
+
+Published as a conference paper at ICLR 2024
+METRA
+LSD
+DIAYN
+DADS2
+CIC
+ICM
+RND
+APT
+APS
+P2E/Disag
+Ant
+(States)
+LBS3
+HalfCheetah
+(States)
+Quadruped
+(Pixels)
+Humanoid
+(Pixels)
+Kitchen
+(Pixels)
+Figure 3: Examples of behaviors learned by 11 unsupervised RL methods. For locomotion environments,
+we plot the x-y (or x) trajectories sampled from learned policies. For Kitchen, we measure the coincidental
+success rates for six predefined tasks. Different colors represent different skills z. METRA is the only method
+that discovers diverse locomotion skills in pixel-based Quadruped and Humanoid. We refer to Figure 11 for the
+complete qualitative results (8 seeds) of METRA and our project page for videos.
+5.1
+EXPERIMENTAL SETUP
+Quadruped
+(Pixels)
+Humanoid
+(Pixels)
+Kitchen
+(Pixels)
+HalfCheetah
+(States)
+Ant
+(States)
+Figure 4: Benchmark environments.
+We evaluate our method on five robotic lo-
+comotion and manipulation environments (Fig-
+ure 4): state-based Ant and HalfCheetah from
+Gym (Todorov et al., 2012; Brockman et al.,
+2016), pixel-based Quadruped and Humanoid
+from the DeepMind Control (DMC) Suite (Tassa
+et al., 2018), and a pixel-based version of Kitchen
+from Gupta et al. (2019); Mendonca et al. (2021). For pixel-based DMC locomotion environments,
+we use colored floors to allow the agent to infer its location from pixels, similarly to Hafner et al.
+(2022); Park et al. (2023a) (Figure 10). Throughout the experiments, we do not use any prior knowl-
+edge, data, or supervision (e.g., observation restriction, early termination, etc.). As such, in pixel-
+based environments, the agent must learn diverse behaviors solely from 64 × 64 × 3 camera images.
+We compare METRA against 11 previous methods in three groups: (1) unsupervised skill discov-
+ery, (2) unsupervised exploration, and (3) unsupervised goal-reaching methods. For unsupervised
+skill discovery methods, we compare against two MI-based approaches, DIAYN (Eysenbach et al.,
+2019a) and DADS (Sharma et al., 2020), one hybrid method that combines MI and an exploration
+bonus, CIC (Laskin et al., 2022), and one metric-based approach that maximizes Euclidean dis-
+tances, LSD (Park et al., 2022). For unsupervised exploration methods, we consider five pure explo-
+ration approaches, ICM (Pathak et al., 2017), RND (Burda et al., 2019), Plan2Explore (Sekar et al.,
+2020) (or Disagreement (Pathak et al., 2019)), APT (Liu & Abbeel, 2021b), and LBS (Mazzaglia
+et al., 2022), and one hybrid approach that combines exploration and successor features, APS (Liu &
+Abbeel, 2021a). We note that the Dreamer (Hafner et al., 2020) variants of these methods (especially
+LBS (Mazzaglia et al., 2022)) are currently the state-of-the-art methods in the pixel-based unsuper-
+vised RL benchmark (Laskin et al., 2021; Rajeswar et al., 2023). For unsupervised goal-reaching
+methods, we mainly compare with a state-of-the-art unsupervised RL approach, LEXA (Mendonca
+et al., 2021), as well as two previous skill discovery methods that enable zero-shot goal-reaching,
+DIAYN and LSD. We use 2-D skills for Ant and Humanoid, 4-D skills for Quadruped, 16 discrete
+skills for HalfCheetah, and 24 discrete skills for Kitchen. For CIC, we use 64-D skill latent vectors
+for all environments, following the original suggestion (Laskin et al., 2022).
+5.2
+QUALITATIVE COMPARISON
+We first demonstrate examples of behaviors (or skills) learned by our method and the 10 prior unsu-
+pervised RL methods on each of the five benchmark environments in Figure 3. The figure illustrates
+that METRA discovers diverse behaviors in both state-based and pixel-based domains. Notably,
+METRA is the only method that successfully discovers locomotion skills in pixel-based Quadruped
+and Humanoid, and shows qualitatively very different behaviors from previous unsupervised RL
+methods across the environments. Pure exploration methods mostly exhibit chaotic, random behav-
+iors (videos), and fail to fully explore the state space (in terms of x-y coordinates) even in state-based
+7
+
+Published as a conference paper at ICLR 2024
+METRA
+LSD
+CIC
+DIAYN
+DADS
+0.0
+0.5
+1.0
+1.5
+Steps
+£107
+0
+50
+100
+150
+200
+Policy State Coverage
+HalfCheetah (States)
+0.0
+0.5
+1.0
+1.5
+Steps
+£107
+0
+1000
+2000
+Policy State Coverage
+Ant (States)
+0
+2
+4
+6
+Steps
+£106
+0
+100
+200
+300
+Policy State Coverage
+Quadruped (Pixels)
+0.0
+0.5
+1.0
+Steps
+£107
+0
+25
+50
+75
+100
+Policy State Coverage
+Humanoid (Pixels)
+0.0
+0.5
+1.0
+Steps
+£106
+0
+1
+2
+3
+4
+Policy Task Coverage
+Kitchen (Pixels)
+Figure 5: Quantitative comparison with unsupervised skill discovery methods (8 seeds). We measure the
+state/task coverage of the policies learned by five skill discovery methods. METRA exhibits the best coverage
+across all environments, while previous methods completely fail to explore the state spaces of pixel-based
+locomotion environments. Notably, METRA is the only method that discovers locomotion skills in pixel-based
+Quadruped and Humanoid.
+0.0
+0.5
+1.0
+Episodes
+£104
+2
+4
+Return
+AntMultiGoals
+0.0
+0.5
+1.0
+Episodes
+£105
+0.0
+2.5
+5.0
+7.5
+Return
+HalfCheetahGoal
+0.0
+0.5
+1.0
+Episodes
+£105
+0
+2
+4
+Return
+HalfCheetahHurdle
+0.0
+0.5
+1.0
+Episodes
+£104
+0
+2
+4
+6
+Return
+QuadrupedGoal
+0.0
+0.5
+1.0
+Episodes
+£104
+1
+2
+3
+4
+Return
+HumanoidGoal
+METRA
+LSD
+CIC
+DIAYN
+DADS
+Figure 6: Downstream task performance comparison of unsupervised skill discovery methods (4 seeds).
+To verify whether learned skills are useful for downstream tasks, we train a hierarchical high-level controller
+on top of the frozen skill policy to maximize task rewards. METRA exhibits the best or near-best performance
+across the five tasks, which suggests that the behaviors learned by METRA are indeed useful for the tasks.
+Ant and HalfCheetah. This is because it is practically infeasible to completely cover the infinitely
+many combinations of joint angles and positions in these domains. MI-based skill discovery meth-
+ods also fail to explore large portions of the state space due to the metric-agnosticity of the KL
+divergence (Section 2), even when combined with an exploration bonus (i.e., CIC). LSD, a previous
+metric-based skill discovery method that maximizes Euclidean distances, does discover locomotion
+skills in state-based environments, but fails to scale to the pixel-based environments, where the Eu-
+clidean distance on image pixels does not necessarily provide a meaningful metric. In contrast to
+these methods, METRA learns various task-related behaviors by maximizing temporal distances
+in diverse ways. On our project page, we show additional qualitative results of METRA with dif-
+ferent skill spaces. We note that, when combined with a discrete latent space, METRA discovers
+even more diverse behaviors, such as doing a backflip and taking a static posture, in addition to
+locomotion skills. We refer to Appendix F for visualization of learned latent spaces of METRA.
+5.3
+QUANTITATIVE COMPARISON
+Next, we quantitatively compare METRA against three groups of 11 previous unsupervised RL
+approaches, using different metrics that are tailored to each group’s primary focus. For quantitative
+results, we use 8 seeds and report 95% confidence intervals, unless otherwise stated.
+Comparison with unsupervised skill discovery methods. We first compare METRA with other
+methods that also aim to solve the skill discovery problem (i.e., learning a latent-conditioned policy
+π(a|s, z) that performs different skills for different values of z). These include LSD, CIC, DIAYN,
+and DADS2. We implement these methods on the same codebase as METRA. For comparison,
+we employ two metrics: policy coverage and downstream task performance. Figure 5 presents the
+policy coverage results, where we evaluate the skill policy’s x coverage (HalfCheetah), x-y coverage
+(Ant, Quadruped, and Humanoid), or task (Kitchen) coverage at each evaluation epoch. The results
+show that METRA achieves the best performance in most of the domains, and is the only method
+that successfully learns meaningful skills in the pixel-based settings, where previous skill discovery
+methods generally fail. In Figure 6, we evaluate the applicability of the skills discovered by each
+method to downstream tasks, where the downstream task is learned by a hierarchical controller
+πh(z|s) that selects (frozen) learned skills to maximize the task reward (see Appendix G for details).
+METRA again achieves the best performance on most of these tasks, suggesting that the behaviors
+learned by METRA not only provide greater coverage, but also are more suitable for downstream
+tasks in these domains.
+Comparison with pure exploration methods. Next, we quantitatively compare METRA to five
+unsupervised exploration methods, which do not aim to learn skills but only attempt to cover the
+state space, ICM, LBS3, RND, APT, and Plan2Explore (or Disagreement), and one hybrid method
+2We do not compare against DADS in pixel-based environments due to the computational cost of its skill
+dynamics model p(s′|s, z), which requires predicting the full next image.
+3Since LBS requires a world model, we only evaluate it on pixel-based environments, where we use the
+Dreamer variants of pure exploration methods (Rajeswar et al., 2023).
+8
+
+Published as a conference paper at ICLR 2024
+0
+2
+Time (s)
+£104
+0
+50
+100
+150
+200
+Total State Coverage
+HalfCheetah (States)
+0
+1
+2
+3
+Time (s)
+£104
+0
+5000
+10000
+Total State Coverage
+Ant (States)
+0
+2
+4
+Time (s)
+£104
+0
+200
+400
+600
+Total State Coverage
+Quadruped (Pixels)
+0.0
+2.5
+5.0
+7.5
+Time (s)
+£104
+0
+50
+100
+150
+Total State Coverage
+Humanoid (Pixels)
+0
+1
+2
+3
+Time (s)
+£104
+0
+2
+4
+6
+Queue Task Coverage
+Kitchen (Pixels)
+0
+1
+2
+3
+Time (s)
+£104
+0
+1
+2
+3
+4
+Policy Task Coverage
+Kitchen (Pixels)
+METRA
+LSD
+ICM
+LBS
+RND
+APT
+APS
+P2E/Disag
+Figure 7: Quantitative comparison with pure exploration methods (8 seeds). We compare METRA with
+six unsupervised exploration methods in terms of state coverage. Since it is practically infeasible to completely
+cover every possible state or transition, pure exploration methods struggle to explore the state space of complex
+environments, such as pixel-based Humanoid or state-based Ant.
+METRA
+LSD
+LEXA
+DIAYN
+0
+1
+2
+3
+Time (s)
+£104
+°50
+°40
+°30
+°20
+°10
+Negative Goal Distance
+HalfCheetah (States)
+0
+2
+Time (s)
+£104
+°40
+°30
+°20
+°10
+Negative Goal Distance
+Ant (States)
+0
+2
+4
+Time (s)
+£104
+°12
+°10
+°8
+°6
+Negative Goal Distance
+Quadruped (Pixels)
+0.0
+2.5
+5.0
+7.5
+Time (s)
+£104
+°8
+°7
+°6
+°5
+Negative Goal Distance
+Humanoid (Pixels)
+0
+2
+4
+Time (s)
+£104
+0
+1
+2
+3
+4
+# Achieved Tasks
+Kitchen (Pixels)
+Figure 8: Downstream task performance comparison with LEXA (8 seeds). We compare METRA against
+LEXA, a state-of-the-art unsupervised goal-reaching method, on five goal-conditioned tasks. The skills learned
+by METRA can be employed to solve these tasks in a zero-shot manner, achieving the best performance.
+that combines exploration and successor features, APS. We use the original implementations by
+Laskin et al. (2021) for state-based environments and the Dreamer versions by Rajeswar et al. (2023)
+for pixel-based environments. As the underlying RL backbones are very different (e.g., Dreamer is
+model-based, while METRA uses model-free SAC), we compare the methods based on wall clock
+time. For the metric, instead of policy coverage (as in Figure 5), we measure total state coverage
+(i.e., the number of bins covered by any training trajectories up to each evaluation epoch). This
+metric is more generous toward the exploration methods, since such methods might not cover the
+entire space on any single iteration, but rather visit different parts of the space on different iterations
+(in contrast to our method, which aims to produce diverse skills). In Kitchen, we found that most
+methods max out the total task coverage metric, and we instead use both the queue coverage and
+policy coverage metrics (see Appendix G for details). Figure 7 presents the results, showing that
+METRA achieves the best coverage in most of the environments. While pure exploration methods
+also work decently in the pixel-based Kitchen, they fail to fully explore the state spaces of state-
+based Ant and pixel-based Humanoid, which have complex dynamics with nearly infinite possible
+combinations of positions, joint angles, and velocities.
+Comparison with unsupervised goal-reaching methods.
+Finally, we compare METRA with
+LEXA, a state-of-the-art unsupervised goal-reaching method. LEXA trains an exploration policy
+with Plan2Explore (Sekar et al., 2020), which maximizes epistemic uncertainty in the transition
+dynamics model, in parallel with a goal-conditioned policy π(a|s, g) on the data collected by the
+exploration policy. We compare the performances of METRA, LEXA, and two previous skill dis-
+covery methods (DIAYN and LSD) on five goal-reaching downstream tasks. We use the procedure
+described in Section 4.2 to solve goal-conditioned tasks in a zero-shot manner with METRA. Fig-
+ure 8 presents the comparison results, where METRA achieves the best performance on all of the
+five downstream tasks. While LEXA also achieves non-trivial performances in three tasks, it strug-
+gles with state-based Ant and pixel-based Humanoid, likely because it is practically challenging to
+completely capture the transition dynamics of these complex environments.
+6
+CONCLUSION
+In this work, we presented METRA, a scalable unsupervised RL method based on the idea of cover-
+ing a compact latent skill space that is connected to the state space by a temporal distance metric. We
+showed that METRA learns diverse useful behaviors in various locomotion and manipulation envi-
+ronments, being the first unsupervised RL method that learns locomotion behaviors in pixel-based
+Quadruped and Humanoid.
+Final remarks. In unsupervised RL, many excellent prior works have explored pure exploration
+or mutual information skill learning. However, given that these methods are not necessarily readily
+scalable to complex environments with high intrinsic state dimensionality, as discussed in Section 2,
+we may need a completely different approach to enable truly scalable unsupervised RL. We hope
+that this work serves as a step toward broadly applicable unsupervised RL that enables large-scale
+pre-training with minimal supervision.
+9
+
+Published as a conference paper at ICLR 2024
+ACKNOWLEDGMENTS
+We would like to thank Youngwoon Lee for an informative discussion, and RAIL members and
+anonymous reviewers for their helpful comments. This work was partly supported by the Korea
+Foundation for Advanced Studies (KFAS), ARO W911NF-21-1-0097, and the Office of Naval Re-
+search. This research used the Savio computational cluster resource provided by the Berkeley Re-
+search Computing program at UC Berkeley.
+REPRODUCIBILITY STATEMENT
+We provide our code at the following repository: https://github.com/seohongpark/
+METRA. We provide the full experimental details in Appendix G.
+REFERENCES
+Joshua Achiam, Harrison Edwards, Dario Amodei, and Pieter Abbeel. Variational option discovery
+algorithms. ArXiv, abs/1807.10299, 2018.
+Adri`a Puigdom`enech Badia, Pablo Sprechmann, Alex Vitvitskyi, Daniel Guo, Bilal Piot, Steven
+Kapturowski, Olivier Tieleman, Mart´ın Arjovsky, Alexander Pritzel, Andew Bolt, and Charles
+Blundell. Never give up: Learning directed exploration strategies. In International Conference
+on Learning Representations (ICLR), 2020.
+Richard F Bass. Real analysis for graduate students. Createspace Ind Pub, 2013.
+Kate Baumli, David Warde-Farley, Steven Stenberg Hansen, and Volodymyr Mnih. Relative varia-
+tional intrinsic control. In AAAI Conference on Artificial Intelligence (AAAI), 2021.
+Marc G. Bellemare, Sriram Srinivasan, Georg Ostrovski, Tom Schaul, David Saxton, and R´emi
+Munos. Unifying count-based exploration and intrinsic motivation. In Neural Information Pro-
+cessing Systems (NeurIPS), 2016.
+Glen Berseth, Daniel Geng, Coline Devin, Nicholas Rhinehart, Chelsea Finn, Dinesh Jayaraman,
+and Sergey Levine. Smirl: Surprise minimizing reinforcement learning in unstable environments.
+In International Conference on Learning Representations (ICLR), 2021.
+Rajendra Bhatia. Matrix analysis. Springer Science & Business Media, 2013.
+G. Brockman, Vicki Cheung, Ludwig Pettersson, J. Schneider, John Schulman, Jie Tang, and
+W. Zaremba. OpenAI Gym. ArXiv, abs/1606.01540, 2016.
+Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Kaplan, Prafulla Dhari-
+wal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, Sandhini Agarwal,
+Ariel Herbert-Voss, Gretchen Krueger, T. J. Henighan, Rewon Child, Aditya Ramesh, Daniel M.
+Ziegler, Jeff Wu, Clemens Winter, Christopher Hesse, Mark Chen, Eric Sigler, Mateusz Litwin,
+Scott Gray, Benjamin Chess, Jack Clark, Christopher Berner, Sam McCandlish, Alec Radford,
+Ilya Sutskever, and Dario Amodei. Language models are few-shot learners. In Neural Informa-
+tion Processing Systems (NeurIPS), 2020.
+Yuri Burda, Harrison Edwards, Amos J. Storkey, and Oleg Klimov. Exploration by random network
+distillation. In International Conference on Learning Representations (ICLR), 2019.
+V´ıctor Campos Cam´u˜nez, Alex Trott, Caiming Xiong, Richard Socher, Xavier Gir´o Nieto, and Jordi
+Torres Vi˜nals. Explore, discover and learn: unsupervised discovery of state-covering skills. In
+International Conference on Machine Learning (ICML), 2020.
+Ting Chen, Simon Kornblith, Mohammad Norouzi, and Geoffrey E. Hinton. A simple framework for
+contrastive learning of visual representations. In International Conference on Machine Learning
+(ICML), 2020.
+10
+
+Published as a conference paper at ICLR 2024
+Wenze Chen, Shiyu Huang, Yuan Chiang, Tingling Chen, and Jun Zhu. Dgpo: Discovering multiple
+strategies with diversity-guided policy optimization. In AAAI Conference on Artificial Intelligence
+(AAAI), 2024.
+Xinyue Chen, Che Wang, Zijian Zhou, and Keith W. Ross.
+Randomized ensembled double q-
+learning: Learning fast without a model. In International Conference on Learning Representa-
+tions (ICLR), 2021.
+Jongwook Choi, Archit Sharma, Honglak Lee, Sergey Levine, and Shixiang Gu. Variational empow-
+erment as representation learning for goal-conditioned reinforcement learning. In International
+Conference on Machine Learning (ICML), 2021.
+John D. Co-Reyes, Yuxuan Liu, Abhishek Gupta, Benjamin Eysenbach, P. Abbeel, and Sergey
+Levine. Self-consistent trajectory autoencoder: Hierarchical reinforcement learning with trajec-
+tory embeddings. In International Conference on Machine Learning (ICML), 2018.
+Ishan Durugkar, Mauricio Tec, Scott Niekum, and Peter Stone. Adversarial intrinsic motivation for
+reinforcement learning. In Neural Information Processing Systems (NeurIPS), 2021.
+Adrien Ecoffet, Joost Huizinga, Joel Lehman, Kenneth O. Stanley, and Jeff Clune. First return, then
+explore. Nature, 590:580–586, 2020.
+Benjamin Eysenbach, Abhishek Gupta, Julian Ibarz, and Sergey Levine. Diversity is all you need:
+Learning skills without a reward function. In International Conference on Learning Representa-
+tions (ICLR), 2019a.
+Benjamin Eysenbach, Ruslan Salakhutdinov, and Sergey Levine. Search on the replay buffer: Bridg-
+ing planning and reinforcement learning. In Neural Information Processing Systems (NeurIPS),
+2019b.
+Carlos Florensa, Yan Duan, and P. Abbeel. Stochastic neural networks for hierarchical reinforcement
+learning. In International Conference on Learning Representations (ICLR), 2017.
+Carlos Florensa, Jonas Degrave, Nicolas Manfred Otto Heess, Jost Tobias Springenberg, and Mar-
+tin A. Riedmiller. Self-supervised learning of image embedding for continuous control. ArXiv,
+abs/1901.00943, 2019.
+Justin Fu, John D. Co-Reyes, and Sergey Levine. Ex2: Exploration with exemplar models for deep
+reinforcement learning. In Neural Information Processing Systems (NeurIPS), 2017.
+Karol Gregor, Danilo Jimenez Rezende, and Daan Wierstra. Variational intrinsic control. ArXiv,
+abs/1611.07507, 2016.
+Abhishek Gupta, Vikash Kumar, Corey Lynch, Sergey Levine, and Karol Hausman. Relay policy
+learning: Solving long-horizon tasks via imitation and reinforcement learning. In Conference on
+Robot Learning (CoRL), 2019.
+Michael U Gutmann and Aapo Hyv¨arinen. Noise-contrastive estimation: A new estimation principle
+for unnormalized statistical models. In International Conference on Artificial Intelligence and
+Statistics (AISTATS), 2010.
+Tuomas Haarnoja, Aurick Zhou, Pieter Abbeel, and Sergey Levine. Soft actor-critic: Off-policy
+maximum entropy deep reinforcement learning with a stochastic actor. In International Confer-
+ence on Machine Learning (ICML), 2018a.
+Tuomas Haarnoja, Aurick Zhou, Kristian Hartikainen, G. Tucker, Sehoon Ha, Jie Tan, Vikash Ku-
+mar, Henry Zhu, Abhishek Gupta, Pieter Abbeel, and Sergey Levine. Soft actor-critic algorithms
+and applications. ArXiv, abs/1812.05905, 2018b.
+Danijar Hafner, Timothy P. Lillicrap, Jimmy Ba, and Mohammad Norouzi. Dream to control: Learn-
+ing behaviors by latent imagination. In International Conference on Learning Representations
+(ICLR), 2020.
+11
+
+Published as a conference paper at ICLR 2024
+Danijar Hafner, Kuang-Huei Lee, Ian S. Fischer, and P. Abbeel. Deep hierarchical planning from
+pixels. In Neural Information Processing Systems (NeurIPS), 2022.
+Nicklas Hansen, Xiaolong Wang, and Hao Su. Temporal difference learning for model predictive
+control. In International Conference on Machine Learning (ICML), 2022.
+S. Hansen, Will Dabney, Andr´e Barreto, T. Wiele, David Warde-Farley, and V. Mnih. Fast task
+inference with variational intrinsic successor features. In International Conference on Learning
+Representations (ICLR), 2020.
+Kristian Hartikainen, Xinyang Geng, Tuomas Haarnoja, and Sergey Levine. Dynamical distance
+learning for semi-supervised and unsupervised skill discovery. In International Conference on
+Learning Representations (ICLR), 2020.
+Elad Hazan, Sham M. Kakade, Karan Singh, and Abby Van Soest. Provably efficient maximum
+entropy exploration. In International Conference on Machine Learning (ICML), 2019.
+Shuncheng He, Yuhang Jiang, Hongchang Zhang, Jianzhun Shao, and Xiangyang Ji. Wasserstein
+unsupervised reinforcement learning. In AAAI Conference on Artificial Intelligence (AAAI), 2022.
+Takuya Hiraoka, Takahisa Imagawa, Taisei Hashimoto, Takashi Onishi, and Yoshimasa Tsuruoka.
+Dropout q-functions for doubly efficient reinforcement learning. In International Conference on
+Learning Representations (ICLR), 2022.
+Rein Houthooft, Xi Chen, Yan Duan, John Schulman, Filip De Turck, and P. Abbeel. Vime: Varia-
+tional information maximizing exploration. In Neural Information Processing Systems (NeurIPS),
+2016.
+Edward S. Hu, Richard Chang, Oleh Rybkin, and Dinesh Jayaraman. Planning goals for exploration.
+In International Conference on Learning Representations (ICLR), 2023.
+Zheyuan Jiang, Jingyue Gao, and Jianyu Chen. Unsupervised skill discovery via recurrent skill
+training. In Neural Information Processing Systems (NeurIPS), 2022.
+Leslie Pack Kaelbling. Learning to achieve goals. In International Joint Conference on Artificial
+Intelligence (IJCAI), 1993.
+Pierre-Alexandre Kamienny, Jean Tarbouriech, Alessandro Lazaric, and Ludovic Denoyer. Direct
+then diffuse: Incremental unsupervised skill discovery for state covering and goal reaching. In
+International Conference on Learning Representations (ICLR), 2022.
+Jaekyeom Kim, Seohong Park, and Gunhee Kim. Unsupervised skill discovery with bottleneck
+option learning. In International Conference on Machine Learning (ICML), 2021.
+Seongun Kim, Kyowoon Lee, and Jaesik Choi. Variational curriculum reinforcement learning for
+unsupervised discovery of skills. In International Conference on Machine Learning (ICML),
+2023.
+Diederik P. Kingma and Jimmy Ba. Adam: A method for stochastic optimization. In International
+Conference on Learning Representations (ICLR), 2015.
+Martin Klissarov and Marlos C. Machado. Deep laplacian-based options for temporally-extended
+exploration. In International Conference on Machine Learning (ICML), 2023.
+Ilya Kostrikov, Denis Yarats, and Rob Fergus. Image augmentation is all you need: Regularizing
+deep reinforcement learning from pixels. In International Conference on Learning Representa-
+tions (ICLR), 2021.
+Saurabh Kumar, Aviral Kumar, Sergey Levine, and Chelsea Finn.
+One solution is not all you
+need: Few-shot extrapolation via structured maxent rl. In Neural Information Processing Sys-
+tems (NeurIPS), 2020.
+Michael Laskin, Denis Yarats, Hao Liu, Kimin Lee, Albert Zhan, Kevin Lu, Catherine Cang, Lerrel
+Pinto, and P. Abbeel. Urlb: Unsupervised reinforcement learning benchmark. In Neural Informa-
+tion Processing Systems (NeurIPS) Datasets and Benchmarks Track, 2021.
+12
+
+Published as a conference paper at ICLR 2024
+Michael Laskin, Hao Liu, Xue Bin Peng, Denis Yarats, Aravind Rajeswaran, and P. Abbeel. Un-
+supervised reinforcement learning with contrastive intrinsic control. In Neural Information Pro-
+cessing Systems (NeurIPS), 2022.
+Yann LeCun, Bernhard E. Boser, John S. Denker, Donnie Henderson, Richard E. Howard, Wayne E.
+Hubbard, and Lawrence D. Jackel. Backpropagation applied to handwritten zip code recognition.
+Neural Computation, 1:541–551, 1989.
+Lisa Lee, Benjamin Eysenbach, Emilio Parisotto, Eric P. Xing, Sergey Levine, and Ruslan Salakhut-
+dinov. Efficient exploration via state marginal matching. ArXiv, abs/1906.05274, 2019.
+Mengdi Li, Xufeng Zhao, Jae Hee Lee, Cornelius Weber, and Stefan Wermter. Internally rewarded
+reinforcement learning. In International Conference on Machine Learning (ICML), 2023.
+Hao Liu and Pieter Abbeel.
+APS: Active pretraining with successor features.
+In International
+Conference on Machine Learning (ICML), 2021a.
+Hao Liu and Pieter Abbeel. Behavior from the void: Unsupervised active pre-training. In Neural
+Information Processing Systems (NeurIPS), 2021b.
+Marlos C. Machado, Marc G. Bellemare, and Michael Bowling. A laplacian framework for option
+discovery in reinforcement learning. In International Conference on Machine Learning (ICML),
+2017.
+Marlos C. Machado, Clemens Rosenbaum, Xiaoxiao Guo, Miao Liu, Gerald Tesauro, and Murray
+Campbell. Eigenoption discovery through the deep successor representation. In International
+Conference on Learning Representations (ICLR), 2018.
+Pietro Mazzaglia, Ozan C¸ atal, Tim Verbelen, and B. Dhoedt. Curiosity-driven exploration via latent
+bayesian surprise. In AAAI Conference on Artificial Intelligence (AAAI), 2022.
+Pietro Mazzaglia, Tim Verbelen, B. Dhoedt, Alexandre Lacoste, and Sai Rajeswar. Choreographer:
+Learning and adapting skills in imagination. In International Conference on Learning Represen-
+tations (ICLR), 2023.
+Russell Mendonca, Oleh Rybkin, Kostas Daniilidis, Danijar Hafner, and Deepak Pathak. Discover-
+ing and achieving goals via world models. In Neural Information Processing Systems (NeurIPS),
+2021.
+Shakir Mohamed and Danilo J. Rezende. Variational information maximisation for intrinsically
+motivated reinforcement learning. In Neural Information Processing Systems (NeurIPS), 2015.
+Mirco Mutti, Lorenzo Pratissoli, and Marcello Restelli. Task-agnostic exploration via policy gra-
+dient of a non-parametric state entropy estimate. In AAAI Conference on Artificial Intelligence
+(AAAI), 2021.
+OpenAI OpenAI, Matthias Plappert, Raul Sampedro, Tao Xu, Ilge Akkaya, Vineet Kosaraju, Peter
+Welinder, Ruben D’Sa, Arthur Petron, Henrique Pond´e de Oliveira Pinto, Alex Paino, Hyeonwoo
+Noh, Lilian Weng, Qiming Yuan, Casey Chu, and Wojciech Zaremba. Asymmetric self-play for
+automatic goal discovery in robotic manipulation. ArXiv, abs/2101.04882, 2021.
+Georg Ostrovski, Marc G. Bellemare, A¨aron van den Oord, and R´emi Munos. Count-based explo-
+ration with neural density models. In International Conference on Machine Learning (ICML),
+2017.
+Sherjil Ozair, Corey Lynch, Yoshua Bengio, A¨aron van den Oord, Sergey Levine, and Pierre Ser-
+manet.
+Wasserstein dependency measure for representation learning.
+In Neural Information
+Processing Systems (NeurIPS), 2019.
+Seohong Park and Sergey Levine. Predictable mdp abstraction for unsupervised model-based rl. In
+International Conference on Machine Learning (ICML), 2023.
+Seohong Park, Jongwook Choi, Jaekyeom Kim, Honglak Lee, and Gunhee Kim.
+Lipschitz-
+constrained unsupervised skill discovery. In International Conference on Learning Represen-
+tations (ICLR), 2022.
+13
+
+Published as a conference paper at ICLR 2024
+Seohong Park, Dibya Ghosh, Benjamin Eysenbach, and Sergey Levine.
+Hiql: Offline goal-
+conditioned rl with latent states as actions. In Neural Information Processing Systems (NeurIPS),
+2023a.
+Seohong Park, Kimin Lee, Youngwoon Lee, and P. Abbeel. Controllability-aware unsupervised skill
+discovery. In International Conference on Machine Learning (ICML), 2023b.
+Deepak Pathak, Pulkit Agrawal, Alexei A. Efros, and Trevor Darrell. Curiosity-driven exploration
+by self-supervised prediction. In International Conference on Machine Learning (ICML), 2017.
+Deepak Pathak, Dhiraj Gandhi, and Abhinav Kumar Gupta. Self-supervised exploration via dis-
+agreement. In International Conference on Machine Learning (ICML), 2019.
+Silviu Pitis, Harris Chan, S. Zhao, Bradly C. Stadie, and Jimmy Ba. Maximum entropy gain ex-
+ploration for long horizon multi-goal reinforcement learning. In International Conference on
+Machine Learning (ICML), 2020.
+Vitchyr H. Pong, Murtaza Dalal, S. Lin, Ashvin Nair, Shikhar Bahl, and Sergey Levine. Skew-Fit:
+State-covering self-supervised reinforcement learning. In International Conference on Machine
+Learning (ICML), 2020.
+Ben Poole, Sherjil Ozair, A¨aron van den Oord, Alexander A. Alemi, and G. Tucker. On variational
+bounds of mutual information. In International Conference on Machine Learning (ICML), 2019.
+A. H. Qureshi, Jacob J. Johnson, Yuzhe Qin, Taylor Henderson, Byron Boots, and Michael C. Yip.
+Composing task-agnostic policies with deep reinforcement learning. In International Conference
+on Learning Representations (ICLR), 2020.
+Sai Rajeswar, Pietro Mazzaglia, Tim Verbelen, Alexandre Pich’e, B. Dhoedt, Aaron C. Courville,
+and Alexandre Lacoste.
+Mastering the unsupervised reinforcement learning benchmark from
+pixels. In International Conference on Machine Learning (ICML), 2023.
+Nick Rhinehart, Jenny Wang, Glen Berseth, John D. Co-Reyes, Danijar Hafner, Chelsea Finn, and
+Sergey Levine. Information is power: Intrinsic control via information capture. In Neural Infor-
+mation Processing Systems (NeurIPS), 2021.
+Nikolay Savinov, Alexey Dosovitskiy, and Vladlen Koltun. Semi-parametric topological memory
+for navigation. In International Conference on Learning Representations (ICLR), 2018.
+Tom Schaul, Dan Horgan, Karol Gregor, and David Silver. Universal value function approximators.
+In International Conference on Machine Learning (ICML), 2015.
+John Schulman, Philipp Moritz, Sergey Levine, Michael I. Jordan, and P. Abbeel. High-dimensional
+continuous control using generalized advantage estimation.
+In International Conference on
+Learning Representations (ICLR), 2016.
+John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy
+optimization algorithms. ArXiv, abs/1707.06347, 2017.
+Ramanan Sekar, Oleh Rybkin, Kostas Daniilidis, P. Abbeel, Danijar Hafner, and Deepak Pathak.
+Planning to explore via self-supervised world models. In International Conference on Machine
+Learning (ICML), 2020.
+Younggyo Seo, Lili Chen, Jinwoo Shin, Honglak Lee, P. Abbeel, and Kimin Lee. State entropy
+maximization with random encoders for efficient exploration. In International Conference on
+Machine Learning (ICML), 2021.
+Nur Muhammad (Mahi) Shafiullah and Lerrel Pinto. One after another: Learning incremental skills
+for a changing world. In International Conference on Learning Representations (ICLR), 2022.
+Archit Sharma, Shixiang Gu, Sergey Levine, Vikash Kumar, and Karol Hausman.
+Dynamics-
+aware unsupervised discovery of skills. In International Conference on Learning Representations
+(ICLR), 2020.
+14
+
+Published as a conference paper at ICLR 2024
+Pranav Shyam, Wojciech Ja´skowski, and Faustino J. Gomez. Model-based active exploration. In
+International Conference on Machine Learning (ICML), 2019.
+DJ Strouse, Kate Baumli, David Warde-Farley, Vlad Mnih, and Steven Stenberg Hansen. Learning
+more skills through optimistic exploration. In International Conference on Learning Representa-
+tions (ICLR), 2022.
+Sainbayar Sukhbaatar, Ilya Kostrikov, Arthur D. Szlam, and Rob Fergus. Intrinsic motivation and
+automatic curricula via asymmetric self-play. In International Conference on Learning Represen-
+tations (ICLR), 2018.
+Haoran Tang, Rein Houthooft, Davis Foote, Adam Stooke, Xi Chen, Yan Duan, John Schulman,
+Filip De Turck, and P. Abbeel. #exploration: A study of count-based exploration for deep rein-
+forcement learning. In Neural Information Processing Systems (NeurIPS), 2017.
+Yuval Tassa, Yotam Doron, Alistair Muldal, Tom Erez, Yazhe Li, Diego de Las Casas, David Bud-
+den, Abbas Abdolmaleki, Josh Merel, Andrew Lefrancq, Timothy P. Lillicrap, and Martin A.
+Riedmiller. Deepmind control suite. ArXiv, abs/1801.00690, 2018.
+Emanuel Todorov, Tom Erez, and Yuval Tassa. Mujoco: A physics engine for model-based control.
+In IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS), 2012.
+Ahmed Touati and Yann Ollivier. Learning one representation to optimize all rewards. In Neural
+Information Processing Systems (NeurIPS), 2021.
+Ahmed Touati, J´er´emy Rapin, and Yann Ollivier. Does zero-shot reinforcement learning exist? In
+International Conference on Learning Representations (ICLR), 2023.
+A¨aron van den Oord, Yazhe Li, and Oriol Vinyals. Representation learning with contrastive predic-
+tive coding. ArXiv, abs/1807.03748, 2018.
+C´edric Villani et al. Optimal transport: old and new. Springer, 2009.
+Tongzhou Wang, Antonio Torralba, Phillip Isola, and Amy Zhang. Optimal goal-reaching rein-
+forcement learning via quasimetric learning. In International Conference on Machine Learning
+(ICML), 2023.
+David Warde-Farley, Tom Van de Wiele, Tejas Kulkarni, Catalin Ionescu, Steven Hansen, and
+Volodymyr Mnih. Unsupervised control through non-parametric discriminative rewards. In In-
+ternational Conference on Learning Representations (ICLR), 2019.
+Rushuai Yang, Chenjia Bai, Hongyi Guo, Siyuan Li, Bin Zhao, Zhen Wang, Peng Liu, and Xuelong
+Li. Behavior contrastive learning for unsupervised skill discovery. In International Conference
+on Machine Learning (ICML), 2023.
+Denis Yarats, Rob Fergus, Alessandro Lazaric, and Lerrel Pinto. Reinforcement learning with pro-
+totypical representations. In International Conference on Machine Learning (ICML), 2021.
+Tom Zahavy, Yannick Schroecker, Feryal M. P. Behbahani, Kate Baumli, Sebastian Flennerhag,
+Shaobo Hou, and Satinder Singh.
+Discovering policies with domino: Diversity optimization
+maintaining near optimality. In International Conference on Learning Representations (ICLR),
+2023a.
+Tom Zahavy, Vivek Veeriah, Shaobo Hou, Kevin Waugh, Matthew Lai, Edouard Leurent, Nenad
+Tomasev, Lisa Schut, Demis Hassabis, and Satinder Singh. Diversifying ai: Towards creative
+chess with alphazero. ArXiv, abs/2308.09175, 2023b.
+Jesse Zhang, Haonan Yu, and Wei Xu. Hierarchical reinforcement learning by discovering intrinsic
+options. In International Conference on Learning Representations (ICLR), 2021.
+Andrew Zhao, Matthieu Lin, Yangguang Li, Y. Liu, and Gao Huang. A mixture of surprises for
+unsupervised reinforcement learning. In Neural Information Processing Systems (NeurIPS), 2022.
+Zihan Zhou, Wei Fu, Bingliang Zhang, and Yi Wu. Continuously discovering novel strategies via
+reward-switching policy optimization. In International Conference on Learning Representations
+(ICLR), 2022.
+15
+
+Published as a conference paper at ICLR 2024
+preserves temporal distances
+(        denotes adjacent states)
+φ
+Z = R2
+S = R64×64×3
+φ
+Learn to move in every direction in   ,
+which approximately covers    
+Z
+Z = R2
+S = R64×64×3
+S
+∀(s, s′) ∥φ(s) −φ(s′)∥≤1
+maxπ(a|s,z) (φ(s′) −φ(s))⊤z
+Figure 9: Intuitive interpretation of METRA. Our main idea is to only cover a compact latent space Z
+that is metrically connected to the state space S. Specifically, METRA learns a lossy, compact representation
+function ϕ : S →Z, which preserves temporal distances (left), and learns to move in every direction in Z,
+which leads to approximate coverage of the state space S (right).
+Observation
+Global view
+(a) Quadruped
+Observation
+Global view
+(b) Humanoid
+Figure 10: Visualization of pixel-based DMC Quadruped and Humanoid. We use gradient-colored floors
+to allow the agent to infer its location from pixel observations, similarly to Hafner et al. (2022); Park et al.
+(2023a).
+A
+LIMITATIONS
+Despite its state-of-the-art performance in several benchmark environments, METRA, in its current
+form, has limitations. We refer to Section 4.2 for the limitations and future research directions
+regarding the METRA objective. In terms of practical implementation, METRA, like other similar
+unsupervised skill discovery methods (Sharma et al., 2020; Park et al., 2022; 2023b), uses a relatively
+small update-to-data (UTD) ratio (i.e., the average number of gradient steps per environment step);
+e.g., we use 1/4 for Kitchen and 1/16 for Quadruped and Humanoid. Although we demonstrate that
+METRA learns efficiently in terms of wall clock time, we believe there is room for improvement
+in terms of sample efficiency. This is mainly because we use vanilla SAC (Haarnoja et al., 2018a)
+as its RL backbone for simplicity, and we believe increasing the sample efficiency of METRA by
+combining it with recent techniques in model-free RL (Kostrikov et al., 2021; Chen et al., 2021;
+Hiraoka et al., 2022) or model-based RL (Hafner et al., 2020; Hansen et al., 2022) is an interesting
+direction for future work.
+Another limitation of this work is that, while we evaluate METRA on various locomotion and ma-
+nipulation environments, following prior work in unsupervised RL and unsuperivsed skill discov-
+ery (Eysenbach et al., 2019a; Sharma et al., 2020; Mendonca et al., 2021; Laskin et al., 2021; He
+et al., 2022; Park et al., 2022; Zhao et al., 2022; Shafiullah & Pinto, 2022; Laskin et al., 2022; Park
+et al., 2023b; Yang et al., 2023), we have not evaluated METRA on other different types of environ-
+ments, such as Atari games. Also, since we assume a fixed MDP (i.e., stationary, fully observable
+dynamics, Section 3), METRA in its current form does not particularly deal with non-stationary or
+16
+
+Published as a conference paper at ICLR 2024
+non-Markovian dynamics. We leave applying METRA to more diverse environments or extending
+the idea behind METRA to non-stationary or non-Markovian environments for future work.
+B
+EXTENDED RELATED WORK
+In addition to unsupervised skill discovery (Mohamed & Rezende, 2015; Gregor et al., 2016; Flo-
+rensa et al., 2017; Co-Reyes et al., 2018; Achiam et al., 2018; Eysenbach et al., 2019a; Warde-Farley
+et al., 2019; Shyam et al., 2019; Lee et al., 2019; Sharma et al., 2020; Campos Cam´u˜nez et al., 2020;
+Hansen et al., 2020; Pong et al., 2020; Baumli et al., 2021; Choi et al., 2021; Yarats et al., 2021;
+Kim et al., 2021; Zhang et al., 2021; He et al., 2022; Strouse et al., 2022; Laskin et al., 2022; Park
+et al., 2022; Shafiullah & Pinto, 2022; Jiang et al., 2022; Zhao et al., 2022; Kamienny et al., 2022;
+Park & Levine, 2023; Park et al., 2023b; Li et al., 2023; Kim et al., 2023) and pure exploration (or
+unsupervised goal-conditioned RL) methods (Houthooft et al., 2016; Bellemare et al., 2016; Tang
+et al., 2017; Ostrovski et al., 2017; Fu et al., 2017; Pathak et al., 2017; Hazan et al., 2019; Shyam
+et al., 2019; Burda et al., 2019; Pathak et al., 2019; Lee et al., 2019; Ecoffet et al., 2020; Pitis et al.,
+2020; Badia et al., 2020; Mutti et al., 2021; Liu & Abbeel, 2021b; Mendonca et al., 2021; Yarats
+et al., 2021; Seo et al., 2021; Mazzaglia et al., 2022; 2023; Hu et al., 2023; Rajeswar et al., 2023),
+there have also been proposed other types of unsupervised RL approaches, such as ones based on
+asymmetric self-play (Sukhbaatar et al., 2018; OpenAI et al., 2021), surprise minimization (Berseth
+et al., 2021; Rhinehart et al., 2021), and forward-backward representations (Touati & Ollivier, 2021;
+Touati et al., 2023). One potentially closely related line of work is graph Laplacian-based option
+discovery methods (Machado et al., 2017; 2018; Klissarov & Machado, 2023). These methods learn
+a set of diverse behaviors based on the eigenvectors of the graph Laplacian of the MDP’s adjacency
+matrix. Although we have not found a formal connection to these methods, we suspect there might
+exist a deep, intriguing connection between METRA and graph Laplacian-based methods, given that
+they both discover behaviors based on the temporal dynamics of the MDP. METRA is also related
+to several works in goal-conditioned RL that consider temporal distances (Kaelbling, 1993; Schaul
+et al., 2015; Savinov et al., 2018; Eysenbach et al., 2019b; Florensa et al., 2019; Hartikainen et al.,
+2020; Durugkar et al., 2021; Wang et al., 2023). In particular, Durugkar et al. (2021); Wang et al.
+(2023) use similar temporal distance constraints to ours for goal-conditioned RL.
+C
+THEORETICAL RESULTS
+C.1
+UNIVERSALITY OF INNER PRODUCT DECOMPOSITION
+Lemma C.1. Let X and Y be compact Hausdorff spaces (e.g., compact subsets in RN) and C(A)
+be the set of real-valued continuous functions on A. For any function f(x, y) ∈C(X × Y) and
+ϵ > 0, there exist continuous functions ϕ(x) : X →RD and ϕ(y) : Y →RD with D ≥1 such that
+supx∈X,y∈Y |f(x, y) −ϕ(x)⊤ψ(y)| < ε.
+Proof. We invoke the Stone-Weierstrass theorem (Bass (2013), Theorem 20.44), which implies
+that the set of functions T := {PD
+i=1 ϕi(x)ψi(y) : D ∈N, ∀1 ≤i ≤D, ϕi ∈C(X), ψi ∈
+C(Y)} is dense in C(X × Y) if T is an algebra that separates points and vanishes at no
+point.
+The only non-trivial part is to show that T is closed under multiplication.
+Consider
+g(1)(x, y) = PD1
+i=1 ϕ(1)
+i (x)ψ(1)
+i
+(y) ∈T and g(2)(x, y) = PD2
+i=1 ϕ(2)
+i (x)ψ(2)
+i
+(y) ∈T . We have
+g(1)(x, y)g(2)(x, y) = PD1
+i=1
+PD2
+j=1 ϕ(1)
+i (x)ϕ(2)
+j (x)ψ(1)
+i
+(y)ψ(2)
+j (y), where ϕ(1)
+i (x)ϕ(2)
+j (x) ∈C(X)
+and ψ(1)
+i
+(y)ψ(2)
+j (y) ∈C(Y) for all i, j. Hence, g(1)(x, y)g(2)(x, y) ∈T .
+Theorem C.2 (ϕ(x)⊤ψ(y) is a universal approximator of f(x, y)). Let X and Y be compact Haus-
+dorff spaces and Φ ⊂C(X) and Ψ ⊂C(Y) be dense sets in C(X) and C(Y), respectively. Then,
+T := {PD
+i=1 ϕi(x)ψi(y) : D ∈N, ∀1 ≤i ≤D, ϕi ∈Φ, ψi ∈Ψ} is also dense in C(X × Y).
+In other words, ϕ(x)⊤ψ(y) can approximate f(x, y) to arbitrary accuracy if ϕ and ψ are modeled
+with universal approximators (e.g., neural networks) and D →∞.
+Proof. By Lemma C.1, for any f ∈C(X × Y) and ε > 0, there exist D ∈N, ϕi ∈C(X), and
+ψi ∈C(Y) for 1 ≤i ≤D such that supx∈X,y∈Y |f(x, y) −PD
+i=1 ϕi(x)ψi(y)| < ε/3. Define
+17
+
+Published as a conference paper at ICLR 2024
+My := sup1≤i≤D,y∈Y |ψi(y)|. Since Φ is dense, for each 1 ≤i ≤D, there exists ˜ϕi ∈Φ such that
+supx∈X |ϕi(x) −˜ϕi(x)| < ε/(3DMy). Define Mx := sup1≤i≤D,x∈X |˜ϕi(x)|. Similarly, for each
+1 ≤i ≤D, there exists ˜ψi ∈Ψ such that supy∈Y |ψi(y) −˜ψi(y)| < ε/(3DMx). Now, we have
+f(x, y) −
+D
+X
+i=1
+˜ϕi(x) ˜ψi(y)
+ ≤
+f(x, y) −
+D
+X
+i=1
+ϕi(x)ψi(y)
+ +
+D
+X
+i=1
+˜ϕi(x) ˜ψi(y) −ϕi(x)ψi(y)
+ (9)
+< ε
+3 +
+D
+X
+i=1
+|˜ϕi(x)( ˜ψi(y) −ψi(y))| +
+D
+X
+i=1
+|(˜ϕi(x) −ϕi(x))ψi(y)|
+(10)
+< ε
+3 + ε
+3 + ε
+3
+(11)
+= ε,
+(12)
+for any x ∈X and y ∈Y. Hence, T is dense in C(X × Y).
+C.2
+LIPSCHITZ CONSTRAINT UNDER THE TEMPORAL DISTANCE METRIC
+Theorem C.3. The following two conditions are equivalent:
+(a) ∥ϕ(u) −ϕ(v)∥2 ≤dtemp(u, v) for all u, v ∈S.
+(b) ∥ϕ(s) −ϕ(s′)∥2 ≤1 for all (s, s′) ∈Sadj.
+Proof. We first show (a) implies (b). Assume (a) holds. Consider (s, s′) ∈Sadj. If s ̸= s′, by (a),
+we have ∥ϕ(s) −ϕ(s′)∥2 ≤dtemp(s, s′) = 1. Otherwise, i.e., s = s′, ∥ϕ(s) −ϕ(s′)∥2 = 0 ≤1.
+Hence, (a) implies (b).
+Next, we show (b) implies (a). Assume (b) holds. Consider u, v ∈S. If dtemp(u, v) = ∞(i.e., v is
+not reachable from u), (a) holds trivially. Otherwise, let k be dtemp(u, v). By definition, there exists
+(s0 = u, s1, . . . , sk−1, sk = v) such that (si, si+1) ∈Sadj for all 0 ≤i ≤k −1. Due to the triangle
+inequality and (b), we have ∥ϕ(u) −ϕ(v)∥2 ≤Pk−1
+i=0 ∥ϕ(si) −ϕ(si+1)∥2 ≤k = dtemp(u, v).
+Hence, (b) implies (a).
+D
+A CONNECTION BETWEEN METRA AND PCA
+In this section, we derive a theoretical connection between METRA and principal component anal-
+ysis (PCA). Recall that the METRA objective can be written as follows:
+sup
+π,ϕ
+Ep(τ,z)
+"T −1
+X
+t=0
+(ϕ(st+1) −ϕ(st))⊤z
+#
+= Ep(τ,z)
+
+ϕ(sT )⊤z
+
+(13)
+s.t. ∥ϕ(u) −ϕ(v)∥2 ≤dtemp(u, v), ∀u, v ∈S,
+(14)
+where dtemp denotes the temporal distance between two states. To make a formal connection be-
+tween METRA and PCA, we consider the following squared variant of the METRA objective in this
+section.
+sup
+π,ϕ
+Ep(τ,z)
+
+(ϕ(sT )⊤z)2
+s.t. ∥ϕ(u) −ϕ(v)∥2 ≤dtemp(u, v), ∀u, v ∈S,
+(15)
+which is almost the same as Equation (13) but the objective is now squared. The reason we consider
+this variant is simply for mathematical convenience.
+Next, we introduce the notion of a temporally consistent embedding.
+Definition D.1 (Temporally consistent embedding). We call that an MDP M admits a temporally
+consistent embedding if there exists ψ(s) : S →Rm such that
+dtemp(u, v) = ∥ψ(u) −ψ(v)∥2, ∀u, v ∈S.
+(16)
+18
+
+Published as a conference paper at ICLR 2024
+Intuitively, this states that the temporal distance metric can be embedded into a (potentially very
+high-dimensional) Euclidean space. We note that ψ is different from ϕ in Equation (13), and Rm
+can be much higher-dimensional than Z. An example of an MDP that admits a temporally consistent
+embedding is the PointMass environment: if an agent in Rn can move in any direction up to a unit
+speed, ψ(x) = x satisfies dtemp(u, v) = ∥u −v∥2 for all u, v ∈Rn (with a slightly generalized
+notion of temporal distances in continuous time) and thus the MDP admits the temporally consistent
+embedding of ψ. A pixel-based PointMass environment is another example of such an MDP.
+Now, we formally derive a connection between squared METRA and PCA. For simplicity, we as-
+sume Z = Rd and p(z) = N(0, Id), where N(0, Id) denotes the d-dimensional isotropic Gaussian
+distribution. We also assume that M has a deterministic initial distribution and transition dynamics
+function, and every state is reachable from the initial state within T steps. We denote the set of n×n
+positive definite matrices as Sn
+++, the operator norm of a matrix A as ∥A∥op, and the m-dimensional
+unit ℓ2 ball as Bm.
+Theorem D.2 (Linear squared METRA is PCA in the temporal embedding space). Let M be an
+MDP that admits a temporally consistent embedding ψ : S →Rm. If ϕ : S →Z is a linear
+mapping from the embedding space, i.e., ϕ(s) = W ⊤ψ(s) with W ∈Rm×d, and the embedding
+space Ψ = {ψ(s) : s ∈S} forms an ellipse, i.e., ∃A ∈Sm
+++ s.t. Ψ = {x ∈Rm : x⊤A−1x ≤1},
+then W = [a1 a2 · · · ad] maximizes the squared METRA objective in Equation (15), where a1, ...,
+ad are the top-d eigenvectors of A.
+Proof. Since M admits a temporally consistent embedding, we have
+∥ϕ(u) −ϕ(v)∥2 ≤dtemp(u, v) ∀u, v ∈S
+(17)
+⇐⇒∥W ⊤(ψ(u) −ψ(v))∥2 ≤∥ψ(u) −ψ(v)∥2 ∀u, v ∈S
+(18)
+⇐⇒∥W ⊤(u −v)∥2 ≤∥u −v∥2 ∀u, v ∈Ψ
+(19)
+⇐⇒∥W∥op ≤1,
+(20)
+where we use the fact that ψ is a surjection from S to Ψ and that A is positive definite. Now, we
+have
+=
+sup
+π,∥W ∥op≤1
+Ep(τ,z)[(ϕ(sT )⊤z)2]
+(21)
+=
+sup
+π,∥W ∥op≤1
+Ep(τ,z)[(ψ(sT )⊤Wz)2]
+(22)
+=
+sup
+f:Rd→Ψ,∥W ∥op≤1
+Ep(z)[(f(z)⊤Wz)2]
+(∵Every state is reachable within T steps)
+(23)
+=
+sup
+g:Rd→Bm,∥W ∥op≤1
+Ep(z)[(g(z)⊤√
+AWz)2]
+(g(z) =
+√
+A−1f(z))
+(24)
+=
+sup
+∥W ∥op≤1
+Ep(z)[
+sup
+g:Rd→Bm(g(z)⊤√
+AWz)2]
+(25)
+=
+sup
+∥W ∥op≤1
+Ep(z)[ sup
+∥u∥2≤1
+(u⊤√
+AWz)2]
+(26)
+=
+sup
+∥W ∥op≤1
+Ep(z)[∥
+√
+AWz∥2
+2]
+(∵Dual norm)
+(27)
+=
+sup
+∥W ∥op≤1
+Ep(z)[z⊤W ⊤AWz]
+(28)
+=
+sup
+∥W ∥op≤1
+Ep(z)[tr(zz⊤W ⊤AW)]
+(29)
+=
+sup
+∥W ∥op≤1
+tr(Ep(z)[zz⊤]W ⊤AW)
+(30)
+=
+sup
+∥W ∥op≤1
+tr(WW ⊤A).
+(31)
+Since WW ⊤is a positive semidefinite matrix with rank at most d and ∥W∥op ≤1, there exists d
+eigenvalues 0 ≤λ1, . . . , λd ≤1 and the corresponding orthonormal eigenvectors v1, . . . , vd such
+that WW ⊤= Pd
+k=1 λkvkv⊤
+k . Hence, tr(WW ⊤A) = Pd
+k=1 λkv⊤
+k Avk, and to maximize this, we
+19
+
+Published as a conference paper at ICLR 2024
+must set λ1 = · · · = λd = 1 as A is positive definite. The remaining problem is to find d orthonor-
+mal vectors v1, . . . , vd that maximize Pd
+k=1 v⊤
+k Avk. By the Ky Fan’s maximum principle (Bhatia,
+2013), its solution is given as the d eigenvectors corresponding to the d largest eigenvalues of A.
+Therefore, W = [a1 a2 · · · ad], where a1, . . . , ad are the top-d principal components of A, maxi-
+mizes the squared METRA objective in Equation (15).
+Theorem D.2 states that linear squared METRA is equivalent to PCA in the temporal embedding
+space. In practice, however, ϕ can be nonlinear, the shape of Ψ can be arbitrary, and the MDP may
+not admit any temporally consistent embeddings. Nonetheless, this theoretical connection hints at
+the intuition that the METRA objective encourages the agent to span the largest “temporal” mani-
+folds in the state space, given the limited capacity of Z.
+E
+CONNECTIONS BETWEEN WDM AND DIAYN, DADS, AND CIC
+In this section, we describe connections between our WDM objectives (either IW(S; Z) or
+IW(ST ; Z)) and previous mutual information skill learning methods, DIAYN (Eysenbach et al.,
+2019a), DADS (Sharma et al., 2020), and CIC (Laskin et al., 2022). Recall that the IW(S; Z)
+objective (Equation (4)) maximizes
+T −1
+X
+t=0
+ Ep(τ,z)[ϕL(st)⊤ψL(z)] −Ep(τ)[ϕL(st)]⊤Ep(z)[ψL(z)]
+
+,
+(32)
+and the IW(ST ; Z) objective (Equation (6)) maximizes
+T −1
+X
+t=0
+ Ep(τ,z)[(ϕL(st+1) −ϕL(st))⊤ψL(z)] −Ep(τ)[ϕL(st+1) −ϕL(st)]⊤Ep(z)[ψL(z)]
+
+,
+(33)
+where we use the notations ϕL and ψL to denote that they are Lipschitz constrained. By simplifying
+Equation (32) or Equation (33) in three different ways, we will show that we can obtain “Wasser-
+stein counterparts” of DIAYN, DADS, and CIC. For simplicity, we assume p(z) = N(0, I), where
+N(0, I) denotes the standard Gaussian distribution.
+E.1
+DIAYN
+If we set ψL(z) = z in Equation (32), we get
+rt = ϕL(st)⊤z.
+(34)
+This is analogous to DIAYN (Eysenbach et al., 2019a), which maximizes
+I(S; Z) = −H(Z|S) + H(Z)
+(35)
+≳Ep(τ,z)
+"T −1
+X
+t=0
+log q(z|st)
+#
+(36)
+≃Ep(τ,z)
+"T −1
+X
+t=0
+−∥z −ϕ(st)∥2
+2
+#
+,
+(37)
+rDIAYN
+t
+= −∥ϕ(st) −z∥2
+2,
+(38)
+where ‘≳’ and ‘≃’ respectively denote ‘>’ and ‘=’ up to constant scaling or shifting, and we assume
+that the variational distribution q(z|s) is modeled as N(ϕ(s), I). By comparing Equation (34) and
+Equation (38), we can see that Equation (34) can be viewed as a Lipschitz, inner-product variant of
+DIAYN. This analogy will become clearer later.
+E.2
+DADS
+If we set ϕL(s) = s in Equation (33), we get
+rt = (st+1 −st)⊤ψL(z) −(st+1 −st)⊤Ep(z)[ψL(z)]
+(39)
+≈(st+1 −st)⊤ψL(z) −1
+L
+L
+X
+i=1
+(st+1 −st)⊤ψL(zi),
+(40)
+20
+
+Published as a conference paper at ICLR 2024
+where we use L independent samples from N(0, I), z1, z2, . . . , zL, to approximate the expectation.
+This is analogous to DADS (Sharma et al., 2020), which maximizes:
+I(S′; Z|S) = −H(S′|S, Z) + H(S′|S)
+(41)
+≳Ep(τ,z)
+"T −1
+X
+t=0
+log q(st+1|st, z) −log p(st+1|st)
+#
+(42)
+≈Ep(τ,z)
+"T −1
+X
+t=0
+ 
+log q(st+1|st, z) −1
+L
+L
+X
+i=1
+log q(st+1|st, zi)
+!#
+,
+(43)
+rDADS
+t
+= −∥(st+1 −st) −ψ(st, z)∥2
+2 + 1
+L
+L
+X
+i=1
+∥(st+1 −st) −ψ(st, z)∥2
+2,
+(44)
+where we assume that the variational distribution q(s′|s, z) is modeled as q(s′ −s|s, z) =
+N(ψ(s, z), I), as in the original implementation (Sharma et al., 2020). We also use the same sample-
+based approximation as Equation (40). Note that the same analogy also holds between Equation (40)
+and Equation (44) (i.e., Equation (40) is a Lipschitz, inner-product variant of DADS).
+E.3
+CIC
+If we do not simplify ϕL or ψL in Equation (32), we get
+rt = ϕL(st)⊤ψL(z) −ϕL(st)⊤Ep(z)[ψL(z)]
+(45)
+≈ϕL(st)⊤ψL(z) −1
+L
+L
+X
+i=1
+ϕL(st)⊤ψL(zi),
+(46)
+where we use the same sample-based approximation as Equation (40). By Jensen’s inequality, Equa-
+tion (46) can be lower-bounded by
+ϕL(st)⊤ψL(z) −log 1
+L
+L
+X
+i=1
+exp
+ ϕL(st)⊤ψL(zi)
+
+,
+(47)
+as in WPC (Ozair et al., 2019). This is analogous to CIC (Laskin et al., 2022), which estimates the
+MI via noise contrastive estimation (Gutmann & Hyv¨arinen, 2010; van den Oord et al., 2018; Poole
+et al., 2019):
+I(S; Z) ≳Ep(τ,z)
+"T −1
+X
+t=0
+ 
+ϕ(st)⊤ψ(z) −log 1
+L
+L
+X
+i=1
+exp
+ ϕ(st)⊤ψ(zi)
+
+!#
+,
+(48)
+rCIC
+t
+= ϕ(st)⊤ψ(z) −log 1
+L
+L
+X
+i=1
+exp
+ ϕ(st)⊤ψ(zi)
+
+.
+(49)
+Note that Equation (47) can be viewed as a Lipschitz variant of CIC (Equation (49)).
+In this work, we use the ψL(z) = z simplification with Equation (33) (i.e., Equation (7)), as we
+found this variant to work well while being simple, but we believe exploring these other variants is
+an interesting future research direction. In particular, given that Equation (47) resembles the standard
+contrastive learning formulation, combining this (more general) objective with existing contrastive
+learning techniques may lead to another highly scalable unsupervised RL method, which we leave
+for future work.
+F
+ADDITIONAL RESULTS
+F.1
+FULL QUALITATIVE RESULTS
+Figure 11 shows the complete qualitative results of behaviors discovered by METRA on state-based
+Ant and HalfCheetah, and pixel-based Quadruped and Humanoid (8 seeds for each environment).
+We use 2-D skills for Ant and Humanoid, 4-D skills for Quadruped, and 16 discrete skills for
+HalfCheetah. The full qualitative results suggest that METRA discovers diverse locomotion be-
+haviors regardless of the random seed.
+21
+
+Published as a conference paper at ICLR 2024
+Ant
+(States)
+HalfCheetah
+(States)
+Quadruped
+(Pixels)
+Humanoid
+(Pixels)
+Figure 11: Full qualitative results of METRA (8 seeds). METRA learns diverse locomotion behaviors
+regardless of the random seed.
+Ant
+(States)
+Humanoid
+(Pixels)
+trajectories
+trajectories
+x-y
+φ(s)
+Z = R2
+trajectories
+trajectories
+x-y
+φ(s)
+S = R64×64×3
+Z = R2
+S = R29
+Figure 12: Latent space visualization. METRA learns to capture x-y coordinates in two-dimensional latent
+spaces in both state-based Ant and pixel-based Humanoid, as they are the most temporally spread-out dimen-
+sions in the state space. We note that, with a higher-dimensional latent space (especially when Z is discrete),
+METRA not only learns locomotion skills but also captures more diverse behaviors, as shown in the Cheetah
+and Kitchen videos on our project page.
+F.2
+LATENT SPACE VISUALIZATION
+METRA simultaneously learns both the skill policy π(a|s, z) and the representation function ϕ(s),
+to find the most “temporally spread-out” manifold in the state space. We train METRA on state-
+based Ant and pixel-based Humanoid with 2-D continuous latent spaces Z, and visualize the learned
+latent space by plotting ϕ(s) trajectories in Figure 12. Since the x-y plane corresponds to the most
+temporally “important” manifold in both environments, METRA learns to capture the x-y coordi-
+nates in two-dimensional ϕ, regardless of the input representations (note that Humanoid is pixel-
+based). We also note that, with a higher-dimensional latent space (especially when Z is discrete),
+METRA not only learns locomotion skills but also captures more diverse, non-linear behaviors, as
+shown in the Cheetah and Kitchen videos on our project page.
+F.3
+ABLATION STUDY OF LATENT SPACE SIZES
+To demonstrate how the size of the latent space Z affects skill learning, we train METRA with 1-
+D, 2-D, and 4-D continuous skills and 2, 4, 8, 16, and 24 discrete skills on Ant and HalfCheetah.
+Figure 13 compares skills learned with different latent space sizes, which suggests that the diversity
+of skill generally increases as the capacity of Z grows.
+F.4
+ADDITIONAL BASELINES
+In the main paper, we compare METRA with 11 previous unsupervised exploration and unsuper-
+vised skill discovery methods. In this section, we additionally compare METRA with DGPO (Chen
+et al., 2024), a method that aims to find diverse behaviors that maximize a task reward (Kumar
+et al., 2020; Zhou et al., 2022; Zahavy et al., 2023a;b; Chen et al., 2024). Since we consider a con-
+trolled Markov process without external rewards, we use only the intrinsic reward part of DGPO for
+22
+
+Published as a conference paper at ICLR 2024
+Ant
+(States)
+HalfCheetah
+(States)
+Z = R1
+Z = R2
+Z = R4
+Z = {1, 2}
+Z = {1, 2, 3, 4} Z = {1, . . . , 8} Z = {1, . . . , 16} Z = {1, . . . , 24}
+Figure 13: Skills learned with different latent space sizes. Since METRA maximizes state coverage under
+the capacity of the latent space Z, skills become more diverse as the capacity of Z grows.
+Table 1: Comparison with DGPO. We compare METRA with an additional baseline for discrete skill learn-
+ing, DGPO (Chen et al., 2024). METRA exhibits the best state coverage in both Ant and HalfCheetah. We use
+4 random seeds and ‘±’ denotes standard deviations.
+Environment (Metric)
+DIAYN
+DGPO
+METRA (ours)
+HalfCheetah (policy state coverage)
+6.75 ± 2.22
+6.75 ± 2.06
+186.75 ± 16.21
+HalfCheetah (total state coverage)
+19.50 ± 3.87
+22.25 ± 5.85
+177.75 ± 17.10
+Ant (policy state coverage)
+11.25 ± 5.44
+7.00 ± 3.83
+1387.75 ± 77.38
+Ant (total state coverage)
+107.75 ± 17.00
+121.50 ± 4.36
+6313.25 ± 747.92
+comparison:
+rDGPO
+t
+=
+min
+z′∈Z,z′̸=z log
+q(z|st+1)
+q(z|st+1) + q(z′|st+1),
+(50)
+where q is a skill discriminator (Eysenbach et al., 2019a) and DGPO assumes that Z is a discrete
+space. Intuitively, this objective encourages each behavior to be maximally different from the most
+similar other behavior.
+Table 1 presents the comparison results on HalfCheetah and Ant, where we train DIAYN, DGPO,
+and METRA with 16 discrete skills for 10000 epochs (16M steps). Even though DGPO maximizes
+“worst-case” diversity (Equation (50)), it still maximizes a metric-agnostic KL divergence between
+different skills (Chen et al., 2024), which leads to limited state coverage, as in DIAYN. In contrast,
+METRA maximizes a metric-aware Wasserstein distance and thus shows significantly better state
+coverage.
+G
+EXPERIMENTAL DETAILS
+We implement METRA on top of the publicly available LSD codebase (Park et al., 2022). Our
+implementation is available at https://github.com/seohongpark/METRA. For unsuper-
+vised skill discovery methods, we implement LSD (Park et al., 2022), CIC (Laskin et al., 2022), DI-
+AYN (Eysenbach et al., 2019a), and DADS (Sharma et al., 2020) on the same codebase as METRA.
+For six exploration methods, ICM (Pathak et al., 2017), LBS (Mazzaglia et al., 2022), RND (Burda
+et al., 2019), APT (Liu & Abbeel, 2021b), APS (Liu & Abbeel, 2021a), and Plan2Explore (Sekar
+et al., 2020) (or Disagremeent (Pathak et al., 2019)), we use the original implementations by Laskin
+et al. (2021) for state-based environments and the Dreamer (Hafner et al., 2020) variants by Rajeswar
+et al. (2023) for pixel-based environments. For LEXA (Mendonca et al., 2021) in Section 5.3, we
+use the original implementation by Mendonca et al. (2021). We run our experiments on an internal
+cluster consisting of A5000 GPUs. Each run in Section 5.3 takes no more than 24 hours.
+G.1
+ENVIRONMENTS
+Benchmark environments. For state-based environments, we use the same MuJoCo HalfCheetah
+and Ant environments (Todorov et al., 2012; Brockman et al., 2016) as previous work (Sharma
+et al., 2020; Park et al., 2022; 2023b). HalfCheetah has an 18-dimensional state space and Ant
+has a 29-dimensional state space. For pixel-based environments, we use pixel-based Quadruped
+and Humanoid from the DeepMind Control Suite (Tassa et al., 2018) and a pixel-based version of
+23
+
+Published as a conference paper at ICLR 2024
+Kitchen by Gupta et al. (2019); Mendonca et al. (2021). In DMC locomotion environments, we
+use gradient-colored floors to allow the agent to infer its location from pixels, similarly to Hafner
+et al. (2022); Park et al. (2023a). In Kitchen, we use the same camera setting as LEXA (Mendonca
+et al., 2021). Pixel-based environments have an observation space of 64 × 64 × 3, and we do not
+use any proprioceptive state information. The episode length is 200 for Ant and HalfCheetah, 400
+for Quadruped and Humanoid, and 50 for Kitchen. We use an action repeat of 2 for pixel-based
+Quadruped and Humanoid, following Mendonca et al. (2021). In our experiments, we do not use
+any prior knowledge or supervision, such as the x-y prior (Eysenbach et al., 2019a; Sharma et al.,
+2020), or early termination (Park et al., 2022).
+Metrics. For the state coverage metric in locomotion environments, we count the number of 1 × 1-
+sized x-y bins (Ant, Quadruped, and Humanoid) or 1-sized x bins (HalfCheetah) that are occupied
+by any of the target trajectories. In Kitchen, we count the number of pre-defined tasks achieved by
+any of the target trajectories, where we use the same six pre-defined tasks as Mendonca et al. (2021):
+Kettle (K), Microwave (M), Light Switch (LS), Hinge Cabinet (HC), Slide Cabinet (SC), and Bottom
+Burner (BB). Each of the three types of coverage metrics, policy state coverage (Figures 5 and 7),
+queue state coverage (Figure 7), and total state coverage (Figure 7), uses different target trajectories.
+Policy state coverage, which is mainly for skill discovery methods, is computed by 48 deterministic
+trajectories with 48 randomly sample skills at the current epoch. Queue state coverage is computed
+by the most recent 100000 training trajectories up to the current epoch. Total state coverage is
+computed by the entire training trajectories up to the current epoch.
+Downstream tasks. For quantitative comparison of skill discovery methods (Figure 6), we use
+five downstream tasks, AntMultiGoals, HalfCheetahGoal, HalfCheetahHurdle, QuadrupedGoal,
+and HumanoidGoal, mostly following the prior work (Park et al., 2022). In HalfCheetahGoal,
+QuadrupedGoal, and HumanoidGoal, the task is to reach a target goal (within a radius of 3) ran-
+domly sampled from [−100, 100], [−7.5, 7.5]2, and [−5, 5]2, respectively. The agent receives a re-
+ward of 10 when it reaches the goal. In AntMultiGoals, the task is to reach four target goals (within
+a radius of 3), where each goal is randomly sampled from [sx −7.5, sx + 7.5] × [sy −7.5, sy + 7.5],
+where (sx, sy) is the agent’s current x-y position. The agent receives a reward of 2.5 whenever it
+reaches the goal. A new goal is sampled when the agent either reaches the previous goal or fails
+to reach it within 50 steps. In HalfCheetahHurdle (Qureshi et al., 2020), the task is to jump over
+multiple hurdles. The agent receives a reward of 1 whenever it jumps over a hurdle. The episode
+length is 200 for state-based environments and 400 for pixel-based environments.
+For quantitative comparison with LEXA (Figure 8), we use five goal-conditioned tasks. In locomo-
+tion environments, goals are randomly sampled from [−100, 100] (HalfCheetah), [−50, 50]2 (Ant),
+[−15, 15]2 (Quadruped), or [−10, 10]2 (Humanoid). We provide the full state as a goal g, whose
+dimensionality is 18 for HalfCheetah, 29 for Ant, and 64 × 64 × 3 for pixel-based Quadruped and
+Humanoid. In Kitchen, we use the same six (single-task) goal images and tasks as Mendonca et al.
+(2021). We measure the distance between the goal and the final state in locomotion environments
+and the number of successful tasks in Kitchen.
+G.2
+IMPLEMENTATION DETAILS
+Unsupervised skill discovery methods. For skill discovery methods, we use 2-D continuous skills
+for Ant and Humanoid, 4-D continuous skills for Quadruped, 16 discrete skills for HalfCheetah,
+and 24 discrete skills for Kitchen, where continuous skills are sampled from the standard Gaussian
+distribution, and discrete skills are uniformly sampled from the set of zero-centered one-hot vec-
+tors (Park et al., 2022). METRA and LSD use normalized vectors (i.e., z/∥z∥2) for continuous
+skills, as their objectives are invariant to the magnitude of z. For CIC, we use 64-D continuous skills
+for all environments, following the original suggestion (Laskin et al., 2022), and we found that using
+64-D skills for CIC leads to better state coverage than using 2-D or 4-D skills. We present the full
+list of hyperparameters used for skill discovery methods in Table 2.
+Unsupervised exploration methods. For unsupervised exploration methods and LEXA, we use the
+original implementations and hyperparameters (Laskin et al., 2021; Mendonca et al., 2021; Rajeswar
+et al., 2023). For LEXA’s goal-conditioned policy (achiever), we test both the temporal distance and
+cosine distance variants and use the former as it leads to better performance.
+24
+
+Published as a conference paper at ICLR 2024
+Table 2: Hyperparameters for unsupervised skill discovery methods.
+Hyperparameter
+Value
+Learning rate
+0.0001
+Optimizer
+Adam (Kingma & Ba, 2015)
+# episodes per epoch
+8
+# gradient steps per epoch
+200 (Quadruped, Humanoid),
+100 (Kitchen), 50 (Ant, HalfCheetah)
+Minibatch size
+256
+Discount factor γ
+0.99
+Replay buffer size
+106 (Ant, HalfCheetah), 105 (Kitchen),
+3 × 105 (Quadruped, Humanoid)
+Encoder
+CNN (LeCun et al., 1989)
+# hidden layers
+2
+# hidden units per layer
+1024
+Target network smoothing coefficient
+0.995
+Entropy coefficient
+0.01 (Kitchen),
+auto-adjust (Haarnoja et al., 2018b) (others)
+METRA ε
+10−3
+METRA initial λ
+30
+Table 3: Hyperparameters for PPO high-level controllers.
+Hyperparameter
+Value
+# episodes per epoch
+64
+# gradient steps per episode
+10
+Minibatch size
+256
+Entropy coefficient
+0.01
+GAE λ (Schulman et al., 2016)
+0.95
+PPO clip threshold ϵ
+0.2
+High-level controllers for downstream tasks. In Figure 6, we evaluate learned skills on down-
+stream tasks by training a high-level controller πh(z|s, stask) that selects a skill every K = 25 (Ant
+and HalfCheetah) or K = 50 (Quadruped and Humanoid) environment steps, where stask denotes
+the task-specific information: the goal position (‘-Goal’ or ‘-MultiGoals’ tasks) or the next hurdle
+position and distance (HalfCheetahHurdle). At every K steps, the high-level policy selects a skill
+z, and then the pre-trained low-level skill policy π(a|s, z) executes the same z for K steps. We
+train high-level controllers with PPO (Schulman et al., 2017) for discrete skills and SAC (Haarnoja
+et al., 2018a) for continuous skills. For SAC, we use the same hyperparameters as unsupervised
+skill discovery methods (Table 2), and we present the full list of PPO-specific hyperparameters in
+Table 3.
+Zero-shot goal-conditioned RL. In Figure 8, we evaluate the zero-shot performances of METRA,
+LSD, DIAYN, and LEXA on goal-conditioned downstream tasks. METRA and LSD use the proce-
+dure described in Section 4.2 to select skills. We re-compute z every step for locomotion environ-
+ments, but in Kitchen, we use the same z selected at the first step throughout the episode, as we find
+that this leads to better performance. DIAYN chooses z based on the output of the skill discriminator
+at the goal state (i.e., q(z|g), where q denotes the skill discriminator of DIAYN). LEXA uses the
+goal-conditioned policy (achiever), π(a|s, g).
+25
+
