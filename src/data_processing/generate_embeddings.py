@@ -28,4 +28,8 @@ def process_text_files(input_folder, output_file):
     with open(output_file, "w") as f:
         json.dump(embeddings, f)
 
-process_text_files(".//txts", "embeddings.json")
+if __name__ == "__main__":
+    input_folder = ".//txts"
+    output_file = "embeddings.json"
+    process_text_files(input_folder, output_file)
+    print(f"Embeddings saved to {output_file}")
