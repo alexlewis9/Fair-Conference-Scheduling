@@ -1,10 +1,13 @@
 import os
-from openai import OpenAI
 import numpy as np
 import json
+from openai import OpenAI
+from dotenv import load_dotenv
 
+load_dotenv()
 client = OpenAI()
 
+print("client running")
 def get_embedding(text, model="text-embedding-3-small"):
     """
     Get the embedding for a given text using OpenAI's API.
@@ -25,11 +28,12 @@ def process_text_files(input_folder, output_file):
                 with open(file_path, "r", encoding="utf-8") as f:
                     text = f.read()
                     embeddings[os.path.basename(file_path)] = get_embedding(text)
+
     with open(output_file, "w") as f:
         json.dump(embeddings, f)
 
-if __name__ == "__main__":
-    input_folder = ".//txts"
-    output_file = "embeddings.json"
-    process_text_files(input_folder, output_file)
-    print(f"Embeddings saved to {output_file}")
+# if __name__ == "__main__":
+#     input_folder = ".//txts"
+#     output_file = "embeddings.json"
+#     process_text_files(input_folder, output_file)
+#     print(f"Embeddings saved to {output_file}")

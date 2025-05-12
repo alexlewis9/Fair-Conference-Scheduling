@@ -1,10 +1,10 @@
 import fitz
 import os
 
-input_folder = ".//pdfs"
-output_folder = ".//txts"
+# input_folder = ".//pdfs"
+# output_folder = ".//txts"
 
-os.makedirs(output_folder, exist_ok=True)
+# os.makedirs(output_folder, exist_ok=True)
 
 def convert_pdf_to_txt(pdf_path, text_path):
     """
@@ -45,6 +45,6 @@ def process_pdfs(input_folder, output_folder):
 
                 convert_pdf_to_txt(pdf_path, text_path)
 
-if __name__ == "__main__":
-    process_pdfs(input_folder, output_folder)
-    print(f"PDFs converted to text files in {output_folder}")
+# if __name__ == "__main__":
+#     process_pdfs(input_folder, output_folder)
+#     print(f"PDFs converted to text files in {output_folder}")
