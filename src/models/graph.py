@@ -10,13 +10,15 @@ class Graph:
         Initializes the graph.
 
         Args:
+            nodes (list): A list of node objects.
             nodes (dict): A dictionary mapping node IDs to node objects.
             embeddings (np.ndarray): Embedding matrix where each row corresponds to a node's embedding.
             k (int): Number of clusters.
             d (str): Distance metric (e.g. 'cityblock', 'euclidean', 'cosine').
             original_clusters (list, optional): Original clusters if provided.
         """
-        self.nodes = {node.id: node for node in nodes}
+        self.nodes = nodes
+        self.nodes_dict = {node.id: node for node in nodes}
         self.embeddings = np.array(embeddings)
         self.k = k
         self.d = d
