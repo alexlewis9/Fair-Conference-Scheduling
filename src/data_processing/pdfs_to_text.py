@@ -45,4 +45,6 @@ def process_pdfs(input_folder, output_folder):
 
                 convert_pdf_to_txt(pdf_path, text_path)
 
-process_pdfs(input_folder, output_folder)
+if __name__ == "__main__":
+    process_pdfs(input_folder, output_folder)
+    print(f"PDFs converted to text files in {output_folder}")
