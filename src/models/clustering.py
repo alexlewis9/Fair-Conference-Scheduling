@@ -2,7 +2,8 @@ import math
 import heapq
 import numpy as np
 
-from src.models.graph import Graph
+from . import Graph
+
 
 def tau_closest_agents(agent_id, remaining_indices_list, adj_matrix, tau) -> tuple[list[int], float]:
     """Return the list of tau-closest agents to agent.
