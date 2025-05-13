@@ -5,7 +5,7 @@ class Graph:
     """
     Represents a graph with nodes, embeddings, adjacency matrix, and clustering.
     """
-    def __init__(self, nodes, embeddings, k, d='euclidean', original_clusters=None):
+    def __init__(self, nodes, k, d='euclidean', original_clusters=None):
         """
         Initializes the graph.
 
@@ -19,7 +19,7 @@ class Graph:
         """
         self.nodes = nodes
         self.nodes_dict = {node.id: node for node in nodes}
-        self.embeddings = np.array(embeddings)
+        self.embeddings = np.array([node.emb for node in nodes])
         self.k = k
         self.d = d
         self.original_clusters = original_clusters if original_clusters else []
