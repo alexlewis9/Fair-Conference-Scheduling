@@ -21,11 +21,35 @@ class Graph:
         """
         self.nodes = nodes
         self.nodes_dict = {node.id: node for node in nodes}
-        self.embeddings = np.array([node.emb for node in nodes])
+        self.embeddings = self._process_emb(nodes)
         self.k = k
         self.d = d
         self.original_clusters = original_clusters if original_clusters else []
         self.adj_matrix = self._compute_adj_matrix()
+        
+    def _process_emb(self, nodes):
+        """
+        Validates that all node embeddings have the same shape and creates embedding matrix.
+        
+        Args:
+            nodes (list): List of node objects.
+            
+        Returns:
+            np.ndarray: Matrix of node embeddings.
+            
+        Raises:
+            ValueError: If node embeddings have different shapes.
+        """
+        if not nodes:
+            return np.array([])
+
+        first_shape = nodes[0].emb.shape
+        for node in nodes[1:]:
+            if node.emb.shape != first_shape:
+                raise ValueError(
+                    f"Node embeddings must have same shape. Found shapes {first_shape} and {node.emb.shape}")
+
+        return np.array([node.emb for node in nodes])
 
     def _compute_adj_matrix(self):
         """
