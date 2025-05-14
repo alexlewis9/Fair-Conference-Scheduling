@@ -3,7 +3,10 @@
 
 ## Process csv to PaperNodes: 
 ```
-python src/main.py ./data/test/papers.csv --emb-column  emb_v2
+python -m src.csv_to_paper_node ./data/test/papers.csv --emb-column  emb_v2
 ```
 
-"""
+## Process data (.json) to embeddings:
+```
+ python -m src.generate_embeddings ./data/test/test.json ./data/emb/ --model text-embedding-3-small
+```
