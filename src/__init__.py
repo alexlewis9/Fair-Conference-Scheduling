@@ -1,7 +1,7 @@
-from .models.graph import Graph
-from .models.node import Node
-from .models.paper_node import PaperNode
-from .models.clustering import GreedyCohesiveClustering
-from .data_processing.pdfs_to_text import process_pdfs
-from .data_processing.generate_embeddings import process_text_files
+from .models import Graph
+from .models import Node
+from .models import PaperNode
+from .models import GreedyCohesiveClustering
+from .data_processing import process_pdfs
+from .data_processing import Encoder
 from .config import PROJECT_ROOT, DATA_DIR
