@@ -1,10 +1,9 @@
-from dataclasses import dataclass
 
 from dotenv import load_dotenv
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 
-@dataclass
+
 class Encoder:
     def __init__(self, name):
         self.name = name
@@ -27,7 +26,9 @@ class Encoder:
         if (self.name == "text-embedding-3-small" or
                 self.name == "text-embedding-ada-002" or
                 self.name == "text-embedding-3-large"):
-            return self.client.embeddings.create(input=text, model=self.name).data[0].embedding
+            # return self.client.embeddings.create(input=text, model=self.name).data[0].embedding
+            # TODO: uncomment this for prod
+            return ['test']
         elif self.name == 'gte-Qwen2-7B-instruct':
             return self.client.encode(text)
         return None

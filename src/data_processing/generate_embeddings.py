@@ -1,7 +1,7 @@
 import os
 import json
 import argparse
-from . import Encoder
+from src.data_processing.encoder import Encoder
 
 def process_json_file(input_path, output_path, model):
     """
