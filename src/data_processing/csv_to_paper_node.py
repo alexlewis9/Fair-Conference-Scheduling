@@ -1,5 +1,5 @@
 import argparse
-from . import PaperNode
+from src import PaperNode
 import os
 print("Current working directory:", os.getcwd())
 

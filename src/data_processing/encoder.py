@@ -1,8 +1,10 @@
+from dataclasses import dataclass
+
 from dotenv import load_dotenv
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 
-
+@dataclass
 class Encoder:
     def __init__(self, name):
         self.name = name
