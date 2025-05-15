@@ -8,5 +8,5 @@ python -m src.data_processing.csv_to_paper_node ./data/test/papers.csv --emb-col
 
 ## Process data (.json) to embeddings:
 ```
- python -m src.data_processing.generate_embeddings ./data/test/test.json ./data/emb/ --model text-embedding-3-small
+ python -m src.cli.generate_embeddings ./data/test/test.json ./data/emb/ --model text-embedding-3-small
 ```
