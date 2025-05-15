@@ -1,5 +1,5 @@
 import argparse
-from src import PaperNode
+from src.models.paper_node import PaperNode
 import os
 print("Current working directory:", os.getcwd())
 
