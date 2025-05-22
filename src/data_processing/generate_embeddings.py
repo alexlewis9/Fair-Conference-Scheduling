@@ -28,7 +28,7 @@ def generate_embeddings(input_path, output_path, model_name, include=None, exclu
         exclude (list, optional): Keys to exclude from embedding generation.
 
     Returns:
-        None. Saves output JSON to `output_path`.
+        embeddings (dict): Embeddings generated for each entry in the input JSON and config.
     """
     if include is None:
         include = []
@@ -87,6 +87,7 @@ def generate_embeddings(input_path, output_path, model_name, include=None, exclu
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(embeddings, f, ensure_ascii=False, indent=2)
 
+    return embeddings
 
 
 
