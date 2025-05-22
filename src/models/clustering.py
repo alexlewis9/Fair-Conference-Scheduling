@@ -6,14 +6,19 @@ from src.models.graph import Graph
 
 
 def tau_closest_agents(agent_index, remaining_indices_list, adj_matrix, tau) -> tuple[list[int], float]:
-    """Return the list of tau-closest agents to agent.
-    agent: agent's id
-    agents: list of agents' id
-    tau: threshold number (usually number of agents in a cluster)
+    """
+    Find the tau closest agents to a given agent based on the provided adjacency matrix.
 
-    Return:
-        - list of tau-closest agents' id
-        - distance to the furthest agent
+    Args:
+        agent_index (int): Index of the agent (row in adj_matrix) to find neighbors for.
+        remaining_indices_list (list[int]): List of candidate agent indices (global indices) to search within.
+        adj_matrix (np.ndarray): A 2D numpy array representing pairwise distances between agents.
+        tau (int): Number of closest agents to select (including the agent itself if present).
+
+    Returns:
+        tuple[list[int], float]:
+            - List of the global indices of the tau closest agents.
+            - Distance to the furthest agent in this tau-sized neighborhood.
     """
     # Get distances from point i to all other points
     distances = adj_matrix[agent_index][remaining_indices_list]
@@ -28,10 +33,18 @@ def tau_closest_agents(agent_index, remaining_indices_list, adj_matrix, tau) -> 
 
 
 def SmallestAgentBall(remaining_indices_list, adj_matrix, tau) -> list[int]:
-    """Return the set of per_cluster-closest agents to the agent of the smallest ball.
-    remaining_indices_list: list of remaining indices
-    adj_matrix: adjacency matrix of the graph
-    tau: threshold number (usually number of agents in a cluster)
+    """
+    Identify the tightest group ("smallest ball") of tau agents from the remaining set,
+    minimizing the radius (distance to the furthest member from a center).
+
+    Args:
+        remaining_indices_list (list[int]): Global indices of unclustered agents.
+        adj_matrix (np.ndarray): A 2D numpy array representing pairwise distances between agents.
+        tau (int): Desired number of agents in the group.
+
+    Returns:
+        list[int]: Global indices of the tau agents forming the smallest-radius ball.
+                   If the number of remaining agents is less than or equal to tau, returns all.
     """
     if len(remaining_indices_list) <= tau:
         return remaining_indices_list
@@ -51,9 +64,22 @@ def SmallestAgentBall(remaining_indices_list, adj_matrix, tau) -> list[int]:
 
 
 def GreedyCohesiveClustering(graph: Graph, k) -> list[list[int]]:
-    """ Return the k cohesive clusters of agents by metric d. Each cluster is a list of id.
+    """
+    Partition agents into k cohesive clusters using a greedy approach that minimizes
+    the radius of each cluster.
 
-    k: number of clusters to return
+    Each cluster contains approximately n/k agents (rounded up), and is selected
+    based on the agent whose tau-neighborhood forms the smallest "ball" in terms of max distance.
+
+    Args:
+        graph (Graph): Graph object containing:
+            - nodes: a list of node objects, each with an `id` attribute.
+            - adj_matrix: a 2D numpy array representing pairwise distances between nodes.
+        k (int): Number of clusters to produce.
+
+    Returns:
+        list[list[int]]: A list of k clusters, where each cluster is a list of node IDs.
+                         If fewer than k meaningful clusters are found, remaining entries are empty lists.
     """
     n = len(graph.nodes)
     clusters = [] # each cluster is a list of id
