@@ -20,6 +20,7 @@ class Graph:
             embeddings (np.ndarray): Embedding matrix where row i corresponds to the embedding of nodes[i].
         """
         self.nodes = nodes
+        self.id_to_index = {node.id: i for i, node in enumerate(self.nodes)}
         self.nodes_dict = {node.id: node for node in nodes}
         self.embeddings = self._process_emb(nodes)
         self.k = k
@@ -60,7 +61,7 @@ class Graph:
         """
         return cdist(self.embeddings, self.embeddings, metric=self.d)
 
-    def get_node_by_id(self, node_id):
+    def get_node(self, node_id):
         """
         Retrieves a node by its ID.
 
@@ -70,4 +71,5 @@ class Graph:
         Returns:
             Node: The node with the specified ID, or None if not found.
         """
-        return self.nodes.get(node_id, None)
+        return self.nodes[self.id_to_index.get(node_id)]
+
