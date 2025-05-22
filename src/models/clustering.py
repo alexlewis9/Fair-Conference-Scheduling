@@ -5,7 +5,7 @@ import numpy as np
 from src.models.graph import Graph
 
 
-def tau_closest_agents(agent_id, remaining_indices_list, adj_matrix, tau) -> tuple[list[int], float]:
+def tau_closest_agents(agent_index, remaining_indices_list, adj_matrix, tau) -> tuple[list[int], float]:
     """Return the list of tau-closest agents to agent.
     agent: agent's id
     agents: list of agents' id
@@ -16,9 +16,9 @@ def tau_closest_agents(agent_id, remaining_indices_list, adj_matrix, tau) -> tup
         - distance to the furthest agent
     """
     # Get distances from point i to all other points
-    distances = adj_matrix[agent_id][remaining_indices_list]
+    distances = adj_matrix[agent_index][remaining_indices_list]
     # Use a heap to get the tau closest agents
-    tau_closest = heapq.nsmallest(tau, enumerate(distances), key=lambda x: x[1])
+    tau_closest = heapq.nsmallest(tau, zip(remaining_indices_list, distances), key=lambda x: x[1])
     # Extract the indices of the closest agents
     cluster_indices = [i for i, _ in tau_closest]
     # Get the distance to the furthest agent in the tau closest agents
@@ -28,13 +28,13 @@ def tau_closest_agents(agent_id, remaining_indices_list, adj_matrix, tau) -> tup
 
 
 def SmallestAgentBall(remaining_indices_list, adj_matrix, tau) -> list[int]:
-    """Return the set of per_clusterclosest agents to the agent of the smallest ball.
-    N: list of agents' id
-    d: distance function
+    """Return the set of per_cluster-closest agents to the agent of the smallest ball.
+    remaining_indices_list: list of remaining indices
+    adj_matrix: adjacency matrix of the graph
     tau: threshold number (usually number of agents in a cluster)
     """
     if len(remaining_indices_list) <= tau:
-        return list(range(len(remaining_indices_list)))
+        return remaining_indices_list
     
     min_radius = float('inf')
     best_cluster = None
@@ -52,8 +52,7 @@ def SmallestAgentBall(remaining_indices_list, adj_matrix, tau) -> list[int]:
 
 def GreedyCohesiveClustering(graph: Graph, k) -> list[list[int]]:
     """ Return the k cohesive clusters of agents by metric d. Each cluster is a list of id.
-    agents: list of agents' id
-    d: distance function
+
     k: number of clusters to return
     """
     n = len(graph.nodes)
@@ -68,17 +67,14 @@ def GreedyCohesiveClustering(graph: Graph, k) -> list[list[int]]:
         # Find the smallest ball in the remaining points
         C_j = SmallestAgentBall(remaining_indices_list, graph.adj_matrix, per_cluster)
 
-        # Map cluster indices back to the original indices
-        cluster_original_indices = [remaining_indices_list[i] for i in C_j]
-        
         # Get the node IDs
-        cluster_node_ids = [graph.nodes[i].id for i in cluster_original_indices]
+        cluster_node_ids = [graph.nodes[i].id for i in C_j]
         
         # Add the cluster to the result
         clusters.append(cluster_node_ids)
         
         # Remove the clustered points from the remaining set
-        N -= set(cluster_original_indices)     
+        N -= set(C_j)
 
     if N:
         remaining_node_ids = [graph.nodes[i].id for i in N]
