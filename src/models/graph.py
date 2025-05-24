@@ -20,7 +20,8 @@ class Graph:
             embeddings (np.ndarray): Embedding matrix where row i corresponds to the embedding of nodes[i].
         """
         self.nodes = nodes
-        self.id_to_index = {node.id: i for i, node in enumerate(self.nodes)}
+        self.nodes_id = [node.id for node in self.nodes]
+        self.id_to_index = {node.id: i for i, node in enumerate(self.nodes)} # TODO: refactor for the above
         self.nodes_dict = {node.id: node for node in nodes}
         self.embeddings = self._process_emb(nodes)
         self.k = k
