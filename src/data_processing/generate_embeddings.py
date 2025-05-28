@@ -8,7 +8,7 @@ import os
 import json
 
 
-def generate_embeddings(input_path, output_path, model_name, include=None, exclude=None):
+def generate_embeddings(input_path, output_path, model_name, include=None, exclude=None, stride=0):
     """
     Generates embeddings for entries in a JSON file and saves the result to an output JSON.
 
@@ -35,7 +35,8 @@ def generate_embeddings(input_path, output_path, model_name, include=None, exclu
     if exclude is None:
         exclude = []
 
-    model = Encoder(model_name)
+
+    model = Encoder(model_name, stride=stride)
     input_filename = os.path.splitext(os.path.basename(input_path))[0]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     output_dir = os.path.join(output_path, input_filename)
@@ -54,9 +55,12 @@ def generate_embeddings(input_path, output_path, model_name, include=None, exclu
                             'include': include,
                             'exclude': exclude,
                             'input_file': input_path,
-                            'output_file': output_file
+                            'output_file': output_file,
+                            'stride': model.stride,
+                            'max_tokens': model.max_tokens
                             },
-                    'emb': {}
+                    'emb': {},
+                    'raw_emb': {} # i.e. pre-reconstructed emb
                   }
 
     for entry in data:
@@ -81,13 +85,14 @@ def generate_embeddings(input_path, output_path, model_name, include=None, exclu
         print(entry_str)
 
         # Encode and store
-        embeddings['emb'][entry['id']] = model.encode(entry_str)
+        embeddings['emb'][entry['id']], embeddings['raw_emb'][entry['id']] = model.encode_pre_recon(entry_str)
+
 
     # Save to output
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(embeddings, f, ensure_ascii=False, indent=2)
 
-    return embeddings
+    return embeddings['emb']
 
 
 
