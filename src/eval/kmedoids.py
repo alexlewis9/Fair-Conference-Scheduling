@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.spatial.distance import cdist
 
 
 def kmedoid_objective(graph, clustering, metric=None):
@@ -12,8 +13,9 @@ def kmedoid_objective(graph, clustering, metric=None):
     Returns:
         float: Total K-Medoids objective cost.
     """
-    metric = metric or graph.d
-    D = graph.adj_matrix
+    metric = metric if metric else graph.d
+    # Calculate new adj_mat if use different metric
+    D = graph.adj_matrix if metric == graph.d else cdist(graph.embeddings, graph.embeddings, metric=metric)
     total_cost = 0
 
     for cluster in clustering:

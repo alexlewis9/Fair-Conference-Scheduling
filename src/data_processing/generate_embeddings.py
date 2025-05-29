@@ -92,7 +92,7 @@ def generate_embeddings(input_path, output_path, model_name, include=None, exclu
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(embeddings, f, ensure_ascii=False, indent=2)
 
-    return embeddings['emb']
+    return embeddings
 
 
 
