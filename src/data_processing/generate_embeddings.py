@@ -37,11 +37,13 @@ def generate_embeddings(input_path, output_path, model_name, include=None, exclu
 
 
     model = Encoder(model_name, stride=stride)
+    # Find the appropriate subfolders.
+    # E.g., input path: data/unified_text/NeurIPS/NeurIPS_2024.json.
+    # Will be saved in <output_path>/NeurIPS_2024/<time>.json
     input_filename = os.path.splitext(os.path.basename(input_path))[0]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     output_dir = os.path.join(output_path, input_filename)
     os.makedirs(output_dir, exist_ok=True)
-
     output_file = os.path.join(output_dir, f"{timestamp}.json")
 
     # Read input JSON
