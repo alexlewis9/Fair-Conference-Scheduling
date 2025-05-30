@@ -63,7 +63,7 @@ def SmallestAgentBall(remaining_indices_list, adj_matrix, tau) -> list[int]:
     return best_cluster
 
 
-def GreedyCohesiveClustering(graph: Graph, k) -> list[list[str]]:
+def greedy_cohesive_clustering(graph: Graph, k) -> list[list[str]]:
     """
     Partition agents into k cohesive clusters using a greedy approach that minimizes
     the radius of each cluster.
@@ -91,7 +91,7 @@ def GreedyCohesiveClustering(graph: Graph, k) -> list[list[str]]:
         remaining_indices_list = list(N)
 
         # Find the smallest ball in the remaining points
-        C_j = SmallestAgentBall(remaining_indices_list, graph.adj_matrix, per_cluster)
+        C_j = SmallestAgentBall(remaining_indices_list, graph.adj_mat, per_cluster)
 
         # Get the node IDs
         cluster_node_ids = [graph.nodes[i].id for i in C_j]

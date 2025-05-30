@@ -1,6 +1,6 @@
 from src import Node, Graph
-from src import GreedyCohesiveClustering
-from src.eval.fjr import audit_fjr
+from src import greedy_cohesive_clustering
+from src.models.baseline import kmeans_clustering, kmedoids_clustering
 
 
 def test_clustering():
@@ -11,10 +11,13 @@ def test_clustering():
              Node ('3', [2, 1])
              ]
     graph = Graph(nodes, 2)
-    clustering = GreedyCohesiveClustering(graph, graph.k)
+    clustering = greedy_cohesive_clustering(graph, graph.k)
     print(clustering)
-    clustering = [['0', '1'], ['2', '3']]
-    print(audit_fjr(graph, clustering, 'avg'))
+    result = [['0', '1'], ['2', '3']]
+    kmeans = kmeans_clustering(graph, graph.k)
+    print(kmeans)
+    kmedoids = kmedoids_clustering(graph, graph.k)
+    print(kmedoids)
 
 
 if __name__ == '__main__':
