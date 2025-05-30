@@ -15,14 +15,15 @@ def kmedoid_objective(graph, clustering, metric=None):
     """
     metric = metric if metric else graph.d
     # Calculate new adj_mat if use different metric
-    D = graph.adj_matrix if metric == graph.d else cdist(graph.embeddings, graph.embeddings, metric=metric)
+    D = graph.adj_mat if metric == graph.d else cdist(graph.embeddings, graph.embeddings, metric=metric)
     total_cost = 0
 
     for cluster in clustering:
-        indices = [graph.id_to_index[nid] for nid in cluster]
-        sub_D = D[np.ix_(indices, indices)]
-        medoid_local_idx = np.argmin(sub_D.sum(axis=1))
-        medoid_idx = indices[medoid_local_idx]
-        total_cost += sum(D[i, medoid_idx] for i in indices)
+        if cluster:
+            indices = [graph.id_to_index[nid] for nid in cluster]
+            sub_D = D[np.ix_(indices, indices)]
+            medoid_local_idx = np.argmin(sub_D.sum(axis=1))
+            medoid_idx = indices[medoid_local_idx]
+            total_cost += sum(D[i, medoid_idx] for i in indices)
 
     return total_cost
