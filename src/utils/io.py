@@ -6,6 +6,11 @@ def load_yaml(path):
     with open(path, "r") as f:
         return yaml.safe_load(f)
 
+def save_yaml(cfg, path):
+    """Save a config dictionary to a YAML file."""
+    with open(path, 'w') as f:
+        yaml.safe_dump(cfg, f, sort_keys=False)
+
 def save_json(obj, path):
     with open(path, "w") as f:
         json.dump(obj, f, indent=2)
