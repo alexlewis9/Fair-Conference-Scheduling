@@ -8,7 +8,12 @@ import os
 import json
 
 
-def generate_embeddings(input_path, output_path, model_name, include=None, exclude=None, stride=0):
+def generate_embeddings(input_path, output_path, model_name,
+                        include=None,
+                        exclude=None,
+                        stride=0,
+                        max_tokens=0,
+                        verbose = True):
     """
     Generates embeddings for entries in a JSON file and saves the result to an output JSON.
 
@@ -29,6 +34,7 @@ def generate_embeddings(input_path, output_path, model_name, include=None, exclu
 
     Returns:
         embeddings (dict): Embeddings generated for each entry in the input JSON and config.
+        raw_emb (dict): Raw chunks embeddings that are not post-processed (i.e., not normalized).
     """
     if include is None:
         include = []
@@ -36,65 +42,58 @@ def generate_embeddings(input_path, output_path, model_name, include=None, exclu
         exclude = []
 
 
-    model = Encoder(model_name, stride=stride)
-    # Find the appropriate subfolders.
-    # E.g., input path: data/unified_text/NeurIPS/NeurIPS_2024.json.
-    # Will be saved in <output_path>/NeurIPS_2024/<time>.json
-    input_filename = os.path.splitext(os.path.basename(input_path))[0]
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    output_dir = os.path.join(output_path, input_filename)
-    os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, f"{timestamp}.json")
+    model = Encoder(model_name, stride=stride, max_tokens=max_tokens)
 
     # Read input JSON
     with open(input_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
     # Initialize with run config
-    embeddings = {
-                    'config': {
-                            'model_name': model_name,
-                            'include': include,
-                            'exclude': exclude,
-                            'input_file': input_path,
-                            'output_file': output_file,
-                            'stride': model.stride,
-                            'max_tokens': model.max_tokens
-                            },
-                    'emb': {},
-                    'raw_emb': {} # i.e. pre-reconstructed emb
-                  }
+    embeddings = {}
+    raw_emb = {}
+
+    # Prepare log
+    log_lines = []
+    start_time = datetime.now()
+    log_lines.append(f"Embedding started at {start_time.isoformat()}")
+    log_lines.append(f"Model: {model_name}")
+    log_lines.append(f"Input file: {input_path}")
 
     for entry in data:
-        # Determine which keys to include
-        if include:
-            keys_to_use = set(include)
-        else:
-            keys_to_use = set(entry.keys())
+        entry_id = str(entry.get("id", ""))
+        try:
+            # Determine which keys to include
+            if include:
+                keys_to_use = set(include)
+            else:
+                keys_to_use = set(entry.keys())
 
-        if exclude:
-            keys_to_use -= set(exclude)
+            if exclude:
+                keys_to_use -= set(exclude)
 
-        # Always include 'id' if present in the entry
-        if 'id' in entry:
-            keys_to_use.add('id')
-        else:
-            raise ValueError("Each entry in the input JSON must have an 'id' field.")
+            # Always include 'id' if present in the entry
+            if 'id' in entry:
+                keys_to_use.add('id')
+            else:
+                raise ValueError("Each entry in the input JSON must have an 'id' field.")
 
-        # Construct the string to embed
-        filtered_entry = {k: entry[k] for k in keys_to_use if k in entry}
-        entry_str = json.dumps(filtered_entry, ensure_ascii=False)
-        print(entry_str)
+            # Construct the string to embed
+            filtered_entry = {k: entry[k] for k in keys_to_use if k in entry}
+            entry_str = json.dumps(filtered_entry, ensure_ascii=False)
 
-        # Encode and store
-        embeddings['emb'][entry['id']], embeddings['raw_emb'][entry['id']] = model.encode_pre_recon(entry_str)
+            # Encode and store
+            embeddings[entry['id']], raw_emb[entry['id']] = model.encode_pre_recon(entry_str)
+            if verbose:
+                print(f"[OK] {entry_id}")
+            log_lines.append(f"[OK] {entry_id}")
 
+        except Exception as e:
+            err_msg = f"[ERROR] {entry_id}: {str(e)}"
+            log_lines.append(err_msg)
+            if verbose:
+                print(err_msg)
 
-    # Save to output
-    with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(embeddings, f, ensure_ascii=False, indent=2)
-
-    return embeddings
+    return embeddings, raw_emb, log_lines
 
 
 

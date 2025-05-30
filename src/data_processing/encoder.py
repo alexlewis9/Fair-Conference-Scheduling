@@ -63,18 +63,18 @@ class Encoder:
     def encode(self, text):
         text = text.replace("\n", " ")
         token_chunks = self.chunk_text_to_tokens(text)
-        text_chunks = [self.tokenizer.decode(chunk) for chunk in token_chunks]
+
         if (self.name == "text-embedding-3-small" or
                 self.name == "text-embedding-ada-002" or
                 self.name == "text-embedding-3-large"):
             embeddings = []
-            for chunk in text_chunks:
+            for chunk in token_chunks:
                 embedding = self.client.embeddings.create(input=chunk, model=self.name).data[0].embedding
                 embeddings.append(embedding)
             return self.reconstruct(embeddings) # i.e., mean pool
         elif self.st_compat:
             embeddings = []
-            for chunk in text_chunks:
+            for chunk in token_chunks:
                 embedding = self.client.encode(chunk)
                 embeddings.append(embedding)
             return self.reconstruct(embeddings) # i.e., mean pool
@@ -83,18 +83,18 @@ class Encoder:
     def encode_pre_recon(self, text):
         text = text.replace("\n", " ")
         token_chunks = self.chunk_text_to_tokens(text)
-        text_chunks = [self.tokenizer.decode(chunk) for chunk in token_chunks]
+
         if (self.name == "text-embedding-3-small" or
                 self.name == "text-embedding-ada-002" or
                 self.name == "text-embedding-3-large"):
             embeddings = []
-            for chunk in text_chunks:
+            for chunk in token_chunks:
                 embedding = self.client.embeddings.create(input=chunk, model=self.name).data[0].embedding
                 embeddings.append(embedding)
             return self.reconstruct(embeddings).tolist(), embeddings # i.e., mean pool
         elif self.st_compat:
             embeddings = []
-            for chunk in text_chunks:
+            for chunk in token_chunks:
                 embedding = self.client.encode(chunk)
                 embeddings.append(embedding.tolist())
             return self.reconstruct(embeddings).tolist(), embeddings # i.e., mean pool
