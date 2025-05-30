@@ -22,7 +22,7 @@ def intra_cluster_pairwise_cost(graph, clustering,
     assert outer in ('max', 'avg'), "outer must be 'max' or 'avg'"
 
     metric = metric if metric else graph.d
-    D = graph.adj_matrix if metric == graph.d else cdist(graph.embeddings, graph.embeddings, metric=metric)
+    D = graph.adj_mat if metric == graph.d else cdist(graph.embeddings, graph.embeddings, metric=metric)
 
     cluster_costs = []
 

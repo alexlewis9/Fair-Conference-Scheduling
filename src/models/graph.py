@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.spatial.distance import cdist
 
-from src import Node
+from src.models.node import Node
 
 
 class Graph:
@@ -17,7 +17,6 @@ class Graph:
             k (int): Number of clusters.
             d (str): Distance metric (e.g. 'cityblock', 'euclidean', 'cosine').
             original_clusters (list, optional): Original clusters if provided.
-
         Attributes:
             embeddings (np.ndarray): Embedding matrix where row i corresponds to the embedding of nodes[i].
         """
@@ -30,7 +29,7 @@ class Graph:
         self.k = k
         self.d = d
         self.original_clusters = original_clusters if original_clusters else []
-        self.adj_matrix = self._compute_adj_matrix()
+        self.adj_mat = self._compute_adj_matrix()
         
     def _process_emb(self, nodes):
         """
