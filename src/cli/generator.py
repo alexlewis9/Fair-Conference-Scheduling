@@ -25,9 +25,11 @@ def main():
 
         output_raw_emb = os.path.join(output_dir, "raw_emb.json")
         save_json(raw_emb, output_raw_emb)
+        log_lines.append("[OK] exported to raw_emb.json")
 
         output_emb = os.path.join(output_dir, "emb.json")
         save_json(emb, output_emb)
+        log_lines.append("[OK] exported to emb.json")
 
         output_cfg = os.path.join(output_dir, "config.yaml")
         save_yaml(cfg, output_cfg)

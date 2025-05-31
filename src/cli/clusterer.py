@@ -69,9 +69,9 @@ def build_graph(emb, k: int, metric: str):
     return Graph(emb, k, d=metric)
 
 
-def get_baseline_clusters(data_path):
+def get_baseline_clusters(data_path, to_dict=False):
     """Load the baseline clustering once and memoise it."""
-    return load_cluster_from_data(data_path, to_dict=True)
+    return load_cluster_from_data(data_path, to_dict=to_dict)
 
 
 def ensure_baseline(models: list[str], k: int):
@@ -120,10 +120,10 @@ def main():
     ensure_baseline(models, k)
 
     # baseline clusterings may be needed for k==0 *and/or* evaluation
-    baseline_clusters = get_baseline_clusters(data_path) if "Baseline" in models else None
+    baseline_clusters, labels = get_baseline_clusters(data_path) if "Baseline" in models else None
 
     # choose k
-    effective_k = len(baseline_clusters.keys()) if k == 0 else k
+    effective_k = len(baseline_clusters) if k == 0 else k
     graph       = build_graph(emb, effective_k, metric)
 
     # 2) collect clusterings --------------------------------------------------
@@ -150,8 +150,8 @@ def main():
     # Align ALL methods to a single reference, decide the column labels
     # ------------------------------------------------------------------
     if "Baseline" in clusterings:
-        ref_clusters = list(clusterings["Baseline"].values())  # dict → list
-        column_labels = list(clusterings["Baseline"].keys())  # session names
+        ref_clusters = clusterings["Baseline"]
+        column_labels = labels[:]
     else:
         # pick the first model as reference and create synthetic labels
         first_model = next(iter(clusterings))
@@ -163,7 +163,6 @@ def main():
         if clust is ref_clusters:
             continue
         clusterings[m] = align_clusterings(ref_clusters, clust)
-
 
     # 4) save ------------------------------------------------------
     output_path = os.path.join(output_path, timestamp)
@@ -181,7 +180,7 @@ def main():
     save_yaml(cfg, output_clusterer_cfg)
 
     emb_cfg_path = os.path.join(output_path, "emb.yaml")
-    save_yaml(emb_cfg_path, emb_cfg)
+    save_yaml(emb_cfg, emb_cfg_path)
 
 if __name__ == "__main__":
     main()
