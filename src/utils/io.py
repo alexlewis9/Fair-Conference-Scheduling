@@ -1,3 +1,4 @@
+import csv
 import json
 import numpy as np
 import yaml
@@ -24,3 +25,22 @@ def save_numpy(arr, path):
 
 def load_numpy(path):
     return np.load(path)
+
+def save_csv(data, path):
+    """
+    Saves a list of dictionaries to a CSV file.
+
+    Args:
+        data (list[dict]): List of rows (each a dict of column-value pairs).
+        path (str): Output file path.
+    """
+    if not data:
+        raise ValueError("Data is empty. Nothing to save.")
+
+    fieldnames = sorted({key for row in data for key in row})
+
+    with open(path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(data)
+
