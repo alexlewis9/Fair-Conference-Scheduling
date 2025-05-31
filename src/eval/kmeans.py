@@ -7,10 +7,16 @@ def kmeans_objective(graph: Graph, clusters):
     total_wcss = 0.0
 
     for cluster in clusters:
-        if not cluster:
+        if cluster == []:
             continue
+        lst = []
+        for node_id in cluster:
+            node = graph.get_node(node_id)
+            lst.append(node.emb)
+        embeddings = np.array(lst)
+
         # Get all embeddings in this cluster
-        embeddings = np.array([graph.get_node(node_id).emb for node_id in cluster])
+        # embeddings = np.array([graph.get_node(node_id).emb for node_id in cluster])
 
         # Compute centroid
         centroid = embeddings.mean(axis=0)
