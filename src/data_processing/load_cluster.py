@@ -12,4 +12,12 @@ def load_cluster_from_data(path, to_dict=False):
         else:
             clustering_og[entry['session']].append(entry['id'])
 
-    return clustering_og if to_dict else [value for _, value in clustering_og.items()]
+    if to_dict:
+        return clustering_og
+    else:
+        clustering = []
+        labels = []
+        for k, v in clustering_og.items():
+            clustering.append(v)
+            labels.append(k)
+        return clustering, labels

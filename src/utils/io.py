@@ -37,7 +37,13 @@ def save_csv(data, path):
     if not data:
         raise ValueError("Data is empty. Nothing to save.")
 
-    fieldnames = sorted({key for row in data for key in row})
+    all_keys   = {k for row in data for k in row}
+
+    preferred = "method" if "method" in all_keys else ("model" if "model" in all_keys else None)
+    if preferred:
+        fieldnames = [preferred] + sorted(all_keys - {preferred})
+    else:
+        fieldnames = sorted(all_keys)
 
     with open(path, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
