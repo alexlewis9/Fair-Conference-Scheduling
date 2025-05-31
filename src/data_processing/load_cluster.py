@@ -3,7 +3,7 @@ import json
 
 
 def load_cluster_from_data(path, to_dict=False):
-    with open(path, "r", encoding='utf-8') as f:
+    with open(path, "r") as f:
         file = json.load(f)
     clustering_og = {}
     for entry in file:
@@ -12,12 +12,4 @@ def load_cluster_from_data(path, to_dict=False):
         else:
             clustering_og[entry['session']].append(entry['id'])
 
-    if to_dict:
-        return clustering_og
-    else:
-        clusters = []
-        labels = []
-        for key, value in clustering_og.items():
-            labels.append(key)
-            clusters.append(value)
-        return clusters, labels
+    return clustering_og if to_dict else [value for _, value in clustering_og.items()]

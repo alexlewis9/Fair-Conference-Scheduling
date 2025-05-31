@@ -1,6 +1,9 @@
 import numpy as np
 from scipy.spatial.distance import cdist
 
+from src.models.node import Node
+
+
 class Graph:
     """
     Represents a graph with nodes, embeddings, adjacency matrix, and clustering.
@@ -10,23 +13,23 @@ class Graph:
         Initializes the graph.
 
         Args:
-            nodes (list): A list of node objects.
+            nodes (list or dict): A list or dictionary of node objects.
             k (int): Number of clusters.
             d (str): Distance metric (e.g. 'cityblock', 'euclidean', 'cosine').
             original_clusters (list, optional): Original clusters if provided.
-
         Attributes:
-            nodes_dict (dict): A dictionary mapping node IDs to node objects.
             embeddings (np.ndarray): Embedding matrix where row i corresponds to the embedding of nodes[i].
         """
-        self.nodes = nodes
+        if isinstance(nodes, dict):
+            self.nodes = [Node(nid, emb) for nid, emb in nodes.items()]
+        elif isinstance(nodes, list):
+            self.nodes = nodes[:]
         self.id_to_index = {node.id: i for i, node in enumerate(self.nodes)}
-        self.nodes_dict = {node.id: node for node in nodes}
-        self.embeddings = self._process_emb(nodes)
+        self.embeddings = self._process_emb(self.nodes)
         self.k = k
         self.d = d
         self.original_clusters = original_clusters if original_clusters else []
-        self.adj_matrix = self._compute_adj_matrix()
+        self.adj_mat = self._compute_adj_matrix()
         
     def _process_emb(self, nodes):
         """
@@ -71,5 +74,6 @@ class Graph:
         Returns:
             Node: The node with the specified ID, or None if not found.
         """
-        return self.nodes[self.id_to_index.get(node_id)]
+        index = self.id_to_index[node_id]
+        return self.nodes[index]
 
