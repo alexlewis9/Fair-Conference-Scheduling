@@ -2,9 +2,12 @@ import logging
 
 import numpy as np
 import tiktoken
+import voyageai
 from dotenv import load_dotenv
+from google import genai
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -19,26 +22,33 @@ def process_reconstruct(reconstruct):
 
 
 class Encoder:
-    def __init__(self, name, st_compat = False, stride=0, max_tokens=0, reconstruct = 'mean_pool'):
+    def __init__(self, name, provider, stride=0, max_tokens=0, reconstruct ='mean_pool'):
         self.name = name
-        if (name == "text-embedding-3-small" or
-         name == "text-embedding-ada-002" or
-         name == "text-embedding-3-large"):
-            load_dotenv()
+        load_dotenv()
+        if provider == 'openai':
             self.client = OpenAI()
             self.max_tokens = 8192 if max_tokens == 0 else max_tokens
             self.tokenizer = tiktoken.encoding_for_model(name) # Used to splitting texts exclusively
             self.openai = True
-        elif st_compat:
-            self.st_compat = st_compat
-            self.client = SentenceTransformer(name,
-                                              trust_remote_code=True)
+        elif provider == 'sent_trans':
+            self.st_compat = True
+            self.client = SentenceTransformer(name, trust_remote_code=True)
             self.max_tokens = self.client.get_max_seq_length() if max_tokens == 0 else max_tokens
             self.tokenizer = self.client.tokenizer  # Used to splitting texts exclusively
+        elif provider == 'anthropic':
+            self.client = voyageai.Client()
+            self.max_tokens = 16000 if self.name == 'voyage-law-2' or self.name == 'voyage-code-2' else 32000
+            self.tokenizer = AutoTokenizer.from_pretrained(f'voyageai/{self.name}')
+            self.claude = True
+        # elif gemini: # text-embedding-004
+        #     self.client = genai.Client()
+        #     self.max_tokens = 8192 if self.name == 'gemini-embedding-exp-03-07' else 2048
+        #     self
+        #     self.gemini = True
         else:
             raise ValueError(
-                "Invalid model name. Please choose from 'text-embedding-3-small',"
-                " 'text-embedding-ada-002', 'text-embedding-3-large', or 'gte-Qwen2-7B-instruct'.")
+                "Invalid provider. Please choose from 'anthropic' or 'openai' if your model is from either of them,"
+                " or 'sent_trans' if it's Sentence Transformer compatible.")
         self.stride = stride if stride != 0 else self.max_tokens
         self.reconstruct = process_reconstruct(reconstruct)
 
@@ -70,27 +80,23 @@ class Encoder:
         logger.info(f"chunking")
         token_chunks = self.chunk_text_to_tokens(text, disallowed_special=disallowed_special)
         logger.info(f"chunked") if not verbose else logger.info(f"chunked: {len(token_chunks)}")
-        if (self.name == "text-embedding-3-small" or
-                self.name == "text-embedding-ada-002" or
-                self.name == "text-embedding-3-large"):
-            embeddings = []
+        embeddings = []
+        if self.openai:
             for chunk in token_chunks:
                 embedding = self.client.embeddings.create(input=chunk, model=self.name).data[0].embedding
                 embeddings.append(embedding)
-            logger.info(f"finished embedding chunks")
-            reconstructed = self.reconstruct(embeddings).tolist()
-            logger.info(f"reconstructed")
-            return reconstructed, embeddings # i.e., mean pool
         elif self.st_compat:
-            embeddings = []
             for chunk in token_chunks:
                 embedding = self.client.encode(chunk)
                 embeddings.append(embedding.tolist())
-            logger.info(f"finished embedding chunks")
-            reconstructed = self.reconstruct(embeddings).tolist()
-            logger.info(f"reconstructed")
-            return reconstructed, embeddings  # i.e., mean pool
-        return None
+        elif self.claude:
+            for chunk in token_chunks:
+                embedding = self.client.embed(self.tokenizer.decode(chunk), model=self.name).embeddings[0]
+                embeddings.append(embedding.tolist())
+        logger.info(f"finished embedding chunks")
+        reconstructed = self.reconstruct(embeddings).tolist()
+        logger.info(f"reconstructed")
+        return reconstructed, embeddings  # i.e., mean pool
 
     def count_tokens(self, text):
         text = text.replace("\n", " ")
