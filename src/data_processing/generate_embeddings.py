@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import os
 import json
 from datetime import datetime
@@ -53,11 +55,9 @@ def generate_embeddings(input_path, output_path, model_name,
     raw_emb = {}
 
     # Prepare log
-    log_lines = []
-    start_time = datetime.now()
-    log_lines.append(f"Embedding started at {start_time.isoformat()}")
-    log_lines.append(f"Model: {model_name}")
-    log_lines.append(f"Input file: {input_path}")
+    logger.info(f"Embedding started")
+    logger.info(f"Model: {model_name}")
+    logger.info(f"Input file: {input_path}")
 
     for entry in data:
         entry_id = str(entry.get("id", ""))
@@ -81,19 +81,21 @@ def generate_embeddings(input_path, output_path, model_name,
             filtered_entry = {k: entry[k] for k in keys_to_use if k in entry}
             entry_str = json.dumps(filtered_entry, ensure_ascii=False)
 
+            logger.info(f"Encoding entry: {entry_id}")
             # Encode and store
-            embeddings[entry['id']], raw_emb[entry['id']] = model.encode_pre_recon(entry_str)
+            embeddings[entry['id']], raw_emb[entry['id']] = model.encode(entry_str, verbose=verbose)
+            timenow = datetime.now().strftime("%Y%m%d_%H%M")
             if verbose:
-                print(f"[OK] {entry_id}")
-            log_lines.append(f"[OK] {entry_id}")
+                print(f"{timenow}-[OK] {entry_id}")
+            logger.info(f"[OK] {entry_id}")
 
         except Exception as e:
             err_msg = f"[ERROR] {entry_id}: {str(e)}"
-            log_lines.append(err_msg)
+            logger.info(err_msg)
             if verbose:
                 print(err_msg)
 
-    return embeddings, raw_emb, log_lines
+    return embeddings, raw_emb
 
 
 
