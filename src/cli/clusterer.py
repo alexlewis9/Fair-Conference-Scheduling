@@ -15,6 +15,9 @@ from src.utils.io import load_yaml, load_json, save_csv, save_yaml
 from pathlib import Path
 import warnings
 
+from src.utils.logger import setup_session_logger
+logger = setup_session_logger(__name__)
+
 # ---------- helpers ---------------------------------------------------------
 def jaccard_similarity(set1, set2):
     inter = len(set1 & set2)
@@ -114,9 +117,17 @@ def main():
     metric      = cfg["metric"]
     k           = cfg["k"]
 
+    # 0) logging and path handling -------------------------------------------------------------
+    output_path = os.path.join(output_path, timestamp)
+    os.makedirs(output_path, exist_ok=True)
+    output_log = os.path.join(output_path, f"clusterer.log")
+    logger, handler = setup_session_logger(output_log)
+    logger.info(f"Clustering and evaluating for {embed_path}")
+
     # 1) embeddings & graph ---------------------------------------------------
     emb, emb_cfg      = load_embeddings(embed_path)
 
+    print(len(emb['kaHpo8OZw2']))
     ensure_baseline(models, k)
 
     # baseline clusterings may be needed for k==0 *and/or* evaluation
@@ -165,9 +176,6 @@ def main():
         clusterings[m] = align_clusterings(ref_clusters, clust)
 
     # 4) save ------------------------------------------------------
-    output_path = os.path.join(output_path, timestamp)
-    os.makedirs(output_path, exist_ok=True)
-
     output_eval = os.path.join(output_path, "eval.csv")
     save_csv(evaluations, output_eval)
 

@@ -1,9 +1,12 @@
+import logging
+
 import numpy as np
 import tiktoken
 from dotenv import load_dotenv
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 
+logger = logging.getLogger(__name__)
 
 def mean_pool(chunks):
     return np.mean(np.array(chunks), axis=0)
@@ -25,6 +28,7 @@ class Encoder:
             self.client = OpenAI()
             self.max_tokens = 8192 if max_tokens == 0 else max_tokens
             self.tokenizer = tiktoken.encoding_for_model(name) # Used to splitting texts exclusively
+            self.openai = True
         elif st_compat:
             self.st_compat = st_compat
             self.client = SentenceTransformer(name,
@@ -38,7 +42,7 @@ class Encoder:
         self.stride = stride if stride != 0 else self.max_tokens
         self.reconstruct = process_reconstruct(reconstruct)
 
-    def chunk_text_to_tokens(self, text: str, max_tokens: int = 0, stride= 0) -> list[str]:
+    def chunk_text_to_tokens(self, text: str, max_tokens: int = 0, stride= 0, disallowed_special = ()) -> list[str]:
         """
         Splits a long text into overlapping chunks of tokenized size with stride.
         Returns a list of token chunks.
@@ -46,7 +50,10 @@ class Encoder:
         max_tokens = self.max_tokens if max_tokens == 0 else max_tokens
         stride = self.stride if stride == 0 else stride
         enc = self.tokenizer
-        input_ids = enc.encode(text)
+        if self.openai:
+            input_ids = enc.encode(text, disallowed_special=disallowed_special)
+        else:
+            input_ids = enc.encode(text)
         chunks = []
 
         for i in range(0, len(input_ids), stride):
@@ -56,14 +63,13 @@ class Encoder:
             chunks.append(chunk_ids)
             if i + max_tokens >= len(input_ids):
                 break  # Don't start new chunks past the end
-
         return chunks
 
-
-    def encode(self, text):
+    def encode(self, text, verbose=False, disallowed_special=()):
         text = text.replace("\n", " ")
-        token_chunks = self.chunk_text_to_tokens(text)
-
+        logger.info(f"chunking")
+        token_chunks = self.chunk_text_to_tokens(text, disallowed_special=disallowed_special)
+        logger.info(f"chunked") if not verbose else logger.info(f"chunked: {len(token_chunks)}")
         if (self.name == "text-embedding-3-small" or
                 self.name == "text-embedding-ada-002" or
                 self.name == "text-embedding-3-large"):
@@ -71,33 +77,19 @@ class Encoder:
             for chunk in token_chunks:
                 embedding = self.client.embeddings.create(input=chunk, model=self.name).data[0].embedding
                 embeddings.append(embedding)
-            return self.reconstruct(embeddings) # i.e., mean pool
-        elif self.st_compat:
-            embeddings = []
-            for chunk in token_chunks:
-                embedding = self.client.encode(chunk)
-                embeddings.append(embedding)
-            return self.reconstruct(embeddings) # i.e., mean pool
-        return None
-
-    def encode_pre_recon(self, text):
-        text = text.replace("\n", " ")
-        token_chunks = self.chunk_text_to_tokens(text)
-
-        if (self.name == "text-embedding-3-small" or
-                self.name == "text-embedding-ada-002" or
-                self.name == "text-embedding-3-large"):
-            embeddings = []
-            for chunk in token_chunks:
-                embedding = self.client.embeddings.create(input=chunk, model=self.name).data[0].embedding
-                embeddings.append(embedding)
-            return self.reconstruct(embeddings).tolist(), embeddings # i.e., mean pool
+            logger.info(f"finished embedding chunks")
+            reconstructed = self.reconstruct(embeddings).tolist()
+            logger.info(f"reconstructed")
+            return reconstructed, embeddings # i.e., mean pool
         elif self.st_compat:
             embeddings = []
             for chunk in token_chunks:
                 embedding = self.client.encode(chunk)
                 embeddings.append(embedding.tolist())
-            return self.reconstruct(embeddings).tolist(), embeddings # i.e., mean pool
+            logger.info(f"finished embedding chunks")
+            reconstructed = self.reconstruct(embeddings).tolist()
+            logger.info(f"reconstructed")
+            return reconstructed, embeddings  # i.e., mean pool
         return None
 
     def count_tokens(self, text):
