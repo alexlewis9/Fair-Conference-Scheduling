@@ -88,14 +88,11 @@ def ensure_baseline(models: list[str], k: int):
         models.append("Baseline")
 
 
-def evaluate_models(graph, models, clusterings, metric):
+def evaluate_models(graph: Graph, models: list[str], clusterings: dict[str, list], metric: str):
     """Return list[dict] with evaluation rows."""
     results = []
     for model in models:
         clustering = clusterings[model]
-        if isinstance(clustering, dict):
-            clustering = list(clustering.values())
-            clustering[model] = clustering
         row        = {"model": model, **evaluate_cluster(graph, clustering, metric)}
         results.append(row)
     return results
@@ -121,13 +118,12 @@ def main():
     output_path = os.path.join(output_path, timestamp)
     os.makedirs(output_path, exist_ok=True)
     output_log = os.path.join(output_path, f"clusterer.log")
-    logger, handler = setup_session_logger(output_log)
+    _, handler = setup_session_logger(output_log)
     logger.info(f"Clustering and evaluating for {embed_path}")
 
     # 1) embeddings & graph ---------------------------------------------------
     emb, emb_cfg      = load_embeddings(embed_path)
 
-    print(len(emb['kaHpo8OZw2']))
     ensure_baseline(models, k)
 
     # baseline clusterings may be needed for k==0 *and/or* evaluation
