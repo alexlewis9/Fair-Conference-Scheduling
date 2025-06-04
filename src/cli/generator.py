@@ -21,7 +21,7 @@ def main():
         logger, handler = setup_session_logger(output_log)
         logger.info(f"Generating embeddings for {cfg['input_path']}")
 
-        emb, raw_emb = generate_embeddings(cfg['input_path'], cfg['output_path'], cfg['model'],
+        emb, raw_emb = generate_embeddings(cfg['input_path'], cfg['model'], cfg['provider'],
                                            include=cfg['include'],
                                            exclude=cfg['exclude'],
                                            stride=cfg['stride'],
