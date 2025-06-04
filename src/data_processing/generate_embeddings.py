@@ -9,8 +9,7 @@ from src.data_processing.encoder import Encoder
 import os
 import json
 
-
-def generate_embeddings(input_path, output_path, model_name,
+def generate_embeddings(input_path, model_name, provider,
                         include=None,
                         exclude=None,
                         stride=0,
@@ -43,8 +42,7 @@ def generate_embeddings(input_path, output_path, model_name,
     if exclude is None:
         exclude = []
 
-
-    model = Encoder(model_name, stride=stride, max_tokens=max_tokens)
+    model = Encoder(model_name, provider, stride=stride, max_tokens=max_tokens)
 
     # Read input JSON
     with open(input_path, 'r', encoding='utf-8') as f:
@@ -96,6 +94,7 @@ def generate_embeddings(input_path, output_path, model_name,
                 print(err_msg)
 
     return embeddings, raw_emb
+
 
 
 
