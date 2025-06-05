@@ -1,8 +1,10 @@
 import argparse
+import logging
 import os
 import warnings
 from datetime import datetime
 import numpy as np
+import pandas as pd
 from scipy.optimize import linear_sum_assignment
 
 from src import greedy_cohesive_clustering
@@ -16,7 +18,9 @@ from pathlib import Path
 import warnings
 
 from src.utils.logger import setup_session_logger
-logger = setup_session_logger(__name__)
+from src.utils.visualize import write_paper_html, visualize_clustering
+
+logger = logging.getLogger(__name__)
 
 # ---------- helpers ---------------------------------------------------------
 def jaccard_similarity(set1, set2):
@@ -97,6 +101,13 @@ def evaluate_models(graph: Graph, models: list[str], clusterings: dict[str, list
         results.append(row)
     return results
 
+def ensure_dir(path, label=""):
+    if not os.path.exists(path):
+        logger.info(f"Creating directory {label or path}")
+        os.makedirs(path)
+    else:
+        logger.info(f"Directory exists: {label or path}")
+
 
 # ---------- main ------------------------------------------------------------
 
@@ -116,7 +127,7 @@ def main():
 
     # 0) logging and path handling -------------------------------------------------------------
     output_path = os.path.join(output_path, timestamp)
-    os.makedirs(output_path, exist_ok=True)
+    ensure_dir(output_path, "output")
     output_log = os.path.join(output_path, f"clusterer.log")
     _, handler = setup_session_logger(output_log)
     logger.info(f"Clustering and evaluating for {embed_path}")
@@ -185,6 +196,47 @@ def main():
 
     emb_cfg_path = os.path.join(output_path, "emb.yaml")
     save_yaml(emb_cfg, emb_cfg_path)
+
+    # 5) Visualize ------------------------------------------------------
+    if cfg["visualize"]:
+        df = pd.read_csv(cfg['metadata'])
+        df['emb'] = df['id'].map(emb)
+        cluster_df = pd.read_csv(output_clustering)
+        paper_dir = cfg['paper_dir']
+        ensure_dir(paper_dir, "papers html")
+
+        # Create a mapping for each method
+        models = cluster_df['method'].tolist()
+        session_names = cluster_df.columns[1:]  # skip 'method'
+
+        # Build: method -> id -> cluster name
+        method_to_id_to_cluster = {}
+
+        for _, row in cluster_df.iterrows():
+            method = row['method']
+            id_to_cluster = {}
+            for session in session_names:
+                ids = str(row[session]).split(',') if pd.notna(row[session]) else []
+                for id_ in ids:
+                    id_to_cluster[id_] = session  # assign paper to the session name
+            method_to_id_to_cluster[method] = id_to_cluster
+
+        for method, id_to_cluster in method_to_id_to_cluster.items():
+            df[method] = df['id'].map(id_to_cluster).fillna("None")  # or use np.nan
+
+        write_paper_html(df, paper_dir)
+
+        for method in cfg['methods']:
+            visualize_clustering(df, models,
+                                 papers_html=paper_dir,
+                                 output_path=output_path,
+                                 viz_method=method,
+                                 n_components=cfg['n_components'],
+                                 perplexity=cfg['perplexity'],
+                                 random_state=cfg['random_state']
+                                 )
+    handler.close()
+    logger.removeHandler(handler)
 
 if __name__ == "__main__":
     main()

@@ -15,13 +15,14 @@ def main():
     cfg = load_yaml(args.config)
     try:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        output_dir = os.path.join(cfg['output_path'], timestamp)
+        output_dir = os.path.join(cfg['output_folder'], timestamp)
         os.makedirs(output_dir, exist_ok=True)
+        # logging
         output_log = os.path.join(output_dir, "generator.log")
         logger, handler = setup_session_logger(output_log)
-        logger.info(f"Generating embeddings for {cfg['input_path']}")
+        logger.info(f"Generating embeddings for {cfg['input_json']}")
 
-        emb, raw_emb = generate_embeddings(cfg['input_path'], cfg['model'], cfg['provider'],
+        emb, raw_emb = generate_embeddings(cfg['input_json'], cfg['model'], cfg['provider'],
                                            include=cfg['include'],
                                            exclude=cfg['exclude'],
                                            stride=cfg['stride'],
