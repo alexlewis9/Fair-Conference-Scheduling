@@ -90,7 +90,7 @@ def greedy_cohesive_clustering(graph: Graph, k) -> list[list[str]]:
     # Create list of neighbors sorted by distance for each node
     sorted_neighbors = []
     for i in range(n):
-        dists = [(j, graph.adj_matrix[i, j]) for j in range(n) if j != i]
+        dists = [(j, graph.adj_mat[i, j]) for j in range(n) if j != i]
         dists.sort(key=lambda x: x[1])
         sorted_neighbors.append([j for j, _ in dists])
 
@@ -119,7 +119,7 @@ def greedy_cohesive_clustering(graph: Graph, k) -> list[list[str]]:
             pointers[i] = ptr
 
             farthest_node = sorted_neighbors[i][pointers[i]]
-            radius = graph.adj_matrix[i, farthest_node]
+            radius = graph.adj_mat[i, farthest_node]
             if radius < min_radius:
                 min_radius = radius
                 best_cluster = closest_neighbors[i]
