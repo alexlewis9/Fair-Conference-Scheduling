@@ -1,9 +1,12 @@
 # Fair-Conference-Scheduling
 
 
-## Process csv to PaperNodes: 
+## Process data (.json) to embeddings:
 ```
-python src/main.py ./data/test/papers.csv --emb-column  emb_v2
+ python -m src.cli.generator --config ./src/configs/embed.yaml
 ```
 
-"""
+## Clustering and evaluate:
+```
+ python -m src.cli.clusterer --config ./src/configs/clusterer.yaml
+```
