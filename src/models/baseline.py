@@ -3,7 +3,7 @@ from sklearn.cluster import KMeans
 # from pyclustering.cluster.kmedoids import kmedoids
 import kmedoids
 
-from src.eval.kmeans import kmeans_objective
+from src.eval.metrics.kmeans import kmeans_objective
 
 
 def format_clustering(graph, clustering):

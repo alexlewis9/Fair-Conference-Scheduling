@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from src.eval.loss import avg_loss, max_loss
+from src.eval.metrics.loss import avg_loss, max_loss
 
 
 class TestLoss(unittest.TestCase):

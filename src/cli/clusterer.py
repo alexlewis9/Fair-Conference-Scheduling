@@ -1,7 +1,6 @@
 import argparse
 import logging
 import os
-import warnings
 from datetime import datetime
 import numpy as np
 import pandas as pd
@@ -9,12 +8,12 @@ from scipy.optimize import linear_sum_assignment
 
 from src import greedy_cohesive_clustering
 from src.data_processing.load_cluster import load_cluster_from_data
-from src.eval.main import evaluate_cluster
+from src.eval.metrics.main import evaluate_cluster
+from src.eval.plot.cluster_dist import plot_cluster_distances
 from src.models.baseline import kmeans_clustering, kmedoids_clustering
 from src.models.graph import Graph
 from src.utils.io import load_yaml, load_json, save_csv, save_yaml
 
-from pathlib import Path
 import warnings
 
 from src.utils.logger import setup_session_logger
@@ -197,7 +196,13 @@ def main():
     emb_cfg_path = os.path.join(output_path, "emb.yaml")
     save_yaml(emb_cfg, emb_cfg_path)
 
-    # 5) Visualize ------------------------------------------------------
+    # 5) Plot -----------------------------------------------------------
+    plot_path = os.path.join(output_path, "plot")
+    os.makedirs(plot_path, exist_ok=True)
+    plot_cluster_distances(clusterings, graph, same_cluster=True, title='Intra-cluster distances', path=plot_path)
+    plot_cluster_distances(clusterings, graph, same_cluster=False, title='Inter-cluster distances', path=plot_path)
+
+    # 6) Visualize ------------------------------------------------------
     if cfg["visualize"]:
         df = pd.read_csv(cfg['metadata'])
         df['emb'] = df['id'].map(emb)

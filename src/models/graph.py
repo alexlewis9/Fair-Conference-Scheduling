@@ -77,3 +77,15 @@ class Graph:
         index = self.id_to_index[node_id]
         return self.nodes[index]
 
+    def flatten_clusters(self, clusters):
+        # Transform the clusters from list[list[id]] to list[cluster_id]
+        n = len(self.nodes)
+        M = np.zeros(n)
+        for cluster_id, cluster in enumerate(clusters):
+            for node_id in cluster:
+                idx = self.id_to_index[node_id]
+                M[idx] = cluster_id
+
+        return M
+
+
