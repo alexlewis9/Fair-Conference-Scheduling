@@ -7,13 +7,18 @@ from src.eval.metrics.kmedoids import kmedoid_objective
 from src.eval.metrics.silhoutte import get_silhouette
 
 
-def evaluate_cluster(graph, clustering, metric=None, loss='avg'):
-    theta = get_appr_FJR(graph, clustering, loss)
-    core = get_core(graph, clustering, theta, loss)
-    fjr = get_FJR(graph, clustering, theta, loss)
+def evaluate_cluster(graph, clustering, metric=None):
+    theta_avg = get_appr_FJR(graph, clustering, 'avg')
+    core_avg = get_core(graph, clustering, theta_avg, 'avg')
+    fjr_avg = get_FJR(graph, clustering, theta_avg, 'avg')
+    theta_max = get_appr_FJR(graph, clustering, 'max')
+    core_max = get_core(graph, clustering, theta_max, 'max')
+    fjr_max = get_FJR(graph, clustering, theta_max, 'max')
     return {
-        'core': core,
-        'fjr': fjr,
+        'core_max': core_max,
+        'fjr_max': fjr_max,
+        'core_avg': core_avg,
+        'fjr_avg': fjr_avg,
         'silhouette': get_silhouette(graph, clustering, metric=metric),
         "k-means": kmeans_objective(graph, clustering),
         "k-medoids": kmedoid_objective(graph, clustering, metric),
