@@ -28,7 +28,7 @@ def GreedyCohesiveClustering(graph: Graph, k) -> list[list[int]]:
     closest_neighbors = [set(sorted_neighbors[i][:per_cluster]) for i in range(n)]
 
     # Initialize pointers to track position in sorted neighbors list for each node
-    pointers = [0 for _ in range(n)]
+    pointers = [per_cluster - 1 for _ in range(n)]
 
     while len(remaining) >= per_cluster:
         min_radius = float('inf')
@@ -41,11 +41,11 @@ def GreedyCohesiveClustering(graph: Graph, k) -> list[list[int]]:
             ptr = pointers[i]
             # Add neighbors until we have per_cluster valid nodes in closest neighbors
             while l > 0:
+                ptr += 1
                 neighbor = sorted_neighbors[i][ptr]
                 if neighbor not in removed:
                     l -= 1
                     closest_neighbors[i].add(neighbor)
-                ptr += 1
             pointers[i] = ptr
 
             farthest_node = sorted_neighbors[i][pointers[i]]
