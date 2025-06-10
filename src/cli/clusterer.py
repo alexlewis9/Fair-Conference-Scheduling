@@ -7,9 +7,10 @@ import pandas as pd
 from scipy.optimize import linear_sum_assignment
 
 from src import greedy_cohesive_clustering
-from src.data_processing.load_cluster import load_cluster_from_data
+from src.data_processing.load_cluster import load_cluster_from_data, load_cluster_from_csv
 from src.eval.metrics.main import evaluate_cluster
 from src.eval.plot.cluster_dist import plot_cluster_distances
+from src.eval.plot.plot import plot
 from src.models.baseline import kmeans_clustering, kmedoids_clustering
 from src.models.graph import Graph
 from src.utils.io import load_yaml, load_json, save_csv, save_yaml
@@ -75,9 +76,9 @@ def build_graph(emb, k: int, metric: str):
     return Graph(emb, k, d=metric)
 
 
-def get_baseline_clusters(data_path, to_dict=False):
+def get_baseline_clusters(metadata, to_dict=False):
     """Load the baseline clustering once and memoise it."""
-    return load_cluster_from_data(data_path, to_dict=to_dict)
+    return load_cluster_from_csv(metadata, to_dict=to_dict)
 
 
 def ensure_baseline(models: list[str], k: int):
@@ -120,9 +121,10 @@ def main():
     models      = cfg["models"][:]          # copy to avoid side-effects
     embed_path  = cfg["embed_path"]
     output_path = cfg["output_path"]
-    data_path   = cfg["data_path"]
+    metadata    = cfg["metadata"]
     metric      = cfg["metric"]
     k           = cfg["k"]
+    paper_dir   = cfg['paper_dir'] if cfg['paper_dir'] else os.path.join(output_path, 'papers')
 
     # 0) logging and path handling -------------------------------------------------------------
     output_path = os.path.join(output_path, timestamp)
@@ -137,7 +139,7 @@ def main():
     ensure_baseline(models, k)
 
     # baseline clusterings may be needed for k==0 *and/or* evaluation
-    baseline_clusters, labels = get_baseline_clusters(data_path) if "Baseline" in models else None
+    baseline_clusters, labels = get_baseline_clusters(metadata) if "Baseline" in models else None
 
     # choose k
     effective_k = len(baseline_clusters) if k == 0 else k
@@ -202,12 +204,14 @@ def main():
     plot_cluster_distances(clusterings, graph, same_cluster=True, title='Intra-cluster distances', path=plot_path)
     plot_cluster_distances(clusterings, graph, same_cluster=False, title='Inter-cluster distances', path=plot_path)
 
+    plot(output_eval, output_path)
+
     # 6) Visualize ------------------------------------------------------
     if cfg["visualize"]:
-        df = pd.read_csv(cfg['metadata'])
+        df = pd.read_csv(metadata)
         df['emb'] = df['id'].map(emb)
         cluster_df = pd.read_csv(output_clustering)
-        paper_dir = cfg['paper_dir']
+
         ensure_dir(paper_dir, "papers html")
 
         # Create a mapping for each method
