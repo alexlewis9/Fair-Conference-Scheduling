@@ -2,7 +2,7 @@ import numpy as np
 from sklearn.cluster import KMeans
 # from pyclustering.cluster.kmedoids import kmedoids
 import kmedoids
-
+from src.models.same_size_kmedoids import KMedoids
 from src.eval.metrics.kmeans import kmeans_objective
 
 
@@ -42,5 +42,14 @@ def kmedoids_clustering(graph, k):
             best_score = score
             best_trial = clustering
     return best_trial
+
+def same_size_kmedoids_clustering(graph, k):
+    distance_matrix = graph.adj_mat
+    kmedoids = KMedoids(distance_matrix, n_clusters=k)
+    kmedoids.run()
+    clusters = []
+    for _, points in kmedoids.clusters.items():
+        clusters.append([graph.nodes[idx].id for idx in points])
+    return clusters
 
 

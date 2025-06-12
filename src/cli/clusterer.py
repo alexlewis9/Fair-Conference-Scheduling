@@ -11,7 +11,7 @@ from src.data_processing.load_cluster import load_cluster_from_data, load_cluste
 from src.eval.metrics.main import evaluate_cluster
 from src.eval.plot.cluster_dist import plot_cluster_distances
 from src.eval.plot.plot import plot
-from src.models.baseline import kmeans_clustering, kmedoids_clustering
+from src.models.baseline import kmeans_clustering, kmedoids_clustering, same_size_kmedoids_clustering
 from src.models.graph import Graph
 from src.utils.io import load_yaml, load_json, save_csv, save_yaml
 
@@ -159,6 +159,9 @@ def main():
 
     if "KMeans" in models:
         clusterings["KMeans"] = kmeans_clustering(graph, effective_k)
+
+    if "SameSizeKMedoids" in models:
+        clusterings["SameSizeKMedoids"] = same_size_kmedoids_clustering(graph, effective_k)
 
     # ...add more models here...
 
