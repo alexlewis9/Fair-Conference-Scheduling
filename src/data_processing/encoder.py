@@ -8,7 +8,7 @@ from google import genai
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer
-
+import os
 logger = logging.getLogger(__name__)
 
 def mean_pool(chunks):
@@ -25,6 +25,10 @@ class Encoder:
     def __init__(self, name, provider, stride=0, max_tokens=0, reconstruct ='mean_pool'):
         self.name = name
         load_dotenv()
+        self.openai = False
+        self.claude = False
+        self.st_compat = False
+        self.gemini = False
         if provider == 'openai':
             self.client = OpenAI()
             self.max_tokens = 8192 if max_tokens == 0 else max_tokens
@@ -40,11 +44,11 @@ class Encoder:
             self.max_tokens = 16000 if self.name == 'voyage-law-2' or self.name == 'voyage-code-2' else 32000
             self.tokenizer = AutoTokenizer.from_pretrained(f'voyageai/{self.name}')
             self.claude = True
-        # elif gemini: # text-embedding-004
-        #     self.client = genai.Client()
-        #     self.max_tokens = 8192 if self.name == 'gemini-embedding-exp-03-07' else 2048
-        #     self
-        #     self.gemini = True
+        elif provider == 'gemini': # text-embedding-004
+            self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+            self.max_tokens = 8192 if self.name == 'gemini-embedding-exp-03-07' else 2048
+            self.tokenizer = None
+            self.gemini = True
         else:
             raise ValueError(
                 "Invalid provider. Please choose from 'anthropic' or 'openai' if your model is from either of them,"
@@ -76,10 +80,18 @@ class Encoder:
         return chunks
 
     def encode(self, text, verbose=False, disallowed_special=()):
-        text = text.replace("\n", " ")
-        logger.info(f"chunking")
-        token_chunks = self.chunk_text_to_tokens(text, disallowed_special=disallowed_special)
-        logger.info(f"chunked") if not verbose else logger.info(f"chunked: {len(token_chunks)}")
+        if len(text) > self.max_tokens*2:#TODO: temporary cuz im sleepy
+            print("help")
+            text = text.replace("\n", " ")
+            logger.info(f"chunking")
+            token_chunks = self.chunk_text_to_tokens(text, disallowed_special=disallowed_special)
+            logger.info(f"chunked") if not verbose else logger.info(f"chunked: {len(token_chunks)}")
+            if not self.openai:
+                # Other than open ai, models don't support encoding from token ids
+                token_chunks = [self.tokenizer.encode(chunk) for chunk in token_chunks]
+        else:
+            token_chunks = [text]
+
         embeddings = []
         if self.openai:
             for chunk in token_chunks:
@@ -93,6 +105,13 @@ class Encoder:
             for chunk in token_chunks:
                 embedding = self.client.embed(self.tokenizer.decode(chunk), model=self.name).embeddings[0]
                 embeddings.append(embedding.tolist())
+        elif self.gemini:
+            for chunk in token_chunks:
+                result = self.client.models.embed_content(
+                    model = self.name,
+                    contents=chunk
+                )
+                embeddings.append(result.embeddings[0].values)
         logger.info(f"finished embedding chunks")
         reconstructed = self.reconstruct(embeddings).tolist()
         logger.info(f"reconstructed")
