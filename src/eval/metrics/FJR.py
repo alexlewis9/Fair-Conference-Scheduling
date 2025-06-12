@@ -51,19 +51,21 @@ def run_FJR(n, k, d, M, theta, loss='avg'):
         # Constraints
         model.addConstr(gp.quicksum(x[i] for i in range(n)) >= n / k)
 
-         ##Uncomment for the Average Loss #####################
-        # for i in range(n):
-        #     model.addConstr(gp.quicksum(x[j] * d[i][j] for j in range(n)) <= Z  + L1 * (1 - x[i]))  # cost under the new deviating coalition 
-        #     model.addConstr(gp.quicksum(x[j] for j in range(n)) *cost[i]>= Z *  alpha - L2 * (1 - x[i]))  # previous cost 
+        ##Uncomment for the Average Loss #####################
+        if loss == 'avg':
+            for i in range(n):
+                model.addConstr(gp.quicksum(x[j] * d[i][j] for j in range(n)) <= Z  + L1 * (1 - x[i]))  # cost under the new deviating coalition 
+                model.addConstr(gp.quicksum(x[j] for j in range(n)) *cost[i]>= Z *  alpha - L2 * (1 - x[i]))  # previous cost 
         #####################################################
 
         ### Max Loss #########################################
-        for i in range(n):
-            for j in range(n):
-                model.addConstr(x[j] * d[i][j]  <= Z  + L1 * (1 - x[i]))  # cost under the new deviating coalition 
+        if loss == 'max':
+            for i in range(n):
+                for j in range(n):
+                    model.addConstr(x[j] * d[i][j]  <= Z  + L1 * (1 - x[i]))  # cost under the new deviating coalition 
 
-        for i in range(n): 
-            model.addConstr(cost[i] - Z * alpha >= - L2 * (1 - x[i]), name=f"cost_constraint_{i}")
+            for i in range(n): 
+                model.addConstr(cost[i] - Z * alpha >= - L2 * (1 - x[i]), name=f"cost_constraint_{i}")
         #####################################################
            
 
