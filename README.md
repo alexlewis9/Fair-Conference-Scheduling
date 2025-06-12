@@ -11,7 +11,7 @@
  python -m src.cli.clusterer --config ./src/configs/clusterer.yaml
 ```
 
-## Embedding Quick Access:
+## Embedding + Result Quick Access:
 ### ICLR
 - 2021, basic + text [data/emb/ICLR/2021/20250605_1513](data/emb/ICLR/2021/20250605_1513)
   - [20250609_2118](result/ICLR/2021/20250609_2118)
@@ -23,6 +23,8 @@
   - [20250609_2109](result/ICLR/2024/20250609_2109)
 - 2024, basic [data/emb/ICLR/2024/20250530_1457](data/emb/ICLR/2024/20250530_1457)
   - [20250609_2102](result/ICLR/2024/20250609_2102)
+- 2024, basic, gemini text-embedding-004 [20250611_0009](data/emb/ICLR/2024/20250611_0009)
+  - [20250611_0012](result/ICLR/2024/20250611_0012)
 ### NeurIPS
 - 2023, basic [data/emb/NeurIPS/2023/20250602_2201](data/emb/NeurIPS/2023/20250602_2201)
   - result [20250609_2106](result/NeurIPS/2023/20250609_2106)

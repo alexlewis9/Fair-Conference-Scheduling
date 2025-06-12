@@ -13,7 +13,7 @@ from src.eval.plot.cluster_dist import plot_cluster_distances
 from src.eval.plot.plot import plot
 from src.models.baseline import kmeans_clustering, kmedoids_clustering
 from src.models.graph import Graph
-from src.utils.io import load_yaml, load_json, save_csv, save_yaml
+from src.utils.io import load_yaml, load_json, save_csv, save_yaml, save_json
 
 import warnings
 
@@ -108,6 +108,33 @@ def ensure_dir(path, label=""):
     else:
         logger.info(f"Directory exists: {label or path}")
 
+def clustering_by_title(cluster_path, meta_path):
+    # 1) Load data -----------------------------------------------------------
+    clusters_df = pd.read_csv(cluster_path)
+    meta_df = pd.read_csv(meta_path)[["id", "title"]]
+
+    id2title = dict(zip(meta_df["id"].astype(str), meta_df["title"]))
+
+    # 2) Build nested dict ---------------------------------------------------
+    result: dict[str, dict[str, list[str]]] = {}
+
+    session_cols = [c for c in clusters_df.columns if c != "method"]
+
+    for _, row in clusters_df.iterrows():
+        model = row["method"]
+        model_dict: dict[str, list[str]] = {}
+
+        for session in session_cols:
+            raw_ids = str(row[session])
+            if raw_ids and raw_ids.lower() != "nan":
+                titles = [f"{pid}: {id2title.get(pid.strip(), f"<missing title {pid.strip()}>")}"
+                          for pid in raw_ids.split(",") if pid.strip()]
+                model_dict[session] = titles
+
+        result[model] = model_dict
+
+    return result
+
 
 # ---------- main ------------------------------------------------------------
 
@@ -191,6 +218,10 @@ def main():
     output_clustering = os.path.join(output_path, "clusters.csv")
     save_csv(cluster_rows, output_clustering)
 
+    clustering_in_title = clustering_by_title(output_clustering, metadata)
+    title_path = os.path.join(output_path, "clustering_in_title.json")
+    save_json(clustering_in_title, title_path)
+
     cfg["effective_k"] = effective_k
     output_clusterer_cfg = os.path.join(output_path, "clusterer.cfg")
     save_yaml(cfg, output_clusterer_cfg)
@@ -233,7 +264,8 @@ def main():
         for method, id_to_cluster in method_to_id_to_cluster.items():
             df[method] = df['id'].map(id_to_cluster).fillna("None")  # or use np.nan
 
-        write_paper_html(df, paper_dir)
+        if not any(os.scandir(paper_dir)):
+            write_paper_html(df, paper_dir)
 
         for method in cfg['methods']:
             visualize_clustering(df, models,
