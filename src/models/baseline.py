@@ -2,7 +2,8 @@ import numpy as np
 from sklearn.cluster import KMeans
 # from pyclustering.cluster.kmedoids import kmedoids
 import kmedoids
-
+from src.models.same_size_kmeans_elki import same_size_kmeans_elki
+from src.models.kmeans_constrained import kmeans_constrained
 from src.eval.metrics.kmeans import kmeans_objective
 
 
@@ -43,4 +44,10 @@ def kmedoids_clustering(graph, k):
             best_trial = clustering
     return best_trial
 
+def same_size_kmeans_elki_clustering(graph, k):
+    clustering = same_size_kmeans_elki(graph, k)
+    return format_clustering(graph, clustering)
 
+def kmeans_constrained_clustering(graph, k):
+    clustering = kmeans_constrained(graph, k)
+    return format_clustering(graph, clustering)
