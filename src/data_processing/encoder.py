@@ -79,42 +79,116 @@ class Encoder:
                 break  # Don't start new chunks past the end
         return chunks
 
+    def chunk_by_token_counts(self, text, max_tokens=0, stride_percent=0):
+        """
+        Split text into chunks of max_tokens size, with stride.
+        Returns a list of token chunks.
+        Developed for models without Tokenizer, but a function to return the total counts of tokens.
+        """
+        max_tokens = self.max_tokens if max_tokens == 0 else max_tokens
+        stride_percent = self.stride if stride_percent == 0 else stride_percent
+
+        def count_tokens(textt):
+            return self.client.models.count_tokens(
+                model='gemini-embedding-exp-03-07',
+                contents=textt
+            ).total_tokens
+
+        words = text.split()
+        n_words = len(words)
+        chunks = []
+
+        i = 0
+        stride_size = 0
+
+        while i < n_words:
+
+            print('new chunk!')
+            # Start with an overestimate that 1 word = 1 tok. IRL, 1 word = 2 or 3 toks.
+            est_words = max_tokens
+            high = min(i + est_words, n_words)
+            low = i
+            current = high
+
+            best = i
+            step = max(1, (high - low) // 2)
+
+            while step > 0:
+                candidate = ' '.join(words[i:current])
+                tokens = count_tokens(candidate)
+
+                if tokens <= max_tokens:
+                    # Valid chunk, try to go longer
+                    best = current
+                    current = min(current + step, n_words)
+                else:
+                    # Too long, try to shorten
+                    current = max(current - step, i + 1)
+
+                step = step // 2  # Reduce step size, like a damped pendulum
+
+            if best == i:
+                raise ValueError("A single word or minimal span exceeds max_tokens.")
+
+            chunk = ' '.join(words[i:best])
+            chunks.append(chunk)
+
+            if stride_size == 0:
+                stride_size = max(1, int((best - i) * stride_percent))
+
+            i = best - stride_size
+
+            candidate_last = ' '.join(words[i:])
+            tok_count = count_tokens(candidate_last)
+            if tok_count <= max_tokens:
+                chunks.append(candidate_last)
+                break
+
+        return chunks
+
+
     def encode(self, text, verbose=False, disallowed_special=()):
-        if len(text) > self.max_tokens*2:#TODO: temporary cuz im sleepy
-            print("help")
-            text = text.replace("\n", " ")
+        text = text.replace('\n', ' ')
+        embeddings = []
+        if self.openai:
             logger.info(f"chunking")
             token_chunks = self.chunk_text_to_tokens(text, disallowed_special=disallowed_special)
             logger.info(f"chunked") if not verbose else logger.info(f"chunked: {len(token_chunks)}")
-            if not self.openai:
-                # Other than open ai, models don't support encoding from token ids
-                token_chunks = [self.tokenizer.encode(chunk) for chunk in token_chunks]
-        else:
-            token_chunks = [text]
-
-        embeddings = []
-        if self.openai:
             for chunk in token_chunks:
                 embedding = self.client.embeddings.create(input=chunk, model=self.name).data[0].embedding
                 embeddings.append(embedding)
+
         elif self.st_compat:
+            logger.info(f"chunking")
+            token_chunks = self.chunk_text_to_tokens(text, disallowed_special=disallowed_special)
+            logger.info(f"chunked") if not verbose else logger.info(f"chunked: {len(token_chunks)}")
+            token_chunks = [self.tokenizer.encode(chunk) for chunk in token_chunks]
             for chunk in token_chunks:
                 embedding = self.client.encode(chunk)
                 embeddings.append(embedding.tolist())
+
         elif self.claude:
+            logger.info(f"chunking")
+            token_chunks = self.chunk_text_to_tokens(text, disallowed_special=disallowed_special)
+            logger.info(f"chunked") if not verbose else logger.info(f"chunked: {len(token_chunks)}")
+            token_chunks = [self.tokenizer.encode(chunk) for chunk in token_chunks]
             for chunk in token_chunks:
                 embedding = self.client.embed(self.tokenizer.decode(chunk), model=self.name).embeddings[0]
                 embeddings.append(embedding.tolist())
+
         elif self.gemini:
-            for chunk in token_chunks:
+            chunks = self.chunk_by_token_counts(text, stride_percent = self.stride) # IN PERCENTAGE, been testing 10% in OpenAI
+            for chunk in chunks:
                 result = self.client.models.embed_content(
                     model = self.name,
                     contents=chunk
                 )
                 embeddings.append(result.embeddings[0].values)
+
         logger.info(f"finished embedding chunks")
         reconstructed = self.reconstruct(embeddings).tolist()
         logger.info(f"reconstructed")
+
         return reconstructed, embeddings  # i.e., mean pool
 
     def count_tokens(self, text):

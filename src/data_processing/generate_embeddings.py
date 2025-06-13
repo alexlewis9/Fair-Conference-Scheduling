@@ -81,7 +81,8 @@ def generate_embeddings(input_path, model_name, provider,
 
             logger.info(f"Encoding entry: {entry_id}")
             # Encode and store
-            embeddings[entry['id']], raw_emb[entry['id']] = model.encode(entry_str, verbose=verbose)
+            if entry_id == 'yV6fD7LYkF':
+                embeddings[entry['id']], raw_emb[entry['id']] = model.encode(entry_str, verbose=verbose)
             timenow = datetime.now().strftime("%Y%m%d_%H%M")
             if verbose:
                 print(f"{timenow}-[OK] {entry_id}")
