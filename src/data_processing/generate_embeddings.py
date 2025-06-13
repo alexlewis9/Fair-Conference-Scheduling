@@ -77,6 +77,7 @@ def generate_embeddings(input_path, model_name, provider,
 
             # Construct the string to embed
             filtered_entry = {k: entry[k] for k in keys_to_use if k in entry}
+            filtered_entry['text'] = filtered_entry['text'].replace('\n', ' ')
             entry_str = json.dumps(filtered_entry, ensure_ascii=False)
 
             logger.info(f"Encoding entry: {entry_id}")
