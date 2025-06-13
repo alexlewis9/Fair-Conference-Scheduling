@@ -19,10 +19,20 @@ def plot(input_path, output_path, filename='metrics.jpg'):
         ax = axes[i]
         values = df[metric].tolist()
         ax.bar(models, values)
-        ax.set_title(metric)
+        arrow = '↑' if 'silhouette' in metric.lower() else '↓'
+        ax.set_title(f"{metric} {arrow}")
         ax.set_ylabel('Value')
         ax.set_xticks(range(len(models)))
         ax.set_xticklabels(models, rotation=45, ha='right')
+
+        # If the metric starts with "fjr" or "core", start y-axis at 1
+        if metric.startswith("fjr") or metric.startswith("core"):
+            min_val = min(values)
+            if min_val >= 1:
+                ax.set_ylim(bottom=0.95)  # ensures bars with height 1 are visible
+            else:
+                ax.set_ylim(bottom=min_val * 0.95 if min_val > 0 else 0)
+            ax.axhline(1, color='orange', linestyle='dotted', linewidth=1)
 
     # Hide unused subplots
     for j in range(i + 1, len(axes)):
