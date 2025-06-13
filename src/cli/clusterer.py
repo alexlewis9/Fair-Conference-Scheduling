@@ -11,7 +11,7 @@ from src.data_processing.load_cluster import load_cluster_from_data, load_cluste
 from src.eval.metrics.main import evaluate_cluster
 from src.eval.plot.cluster_dist import plot_cluster_distances
 from src.eval.plot.plot import plot
-from src.models.baseline import kmeans_clustering, kmedoids_clustering, same_size_kmeans_elki_clustering, kmeans_constrained_clustering
+from src.models.baseline import kmeans_clustering, kmedoids_clustering, same_size_kmeans_elki_clustering, same_size_kmeans_greedy_clustering, kmeans_constrained_clustering, same_size_kmeans_linear_sum_assignment_clustering, kmeans_constrained_nolowerbound_clustering
 from src.models.graph import Graph
 from src.utils.io import load_yaml, load_json, save_csv, save_yaml
 
@@ -163,8 +163,18 @@ def main():
     if "SameSizeKMeans_ELKI" in models:
         clusterings["SameSizeKMeans_ELKI"] = same_size_kmeans_elki_clustering(graph, effective_k)
 
+    if "SameSizeKMeans_LinearSumAssignment" in models:
+        clusterings["SameSizeKMeans_LinearSumAssignment"] = same_size_kmeans_linear_sum_assignment_clustering(graph, effective_k)
+
+    if "SameSizeKMeans_Greedy" in models:
+        clusterings["SameSizeKMeans_Greedy"] = same_size_kmeans_greedy_clustering(graph, effective_k)
+
     if "KMeansConstrained" in models:
         clusterings["KMeansConstrained"] = kmeans_constrained_clustering(graph, effective_k)
+
+    if "KMeansConstrained_NoLowerBound" in models:
+        clusterings["KMeansConstrained_NoLowerBound"] = kmeans_constrained_nolowerbound_clustering(graph, effective_k)
+
     # ...add more models here...
 
     # 3) evaluate -------------------------------------------------------------
