@@ -1,4 +1,5 @@
 import logging
+import time
 
 import numpy as np
 import tiktoken
@@ -79,75 +80,58 @@ class Encoder:
                 break  # Don't start new chunks past the end
         return chunks
 
-    def chunk_by_token_counts(self, text, max_tokens=0, stride_percent=0):
+    def chunk_by_token_counts(self, text, stride, max_token=0):
         """
         Split text into chunks of max_tokens size, with stride.
         Returns a list of token chunks.
         Developed for models without Tokenizer, but a function to return the total counts of tokens.
         """
-        max_tokens = self.max_tokens if max_tokens == 0 else max_tokens
-        stride_percent = self.stride if stride_percent == 0 else stride_percent
-
-        def count_tokens(textt):
-            return self.client.models.count_tokens(
-                model='gemini-embedding-exp-03-07',
-                contents=textt
-            ).total_tokens
-
+        max_token = self.max_tokens if max_token == 0 else max_token
         words = text.split()
-        n_words = len(words)
+        if not words:
+            return []
+
         chunks = []
+        idx = 0
+        overlap_words = []
 
-        i = 0
-        stride_size = 0
+        while idx < len(words):
+            # Current window includes overlap from previous chunk
+            available_words = overlap_words + words[idx:]
 
-        while i < n_words:
+            # Binary search for maximum words that fit
+            # Each word is at least 1 token, so max possible words is max_token
+            left, right = 1, min(len(available_words), max_token)
+            best = 1
 
-            print('new chunk!')
-            # Start with an overestimate that 1 word = 1 tok. IRL, 1 word = 2 or 3 toks.
-            est_words = max_tokens
-            high = min(i + est_words, n_words)
-            low = i
-            current = high
+            while left <= right:
+                mid = (left + right) // 2
+                # Join words into string for tokenization
+                text = ' '.join(available_words[:mid])
+                tokens = self.count_tokens_gemini(text)
 
-            best = i
-            step = max(1, (high - low) // 2)
-
-            while step > 0:
-                candidate = ' '.join(words[i:current])
-                tokens = count_tokens(candidate)
-
-                if tokens <= max_tokens:
-                    # Valid chunk, try to go longer
-                    best = current
-                    current = min(current + step, n_words)
+                if tokens <= max_token:
+                    best = mid
+                    left = mid + 1
                 else:
-                    # Too long, try to shorten
-                    current = max(current - step, i + 1)
+                    right = mid - 1
 
-                step = step // 2  # Reduce step size, like a damped pendulum
+            # Create chunk as string
+            chunk_words = available_words[:best]
+            chunk_text = ' '.join(chunk_words)
+            chunks.append(chunk_text)
 
-            if best == i:
-                raise ValueError("A single word or minimal span exceeds max_tokens.")
+            # Move index forward by new words consumed (excluding overlap)
+            new_words = best - len(overlap_words)
+            idx += new_words
 
-            chunk = ' '.join(words[i:best])
-            chunks.append(chunk)
-
-            if stride_size == 0:
-                stride_size = max(1, int((best - i) * stride_percent))
-
-            i = best - stride_size
-
-            candidate_last = ' '.join(words[i:])
-            tok_count = count_tokens(candidate_last)
-            if tok_count <= max_tokens:
-                chunks.append(candidate_last)
-                break
+            # Calculate overlap for next chunk
+            overlap_size = int(len(chunk_words) * stride)
+            overlap_words = chunk_words[-overlap_size:] if overlap_size > 0 else []
 
         return chunks
 
-
-    def encode(self, text, verbose=False, disallowed_special=()):
+    def encode(self, text, verbose=False, disallowed_special=(), max_retries = 3, retry_delay = 75):
         text = text.replace('\n', ' ')
         embeddings = []
         if self.openai:
@@ -177,13 +161,34 @@ class Encoder:
                 embeddings.append(embedding.tolist())
 
         elif self.gemini:
-            chunks = self.chunk_by_token_counts(text, stride_percent = self.stride) # IN PERCENTAGE, been testing 10% in OpenAI
-            for chunk in chunks:
-                result = self.client.models.embed_content(
-                    model = self.name,
-                    contents=chunk
-                )
-                embeddings.append(result.embeddings[0].values)
+            logger.info(f"chunking")
+            chunks = self.chunk_by_token_counts(text, self.stride) # IN PERCENTAGE, been testing 10% in OpenAI
+            logger.info(f"chunked") if not verbose else logger.info(f"chunked: {len(chunks)}")
+            for i, chunk in enumerate(chunks):
+                for attempt in range(max_retries):
+                    try:
+                        logger.info(f"embedding chunk {i + 1}") if not verbose else logger.info(f"embedding chunk {i + 1}- (Attempt {attempt + 1})")
+                        result = self.client.models.embed_content(
+                            model = self.name,
+                            contents=chunk
+                        )
+                        embeddings.append(result.embeddings[0].values)
+                        logger.info(f"embedded chunk {i + 1}") if not verbose else logger.info(f"embedded chunk {i + 1}- (Attempt {attempt + 1})")
+                        break
+                    except Exception as e:
+                        if hasattr(e, 'response') and hasattr(e.response, 'status_code'):
+                            code = e.response.status_code
+                        elif hasattr(e, 'status_code'):
+                            code = e.status_code
+                        else:
+                            code = getattr(e, 'code', None)
+                        if code == 429:
+                            logger.warning(
+                                f"Rate Limit exceeded. Sleeping for {retry_delay} seconds... (Attempt {attempt + 1})")
+                            time.sleep(retry_delay)
+                        else:
+                            raise e
+
 
         logger.info(f"finished embedding chunks")
         reconstructed = self.reconstruct(embeddings).tolist()
@@ -195,3 +200,16 @@ class Encoder:
         text = text.replace("\n", " ")
         chunks = self.chunk_text_to_tokens(text)
         return sum([len(chunk) for chunk in chunks])
+
+    def count_tokens_gemini(self, text):
+        for i in range(3):
+            try:
+                return self.client.models.count_tokens(
+                    model='gemini-embedding-exp-03-07',
+                    contents=text
+                ).total_tokens
+            except Exception as e:
+                time.sleep(10)
+                if i == 2:
+                    raise e
+        return 0
